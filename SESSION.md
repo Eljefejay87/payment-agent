@@ -48,14 +48,17 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 - Fixed Payment Agent duplicate protection to use stable `internetMessageId` plus payment fingerprint, because Graph message IDs can change after mail moves.
 - Updated dashboard/daily totals to dedupe duplicate payment rows and understand real payment dates like `6/29/2026`.
 - Removed duplicate payment rows created during dashboard scan testing, leaving the three real payment records.
+- Started Payment Agent manually in the current Codex session after unloading the broken macOS LaunchAgent crash loop.
+- Added `Start Payment Agent.command` as a double-click launcher for manual Payment Agent runs.
+- Payment Agent processed one new payment for account `B119391` and moved duplicate candidate emails to `Duplicate Payments` without resending duplicate Teams notifications.
 
 ## Current Task
 
-Fixed dashboard-triggered duplicate payment processing and cleaned affected duplicate database rows.
+Payment Agent is currently running manually from the project virtual environment.
 
 ## Next Recommended Task
 
-Restart the dashboard, then confirm Payment Agent shows 3 payments today totaling $356.12 and future scans report no new payments unless new emails arrive.
+Use `Start Payment Agent.command` for manual runs until the macOS LaunchAgent permission issue is corrected.
 
 ## Known Issues
 
@@ -65,6 +68,7 @@ Restart the dashboard, then confirm Payment Agent shows 3 payments today totalin
 - The scheduler currently uses the lightweight `schedule` package; `APScheduler` is recommended for stronger production scheduling later.
 - Database migrations are not yet formalized.
 - Weekly Remit Agent requires Microsoft Graph `Mail.Send` application permission before live broker email sending will work.
+- macOS LaunchAgent currently fails with a permission error reading `.venv/pyvenv.cfg`; manual foreground launch works.
 
 ## Session Update Rule
 
