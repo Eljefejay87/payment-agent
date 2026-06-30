@@ -1,0 +1,13 @@
+.env
+.DS_Store
+**/.DS_Store
+*.sqlite3
+*.db
+__pycache__/
+*.pyc
+.venv/
+email_snapshots/
+logs/
+!logs/.gitkeep
+.graph_teams_token_cache.bin
+remits/
