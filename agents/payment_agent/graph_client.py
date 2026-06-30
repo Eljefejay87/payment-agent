@@ -51,8 +51,9 @@ class PaymentGraphClient(MicrosoftGraphClient):
         select = "id,internetMessageId,subject,receivedDateTime,from"
         if include_body:
             select = f"{select},body"
-        return self.list_user_messages(
+        return self.list_user_mail_folder_messages(
             mailbox_user_id=self.settings.mailbox_user_id,
+            folder_id="inbox",
             filter_query=filter_query,
             select=select,
             orderby="receivedDateTime desc",

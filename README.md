@@ -430,22 +430,26 @@ REPORT_MODE=daily
 
 ### macOS launchd
 
-The repo includes a LaunchAgent plist and helper scripts for daily operation on macOS. It runs the existing long-running command:
+The repo includes helper scripts for daily operation on macOS. The installer creates a background runtime copy under:
 
-```bash
-/Users/jcollins/Documents/AI\ AGENT\ UCM/payment-agent/.venv/bin/python main.py run
+```text
+~/Library/Application Support/UCM/payment-agent
 ```
 
-The LaunchAgent starts when you log into your Mac, restarts automatically if it crashes, and writes logs to:
+That location avoids macOS privacy blocks that can prevent background services from reading apps inside `Documents`.
 
-- `logs/payment-agent.out.log`
-- `logs/payment-agent.err.log`
+The LaunchAgent starts when you log into your Mac, restarts automatically if it crashes, and writes logs to the runtime folder:
+
+- `~/Library/Application Support/UCM/payment-agent/logs/payment-agent.out.log`
+- `~/Library/Application Support/UCM/payment-agent/logs/payment-agent.err.log`
 
 Install and start:
 
 ```bash
 ./scripts/install_launch_agent.sh
 ```
+
+Run the installer again any time you want to update the background runtime from the current project folder.
 
 Start manually:
 

@@ -51,14 +51,17 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 - Started Payment Agent manually in the current Codex session after unloading the broken macOS LaunchAgent crash loop.
 - Added `Start Payment Agent.command` as a double-click launcher for manual Payment Agent runs.
 - Payment Agent processed one new payment for account `B119391` and moved duplicate candidate emails to `Duplicate Payments` without resending duplicate Teams notifications.
+- Updated the macOS LaunchAgent installer to run from `~/Library/Application Support/UCM/payment-agent` instead of `Documents`, avoiding the macOS privacy error that prevented automatic startup.
+- Updated Payment Agent discovery to scan only the Inbox so emails moved to `Processed Payments` or `Duplicate Payments` are not rediscovered every cycle.
+- Confirmed `python main.py scan-once` now finds 0 candidate emails after cleanup folders are populated.
 
 ## Current Task
 
-Payment Agent is currently running manually from the project virtual environment.
+Payment Agent is currently running manually from the project virtual environment with Inbox-only scanning; LaunchAgent installer has been fixed for permanent automatic startup.
 
 ## Next Recommended Task
 
-Use `Start Payment Agent.command` for manual runs until the macOS LaunchAgent permission issue is corrected.
+Run `./scripts/install_launch_agent.sh` once from the project folder to install the fixed automatic background runner.
 
 ## Known Issues
 
@@ -68,7 +71,7 @@ Use `Start Payment Agent.command` for manual runs until the macOS LaunchAgent pe
 - The scheduler currently uses the lightweight `schedule` package; `APScheduler` is recommended for stronger production scheduling later.
 - Database migrations are not yet formalized.
 - Weekly Remit Agent requires Microsoft Graph `Mail.Send` application permission before live broker email sending will work.
-- macOS LaunchAgent currently fails with a permission error reading `.venv/pyvenv.cfg`; manual foreground launch works.
+- Old macOS LaunchAgent failed with a permission error reading `.venv/pyvenv.cfg` under `Documents`; fixed installer now uses an Application Support runtime copy.
 
 ## Session Update Rule
 

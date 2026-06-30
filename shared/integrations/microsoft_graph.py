@@ -131,6 +131,31 @@ class GraphClient:
             path = data.get("@odata.nextLink", "")
         return messages
 
+    def list_user_mail_folder_messages(
+        self,
+        mailbox_user_id: str,
+        folder_id: str,
+        filter_query: str,
+        select: str = "id,internetMessageId,subject,receivedDateTime,from,body",
+        orderby: str = "receivedDateTime asc",
+        top: int = 50,
+    ) -> list[dict[str, Any]]:
+        user = quote(mailbox_user_id)
+        folder = quote(folder_id, safe="")
+        encoded_filter = quote(filter_query, safe="=$'(), ")
+        path = (
+            f"/users/{user}/mailFolders/{folder}/messages?$top={top}&$select={select}"
+            f"&$filter={encoded_filter}&$orderby={quote(orderby, safe=' ')}"
+        )
+
+        messages: list[dict[str, Any]] = []
+        while path:
+            LOGGER.debug("Fetching Graph mail folder messages page")
+            data = self.request("GET", path)
+            messages.extend(data.get("value", []))
+            path = data.get("@odata.nextLink", "")
+        return messages
+
     def mark_user_message_read(self, mailbox_user_id: str, message_id: str) -> None:
         user = quote(mailbox_user_id)
         message = quote(message_id, safe="")
