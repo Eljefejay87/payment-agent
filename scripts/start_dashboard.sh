@@ -20,7 +20,7 @@ if command -v lsof >/dev/null 2>&1; then
   fi
 fi
 
-export DASHBOARD_HOST="${DASHBOARD_HOST:-127.0.0.1}"
+export DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 export DASHBOARD_PORT="$PORT"
 
 exec "$PROJECT_DIR/.venv/bin/python" main.py dashboard
