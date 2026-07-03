@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from shared.integrations.microsoft_teams import TeamsNotifier
 
+from .classifier import OperationsScreenshotClassifier, ScreenshotClassification
 from .config import OperationsSettings
 from .database import OperationsDatabase
 from .graph_client import OperationsGraphClient
@@ -28,6 +30,7 @@ class HistoryImportSummary:
     successfully_imported: int = 0
     manual_review_required: int = 0
     duplicates_skipped: int = 0
+    non_operations_skipped: int = 0
     missing_days: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     historical_summary_text: str = ""
@@ -40,6 +43,7 @@ class HistoryImportSummary:
             f"- Successfully imported: {self.successfully_imported}",
             f"- Manual review required: {self.manual_review_required}",
             f"- Duplicates skipped: {self.duplicates_skipped}",
+            f"- Non-operations screenshots skipped: {self.non_operations_skipped}",
             f"- Missing days: {', '.join(self.missing_days) or 'none'}",
             f"- Failed downloads/errors: {len(self.errors)}",
         ]
@@ -61,6 +65,7 @@ class OperationsIntelligenceAgent:
             settings.ocr_debug,
             settings.reports_dir / "debug",
         )
+        self.classifier = OperationsScreenshotClassifier(settings.ocr_command)
         self.teams = TeamsNotifier(_LeadershipTeamsSettings(settings), self.graph)
 
     def initialize(self) -> None:
@@ -112,6 +117,8 @@ class OperationsIntelligenceAgent:
                 )
                 if result == "duplicate":
                     summary.duplicates_skipped += 1
+                elif result == "non_operations":
+                    summary.non_operations_skipped += 1
                 elif result == "manual_review":
                     summary.manual_review_required += 1
                     imported_dates.add(self._report_date(image.created_at))
@@ -142,7 +149,12 @@ class OperationsIntelligenceAgent:
             sha256=digest,
         )
         self.db.save_screenshot(screenshot)
-        return self._extract_store_and_summarize(screenshot)
+        classification = self._classify_screenshot(screenshot)
+        if not classification.is_operations_dashboard:
+            self.db.update_screenshot_classification(screenshot.sha256, classification.to_dict())
+            return f"Skipped non-operations screenshot: {classification.reason}"
+        self.db.update_screenshot_classification(screenshot.sha256, classification.to_dict())
+        return self._extract_store_and_summarize(screenshot, classification)
 
     def _process_image(self, image: TeamsImage) -> bool:
         digest = self._sha256(image.content)
@@ -151,10 +163,19 @@ class OperationsIntelligenceAgent:
             return False
         screenshot = self._save_screenshot(image, digest)
         self.db.save_screenshot(screenshot)
-        self._extract_store_and_summarize(screenshot)
+        classification = self._classify_screenshot(screenshot)
+        self.db.update_screenshot_classification(screenshot.sha256, classification.to_dict())
+        if not classification.is_operations_dashboard:
+            LOGGER.info("Skipping non-operations screenshot %s: %s", screenshot.path, classification.reason)
+            return False
+        self._extract_store_and_summarize(screenshot, classification)
         return True
 
-    def _extract_store_and_summarize(self, screenshot: SavedScreenshot) -> str:
+    def _extract_store_and_summarize(
+        self,
+        screenshot: SavedScreenshot,
+        classification: ScreenshotClassification | None = None,
+    ) -> str:
         if self.db.report_exists_for_hash(screenshot.sha256):
             existing = self.db.report_by_hash(screenshot.sha256)
             return existing["summary_text"] if existing else ""
@@ -166,6 +187,8 @@ class OperationsIntelligenceAgent:
         history = build_historical_context(report.report_date, self.db.historical_reports_before(report.report_date))
         message = build_operations_message(report, previous, history=history.to_dict())
         self.db.save_report(report, message.text)
+        if classification:
+            self.db.update_report_classification(report.screenshot_hash, classification.to_dict())
         self._write_text_report(report.report_date, build_detailed_report_text(report, previous))
         if self.settings.post_summary_to_teams:
             posted_message = self._post_quality_checked_message(report, message)
@@ -190,10 +213,17 @@ class OperationsIntelligenceAgent:
             return "duplicate"
 
         if dry_run:
-            return "duplicate" if already_seen and not force_reprocess else "imported"
+            if already_seen and not force_reprocess:
+                return "duplicate"
+            return "imported" if self._classify_teams_image(image).is_operations_dashboard else "non_operations"
 
         screenshot = self._save_screenshot(image, digest)
         self.db.save_screenshot(screenshot)
+        classification = self._classify_screenshot(screenshot)
+        self.db.update_screenshot_classification(screenshot.sha256, classification.to_dict())
+        if not classification.is_operations_dashboard:
+            LOGGER.info("Skipping non-operations historical screenshot %s: %s", screenshot.path, classification.reason)
+            return "non_operations"
         if report_exists and not force_reprocess:
             return "duplicate"
 
@@ -206,8 +236,18 @@ class OperationsIntelligenceAgent:
         history = build_historical_context(report.report_date, self.db.historical_reports_before(report.report_date))
         message = build_operations_message(report, previous, history=history.to_dict())
         self.db.save_report(report, message.text)
+        self.db.update_report_classification(report.screenshot_hash, classification.to_dict())
         self._write_text_report(report.report_date, build_detailed_report_text(report, previous))
         return "imported" if report.passes_quality_gate else "manual_review"
+
+    def _classify_screenshot(self, screenshot: SavedScreenshot) -> ScreenshotClassification:
+        return self.classifier.classify_image(screenshot.path)
+
+    def _classify_teams_image(self, image: TeamsImage) -> ScreenshotClassification:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / _safe_filename(image.file_name)
+            path.write_bytes(image.content)
+            return self.classifier.classify_image(path)
 
     def _history_extractor(self, debug: bool) -> ScreenshotOcrExtractor:
         if not debug or self.settings.ocr_debug:

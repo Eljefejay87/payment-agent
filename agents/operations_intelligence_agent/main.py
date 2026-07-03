@@ -3,12 +3,16 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from shared.logging import configure_logging
 from shared.scheduler import AgentScheduler
 
 from .config import load_operations_settings, validate_operations_settings
+from .classifier import OperationsScreenshotClassifier
 from .database import OperationsDatabase
 from .graph_client import save_delegated_token
 from .ocr import ScreenshotOcrExtractor
@@ -33,6 +37,7 @@ def main() -> int:
             "ops-reprocess-date",
             "ops-post-report",
             "ops-import-history",
+            "ops-audit-images",
         ],
         help="Action to run.",
     )
@@ -45,6 +50,7 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=30, help="Number of days for ops-import-history.")
     parser.add_argument("--debug", action="store_true", help="Save OCR debug files during history import.")
     parser.add_argument("--force-reprocess", action="store_true", help="Reprocess imported screenshots even if a report exists.")
+    parser.add_argument("--mark-non-operations", action="store_true", help="Mark audited non-operations images as excluded.")
     args = parser.parse_args()
 
     settings = load_operations_settings(args.env_file)
@@ -60,13 +66,15 @@ def main() -> int:
         print(format_setup_checks(checks))
         return 0 if all(check.passed for check in checks) else 2
 
-    offline_image_mode = args.command in {"ops-process-image", "ops-debug-image", "ops-reprocess-date"}
+    offline_image_mode = args.command in {"ops-process-image", "ops-debug-image", "ops-reprocess-date", "ops-audit-images"}
     errors = validate_operations_settings(settings, offline_image_mode=offline_image_mode)
     if args.command in {"ops-process-image", "ops-debug-image", "ops-post-image"} and not args.image:
         errors.append("--image is required.")
     if args.command in {"ops-reprocess-date", "ops-post-report"} and not args.date:
         errors.append(f"--date is required for {args.command}.")
     if args.command == "ops-import-history" and args.days < 1:
+        errors.append("--days must be at least 1.")
+    if args.command == "ops-audit-images" and args.days < 1:
         errors.append("--days must be at least 1.")
     if errors:
         for error in errors:
@@ -118,6 +126,10 @@ def main() -> int:
             force_reprocess=args.force_reprocess,
         )
         print(summary.format())
+        return 0
+
+    if args.command == "ops-audit-images":
+        print(_audit_images(settings, args.days, mark_non_operations=args.mark_non_operations))
         return 0
 
     if args.command == "ops-scan-once":
@@ -209,6 +221,62 @@ def _reprocess_date(settings, report_date: str, *, post_to_teams: bool = False) 
             posted = 1
             logging.info("Posted corrected Operations report for %s to Teams", report_date)
     return len(rows), posted
+
+
+def _audit_images(settings, days: int, *, mark_non_operations: bool = False) -> str:
+    db = OperationsDatabase(settings.database_path)
+    db.initialize()
+    classifier = OperationsScreenshotClassifier(settings.ocr_command)
+    cutoff = (datetime.now(ZoneInfo(settings.timezone)).date() - timedelta(days=days - 1)).isoformat()
+    valid = 0
+    non_operations = 0
+    excluded: list[str] = []
+    with sqlite3.connect(settings.database_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT s.sha256, s.report_date, s.file_path, r.id AS report_id, r.ocr_text
+            FROM ops_screenshots s
+            LEFT JOIN ops_reports r ON r.screenshot_hash = s.sha256
+            WHERE s.report_date >= ?
+            ORDER BY s.report_date ASC, s.created_at ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+    for row in rows:
+        image_path = Path(row["file_path"])
+        existing_text = row["ocr_text"] or ""
+        classification = classifier.classify_image(image_path, existing_text=existing_text)
+        if classification.is_operations_dashboard:
+            valid += 1
+        else:
+            non_operations += 1
+            label = f"{row['report_date']} screenshot={row['sha256'][:12]}"
+            if row["report_id"]:
+                label += f" report_id={row['report_id']}"
+            label += f" reason={classification.reason}"
+            excluded.append(label)
+            if mark_non_operations:
+                db.update_screenshot_classification(row["sha256"], classification.to_dict())
+                if row["report_id"]:
+                    db.mark_non_operations_report(int(row["report_id"]), classification.to_dict())
+        if classification.is_operations_dashboard and mark_non_operations:
+            db.update_screenshot_classification(row["sha256"], classification.to_dict())
+            if row["report_id"]:
+                db.update_report_classification(row["sha256"], classification.to_dict())
+
+    lines = [
+        "Operations image audit",
+        f"- Days scanned: {days}",
+        f"- Stored screenshots scanned: {len(rows)}",
+        f"- Valid operations screenshots: {valid}",
+        f"- Non-operations screenshots: {non_operations}",
+        f"- Marked non-operations: {'Yes' if mark_non_operations else 'No'}",
+    ]
+    if excluded:
+        lines.append("- Excluded candidates:")
+        lines.extend(f"  - {item}" for item in excluded)
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

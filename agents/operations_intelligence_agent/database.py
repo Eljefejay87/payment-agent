@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS ops_screenshots (
     file_path TEXT NOT NULL,
     sha256 TEXT NOT NULL,
     status TEXT NOT NULL,
+    classification_json TEXT,
+    is_operations_dashboard INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(message_id, image_id),
@@ -45,6 +47,9 @@ CREATE TABLE IF NOT EXISTS ops_reports (
     manually_edited_fields_json TEXT,
     approved_at TEXT,
     last_reprocessed_at TEXT,
+    classification_json TEXT,
+    is_operations_dashboard INTEGER,
+    excluded_reason TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(screenshot_hash)
@@ -72,12 +77,19 @@ class OperationsDatabase(SQLiteDatabase):
             "manually_edited_fields_json": "TEXT",
             "approved_at": "TEXT",
             "last_reprocessed_at": "TEXT",
+            "classification_json": "TEXT",
+            "is_operations_dashboard": "INTEGER",
+            "excluded_reason": "TEXT",
         }
         with self.connect() as conn:
             existing = {row["name"] for row in conn.execute("PRAGMA table_info(ops_reports)").fetchall()}
             for column, column_type in columns.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE ops_reports ADD COLUMN {column} {column_type}")
+            screenshot_existing = {row["name"] for row in conn.execute("PRAGMA table_info(ops_screenshots)").fetchall()}
+            for column, column_type in {"classification_json": "TEXT", "is_operations_dashboard": "INTEGER"}.items():
+                if column not in screenshot_existing:
+                    conn.execute(f"ALTER TABLE ops_screenshots ADD COLUMN {column} {column_type}")
 
     def screenshot_exists(self, message_id: str, image_id: str, sha256: str | None = None) -> bool:
         with self.connect() as conn:
@@ -109,6 +121,22 @@ class OperationsDatabase(SQLiteDatabase):
                     "saved",
                     now,
                     now,
+                ),
+            )
+
+    def update_screenshot_classification(self, sha256: str, classification: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE ops_screenshots
+                SET classification_json = ?, is_operations_dashboard = ?, updated_at = ?
+                WHERE sha256 = ?
+                """,
+                (
+                    json.dumps(classification, sort_keys=True),
+                    1 if classification.get("is_operations_dashboard") else 0,
+                    _utc_now(),
+                    sha256,
                 ),
             )
 
@@ -150,11 +178,15 @@ class OperationsDatabase(SQLiteDatabase):
                 (report_date, screenshot_hash, screenshot_path, metrics_json, collector_totals_json,
                  ocr_text, missing_fields_json, manual_review_notes_json, summary_text,
                  posted_to_teams, manual_review, manually_edited_fields_json,
+                 classification_json, is_operations_dashboard, excluded_reason,
                  created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                         COALESCE((SELECT posted_to_teams FROM ops_reports WHERE screenshot_hash = ?), 0),
                         ?,
                         COALESCE((SELECT manually_edited_fields_json FROM ops_reports WHERE screenshot_hash = ?), '[]'),
+                        COALESCE((SELECT classification_json FROM ops_reports WHERE screenshot_hash = ?), ?),
+                        COALESCE((SELECT is_operations_dashboard FROM ops_reports WHERE screenshot_hash = ?), 1),
+                        COALESCE((SELECT excluded_reason FROM ops_reports WHERE screenshot_hash = ?), ''),
                         COALESCE((SELECT created_at FROM ops_reports WHERE screenshot_hash = ?), ?), ?)
                 """,
                 (
@@ -171,8 +203,51 @@ class OperationsDatabase(SQLiteDatabase):
                     0 if report.passes_quality_gate else 1,
                     report.screenshot_hash,
                     report.screenshot_hash,
+                    json.dumps({"is_operations_dashboard": True, "reason": "Accepted before OCR processing"}, sort_keys=True),
+                    report.screenshot_hash,
+                    report.screenshot_hash,
+                    report.screenshot_hash,
                     now,
                     now,
+                ),
+            )
+
+    def update_report_classification(self, screenshot_hash: str, classification: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE ops_reports
+                SET classification_json = ?,
+                    is_operations_dashboard = ?,
+                    excluded_reason = ?,
+                    updated_at = ?
+                WHERE screenshot_hash = ?
+                """,
+                (
+                    json.dumps(classification, sort_keys=True),
+                    1 if classification.get("is_operations_dashboard") else 0,
+                    "" if classification.get("is_operations_dashboard") else classification.get("reason", "Non-operations image"),
+                    _utc_now(),
+                    screenshot_hash,
+                ),
+            )
+
+    def mark_non_operations_report(self, report_id: int, classification: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE ops_reports
+                SET classification_json = ?,
+                    is_operations_dashboard = 0,
+                    excluded_reason = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(classification, sort_keys=True),
+                    classification.get("reason", "Non-operations image"),
+                    _utc_now(),
+                    report_id,
                 ),
             )
 
@@ -308,9 +383,17 @@ class OperationsDatabase(SQLiteDatabase):
             ).fetchone()
             return _row_to_report(row)
 
-    def reports_between(self, start_date: str | None = None, end_date: str | None = None) -> list[dict[str, Any]]:
+    def reports_between(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        *,
+        include_non_operations: bool = False,
+    ) -> list[dict[str, Any]]:
         query = "SELECT * FROM ops_reports WHERE 1 = 1"
         params: list[str] = []
+        if not include_non_operations:
+            query += " AND COALESCE(is_operations_dashboard, 1) = 1"
         if start_date:
             query += " AND report_date >= ?"
             params.append(start_date)
@@ -328,6 +411,7 @@ class OperationsDatabase(SQLiteDatabase):
                 """
                 SELECT * FROM ops_reports
                 WHERE screenshot_hash <> ? AND report_date <= ?
+                  AND COALESCE(is_operations_dashboard, 1) = 1
                 ORDER BY report_date DESC, created_at DESC
                 LIMIT 1
                 """,
@@ -341,6 +425,7 @@ class OperationsDatabase(SQLiteDatabase):
                 """
                 SELECT * FROM ops_reports
                 WHERE report_date < ?
+                  AND COALESCE(is_operations_dashboard, 1) = 1
                 ORDER BY report_date DESC, created_at DESC
                 LIMIT ?
                 """,
@@ -362,6 +447,10 @@ def _row_to_report(row: Any) -> dict[str, Any] | None:
     data["original_collector_totals"] = _json_load(data.pop("original_collector_totals_json", None), None)
     data["manually_edited_fields"] = _json_load(data.pop("manually_edited_fields_json", None), [])
     data["manual_review"] = None if data.get("manual_review") is None else bool(data["manual_review"])
+    data["classification"] = _json_load(data.pop("classification_json", None), None)
+    data["is_operations_dashboard"] = (
+        None if data.get("is_operations_dashboard") is None else bool(data["is_operations_dashboard"])
+    )
     return data
 
 

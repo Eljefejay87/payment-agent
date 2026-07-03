@@ -198,8 +198,10 @@ class DashboardService:
                            manual_review_notes_json, summary_text, posted_to_teams,
                            ocr_text, original_metrics_json, original_collector_totals_json,
                            original_ocr_text, manual_review, manually_edited_fields_json,
-                           approved_at, last_reprocessed_at, created_at, updated_at
+                           approved_at, last_reprocessed_at, classification_json,
+                           is_operations_dashboard, excluded_reason, created_at, updated_at
                     FROM ops_reports
+                    WHERE COALESCE(is_operations_dashboard, 1) = 1
                     ORDER BY report_date ASC, created_at ASC
                     """
                 ).fetchall()
@@ -226,6 +228,9 @@ class DashboardService:
             "manually_edited_fields": self._json_value(row["manually_edited_fields_json"], []),
             "approved_at": row["approved_at"],
             "last_reprocessed_at": row["last_reprocessed_at"],
+            "classification": self._json_value(row["classification_json"], None),
+            "is_operations_dashboard": None if row["is_operations_dashboard"] is None else bool(row["is_operations_dashboard"]),
+            "excluded_reason": row["excluded_reason"] or "",
             "missing_fields": missing_fields,
             "manual_review_notes": manual_review_notes,
             "summary_text": row["summary_text"] or "",
@@ -340,6 +345,8 @@ class DashboardService:
     def _manual_review_queue(self, authoritative_reports: list[dict]) -> list[dict]:
         queue = []
         for report in reversed(authoritative_reports):
+            if report.get("is_operations_dashboard") is False:
+                continue
             if self._operations_quality_passed(report):
                 continue
             if not self._is_owner_facing_report(report):

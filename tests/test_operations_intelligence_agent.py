@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agents.operations_intelligence_agent.database import OperationsDatabase
+from agents.operations_intelligence_agent.classifier import OperationsScreenshotClassifier, ScreenshotClassification
 from agents.operations_intelligence_agent.history import (
     build_historical_context,
     build_historical_summary,
@@ -207,6 +208,27 @@ class OperationsReportTests(unittest.TestCase):
 
 
 class OperationsServiceTests(unittest.TestCase):
+    def test_online_payment_screenshot_is_rejected(self) -> None:
+        classifier = OperationsScreenshotClassifier("fake-tesseract")
+
+        result = classifier.classify_text(
+            "Online Payment - Account C205815 Credit or Debit Card From support@unitedaccountservices.com"
+        )
+
+        self.assertFalse(result.is_operations_dashboard)
+        self.assertIn("online_payment", result.rejected_indicators)
+
+    def test_scollect_dashboard_screenshot_is_accepted(self) -> None:
+        classifier = OperationsScreenshotClassifier("fake-tesseract")
+
+        result = classifier.classify_text(
+            "SCollect Admin Tools Accounts Worked Attempts RPC Contact Rate Close Rate "
+            "Collections in Range Posted Cash Pending Cash Future Scheduled Cash Whiteboard"
+        )
+
+        self.assertTrue(result.is_operations_dashboard)
+        self.assertIn("overview_cards", result.matched_indicators)
+
     def test_local_image_is_processed_once_by_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -289,6 +311,43 @@ class OperationsServiceTests(unittest.TestCase):
             agent.import_history(30)
 
             self.assertEqual(agent.teams.sent_count, 0)
+
+    def test_history_import_skips_non_operations_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            settings = build_settings(base)
+            image = build_teams_image("message-1", "image-1", "2026-07-01T21:20:00Z", b"payment")
+            agent = build_test_agent(
+                settings,
+                graph=FakeHistoryGraph([image]),
+                ocr=PassingExtractor(),
+                classifier=FakeClassifier(False),
+            )
+
+            summary = agent.import_history(30)
+
+            self.assertEqual(summary.non_operations_skipped, 1)
+            self.assertEqual(agent.ocr.calls, 0)
+            self.assertEqual(len(agent.db.reports_between()), 0)
+
+    def test_non_operations_reports_do_not_affect_history_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = OperationsDatabase(Path(temp_dir) / "ops.sqlite3")
+            db.initialize()
+            valid = build_report("2026-07-01", "valid", posted_cash=100)
+            bad = build_report("2026-07-02", "bad", posted_cash=9999)
+            db.save_report(valid, "valid")
+            db.save_report(bad, "bad")
+            db.mark_non_operations_report(
+                2,
+                ScreenshotClassification(False, "Online Payment screenshot", [], ["online_payment"]).to_dict(),
+            )
+
+            reports = db.reports_between()
+            summary = build_historical_summary(reports)
+
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(summary.total_collected, 100)
 
     def test_historical_summary_calculations(self) -> None:
         reports = [
@@ -452,6 +511,19 @@ class LowQualityExtractor(CountingExtractor):
         super().__init__("Unreadable dashboard text")
 
 
+class FakeClassifier:
+    def __init__(self, accepted: bool = True) -> None:
+        self.accepted = accepted
+
+    def classify_image(self, image_path: Path, *, existing_text: str = "") -> ScreenshotClassification:
+        return ScreenshotClassification(
+            self.accepted,
+            "Accepted test dashboard" if self.accepted else "Rejected test image",
+            ["overview_cards"] if self.accepted else [],
+            [] if self.accepted else ["online_payment"],
+        )
+
+
 def build_settings(base: Path, **overrides) -> SimpleNamespace:
     values = dict(
         graph_tenant_id="",
@@ -487,12 +559,14 @@ def build_test_agent(
     *,
     graph=None,
     ocr: CountingExtractor | None = None,
+    classifier=None,
 ) -> OperationsIntelligenceAgent:
     agent = OperationsIntelligenceAgent.__new__(OperationsIntelligenceAgent)
     agent.settings = settings
     agent.db = OperationsDatabase(settings.database_path)
     agent.graph = graph
     agent.ocr = ocr or CountingExtractor()
+    agent.classifier = classifier or FakeClassifier(True)
     agent.teams = FakeTeams()
     return agent
 

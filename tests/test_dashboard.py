@@ -310,6 +310,38 @@ class DashboardTests(unittest.TestCase):
 
             self.assertEqual(snapshot["operations"]["detail"]["manual_review_queue"], [])
 
+    def test_non_operations_reports_are_hidden_from_manual_queue_and_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            db = OperationsDatabase(payment_settings.database_path)
+            db.initialize()
+            bad = build_operations_report("2026-07-01", "payment-shot")
+            bad.metrics["attempts"] = MetricValue(None, "", 0.0)
+            db.save_report(bad, "bad")
+            db.mark_non_operations_report(
+                1,
+                {
+                    "is_operations_dashboard": False,
+                    "reason": "Rejected non-operations screenshot: online_payment",
+                    "matched_indicators": [],
+                    "rejected_indicators": ["online_payment"],
+                },
+            )
+            db.save_report(build_operations_report("2026-07-02", "valid-shot"), "valid")
+
+            snapshot = DashboardService(
+                payment_settings,
+                build_remit_settings(base),
+                build_dashboard_settings(),
+            ).snapshot()
+            html = render_operations_page(snapshot["operations"])
+
+            reports = snapshot["operations"]["detail"]["historical_reports"]
+            self.assertEqual([report["screenshot_hash"] for report in reports], ["valid-shot"])
+            self.assertEqual(snapshot["operations"]["detail"]["manual_review_queue"], [])
+            self.assertNotIn("payment-shot", html)
+
     def test_manual_correction_saves_and_preserves_original_ocr_values(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

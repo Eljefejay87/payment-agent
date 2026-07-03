@@ -793,6 +793,17 @@ Top Collector is strict. It is shown only when at least two collector rows are r
 
 Historical data from `ops_reports` is available as an additive data source for dashboard trend analysis and future forecasting. The current daily Teams brief, OCR quality gate, and Performance Score format remain unchanged.
 
+Operations screenshots are classified before OCR. Only likely SCollect/Admin Tools end-of-day dashboard screenshots are processed. Online Payment emails, attendance pages, browser pages, phone screenshots, and unrelated images are skipped.
+
+Audit stored screenshots and optionally mark bad imports as excluded from dashboard metrics:
+
+```bash
+python main.py ops-audit-images --days 30
+python main.py ops-audit-images --days 30 --mark-non-operations
+```
+
+Marked non-operations records stay in SQLite for audit history, but `/operations`, trends, and manual review queues ignore them.
+
 Install the local OCR engine before production use:
 
 ```bash
