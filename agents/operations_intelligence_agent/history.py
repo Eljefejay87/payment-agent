@@ -43,6 +43,20 @@ class HistoricalContext:
         return self.__dict__.copy()
 
 
+@dataclass(frozen=True)
+class HistoricalTrendAnalysis:
+    collections_vs_7_day_average: float | None = None
+    collections_vs_30_day_average: float | None = None
+    collections_vs_same_weekday_average: float | None = None
+    attempts_vs_7_day_average: float | None = None
+    live_contacts_vs_7_day_average: float | None = None
+    contact_rate_vs_7_day_average: float | None = None
+    contact_rate_vs_30_day_average: float | None = None
+
+    def to_dict(self) -> dict[str, float | None]:
+        return self.__dict__.copy()
+
+
 def build_historical_summary(reports: list[dict[str, Any]]) -> HistoricalSummary:
     readable = [report for report in reports if _passes_quality_gate(report)]
     collected_by_day = [
@@ -100,6 +114,25 @@ def build_historical_context(report_date: str, previous_reports: list[dict[str, 
         same_weekday_attempts=_average(_metric(report, "attempts") for report in same_weekday),
         same_weekday_live_contacts=_average(_metric(report, "live_contacts") for report in same_weekday),
         same_weekday_contact_rate=_average(_metric(report, "contact_rate") for report in same_weekday),
+    )
+
+
+def build_historical_trend_analysis(
+    current_report: dict[str, Any],
+    context: HistoricalContext,
+) -> HistoricalTrendAnalysis:
+    current_collections = _collection_total(current_report)
+    current_attempts = _metric(current_report, "attempts")
+    current_live_contacts = _metric(current_report, "live_contacts")
+    current_contact_rate = _metric(current_report, "contact_rate")
+    return HistoricalTrendAnalysis(
+        collections_vs_7_day_average=_difference(current_collections, context.rolling_7_collections),
+        collections_vs_30_day_average=_difference(current_collections, context.rolling_30_collections),
+        collections_vs_same_weekday_average=_difference(current_collections, context.same_weekday_collections),
+        attempts_vs_7_day_average=_difference(current_attempts, context.rolling_7_attempts),
+        live_contacts_vs_7_day_average=_difference(current_live_contacts, context.rolling_7_live_contacts),
+        contact_rate_vs_7_day_average=_difference(current_contact_rate, context.rolling_7_contact_rate),
+        contact_rate_vs_30_day_average=_difference(current_contact_rate, context.rolling_30_contact_rate),
     )
 
 
@@ -164,6 +197,12 @@ def _average(values: Any) -> float | None:
     if not numeric:
         return None
     return round(sum(numeric) / len(numeric), 2)
+
+
+def _difference(current: float | int | None, baseline: float | int | None) -> float | None:
+    if not isinstance(current, (int, float)) or not isinstance(baseline, (int, float)):
+        return None
+    return round(float(current) - float(baseline), 2)
 
 
 def _sum_values(values: list[float]) -> float | None:

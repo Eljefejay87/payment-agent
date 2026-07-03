@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 import subprocess
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from agents.dashboard.config import DashboardSettings
+from agents.operations_intelligence_agent.history import (
+    build_historical_context,
+    build_historical_summary,
+    build_historical_trend_analysis,
+)
 from agents.payment_agent.config import Settings as PaymentSettings
 from agents.payment_agent.database import PaymentDatabase
 from agents.payment_agent.parser import cents_to_currency
@@ -41,12 +49,49 @@ class DashboardService:
             "payment": self.payment_snapshot(),
             "remit": self.remit_snapshot(),
             "manager_checklist": self.manager_checklist_snapshot(),
+            "operations": self.operations_snapshot(),
             "future_agents": [
                 {"name": "Placement Agent", "status": "Planned", "priority": "High"},
                 {"name": "Compliance Agent", "status": "Planned", "priority": "High"},
                 {"name": "Finance Agent", "status": "Planned", "priority": "Medium"},
                 {"name": "Executive Dashboard", "status": "Planned", "priority": "Medium"},
             ],
+        }
+
+    def operations_snapshot(self) -> dict:
+        reports = self._operations_reports()
+        if not reports:
+            return {
+                "status": "No Report",
+                "has_report": False,
+                "message": "No operations report available yet.",
+                "latest": None,
+                "card": {
+                    "performance_score": "No report",
+                    "collected_today": "Manual review",
+                    "future_payments": "Manual review",
+                    "pending_payments": "Manual review",
+                    "calls": "Manual review",
+                    "live_contacts": "Manual review",
+                    "accounts_worked": "Manual review",
+                    "takeaway": "No operations report available yet.",
+                    "last_updated": "Not available",
+                    "confidence": "No report",
+                    "quality": "warn",
+                },
+                "detail": self._empty_operations_detail(),
+            }
+
+        latest = reports[-1]
+        quality_passed = self._operations_quality_passed(latest)
+        card = self._operations_card(latest, quality_passed)
+        return {
+            "status": "Ready" if quality_passed else "Manual Review",
+            "has_report": True,
+            "message": "",
+            "latest": latest,
+            "card": card,
+            "detail": self._operations_detail(reports),
         }
 
     def manager_checklist_snapshot(self) -> dict:
@@ -135,6 +180,476 @@ class DashboardService:
         except Exception as exc:
             return ActionResult(False, f"Could not open folder: {exc}")
         return ActionResult(True, f"Opened {folder}.")
+
+    def _operations_reports(self) -> list[dict]:
+        try:
+            with sqlite3.connect(self.payment_settings.database_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT report_date, screenshot_hash, screenshot_path, metrics_json,
+                           collector_totals_json, missing_fields_json,
+                           manual_review_notes_json, summary_text, posted_to_teams,
+                           created_at, updated_at
+                    FROM ops_reports
+                    ORDER BY report_date ASC, created_at ASC
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [self._operations_report_from_row(row) for row in rows]
+
+    def _operations_report_from_row(self, row: sqlite3.Row) -> dict:
+        metrics = self._json_value(row["metrics_json"], {})
+        missing_fields = self._json_value(row["missing_fields_json"], [])
+        manual_review_notes = self._json_value(row["manual_review_notes_json"], [])
+        return {
+            "report_date": row["report_date"],
+            "screenshot_hash": row["screenshot_hash"],
+            "screenshot_path": row["screenshot_path"],
+            "metrics": metrics,
+            "collector_totals": self._json_value(row["collector_totals_json"], []),
+            "missing_fields": missing_fields,
+            "manual_review_notes": manual_review_notes,
+            "summary_text": row["summary_text"] or "",
+            "posted_to_teams": bool(row["posted_to_teams"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "report_path": str(Path(os.getenv("OPS_REPORTS_DIR", "reports/operations-intelligence")) / f"{row['report_date']}.txt"),
+        }
+
+    def _operations_card(self, report: dict, quality_passed: bool) -> dict:
+        if not quality_passed:
+            return {
+                "performance_score": "Manual review needed",
+                "collected_today": "Manual review needed",
+                "future_payments": "Manual review needed",
+                "pending_payments": "Manual review needed",
+                "calls": "Manual review needed",
+                "live_contacts": "Manual review needed",
+                "accounts_worked": "Manual review needed",
+                "takeaway": "Manual review needed before dashboard metrics are shown.",
+                "last_updated": self._format_timestamp(report.get("updated_at") or report.get("created_at")),
+                "confidence": "Manual review",
+                "quality": "warn",
+            }
+        return {
+            "performance_score": self._performance_score(report),
+            "collected_today": self._money(self._metric_sum(report, "posted_cash", "posted_fees", "green_cleared_cash")),
+            "future_payments": self._money(self._metric_sum(report, "future_scheduled_cash", "future_scheduled_fees")),
+            "pending_payments": self._money(self._metric_sum(report, "pending_cash", "pending_fees")),
+            "calls": self._number(self._metric(report, "attempts")),
+            "live_contacts": self._number(self._metric(report, "live_contacts")),
+            "accounts_worked": self._number(self._metric(report, "accounts_worked")),
+            "takeaway": self._first_ai_takeaway(report),
+            "last_updated": self._format_timestamp(report.get("updated_at") or report.get("created_at")),
+            "confidence": self._confidence_label(report),
+            "quality": self._confidence_quality(report),
+        }
+
+    def _operations_detail(self, reports: list[dict]) -> dict:
+        authoritative_reports = self._authoritative_reports(reports)
+        latest = authoritative_reports[-1]
+        passing_reports = [report for report in authoritative_reports if self._operations_quality_passed(report)]
+        manual_review = [report for report in authoritative_reports if not self._operations_quality_passed(report)]
+        return {
+            "executive_kpis": self._operations_executive_kpis(latest),
+            "latest_brief": latest["summary_text"] or "No daily brief saved yet.",
+            "trend_7_day": self._trend_summary(passing_reports, days=7),
+            "summary_30_day": self._history_summary_text(passing_reports[-30:]),
+            "historical_trends": self._historical_trends(latest, passing_reports),
+            "trend_cards": self._trend_cards(passing_reports[-30:]),
+            "charts": self._operation_charts(authoritative_reports[-30:]),
+            "executive_insights": self._executive_insights(authoritative_reports),
+            "duplicate_audit": self._duplicate_audit(reports, authoritative_reports),
+            "historical_reports": list(reversed(authoritative_reports[-30:])),
+            "manual_review_reports": list(reversed(manual_review[-30:])),
+        }
+
+    def _empty_operations_detail(self) -> dict:
+        return {
+            "executive_kpis": self._empty_executive_kpis(),
+            "latest_brief": "No operations report available yet.",
+            "trend_7_day": "No 7-day trend available yet.",
+            "summary_30_day": "No 30-day summary available yet.",
+            "historical_trends": self._empty_historical_trends(),
+            "trend_cards": self._empty_trend_cards(),
+            "charts": self._empty_charts(),
+            "executive_insights": ["Not enough historical data yet."],
+            "duplicate_audit": "No duplicate report dates found.",
+            "historical_reports": [],
+            "manual_review_reports": [],
+        }
+
+    def _authoritative_reports(self, reports: list[dict]) -> list[dict]:
+        by_date: dict[str, list[dict]] = defaultdict(list)
+        for report in reports:
+            by_date[report["report_date"]].append(report)
+        selected = [self._authoritative_report_for_date(rows) for rows in by_date.values()]
+        return sorted(selected, key=lambda report: (report["report_date"], report.get("created_at") or ""))
+
+    def _authoritative_report_for_date(self, reports: list[dict]) -> dict:
+        return max(
+            reports,
+            key=lambda report: (
+                1 if self._operations_quality_passed(report) else 0,
+                report.get("updated_at") or report.get("created_at") or "",
+            ),
+        )
+
+    def _duplicate_audit(self, reports: list[dict], authoritative_reports: list[dict]) -> str:
+        duplicate_dates = []
+        by_date: dict[str, list[dict]] = defaultdict(list)
+        for report in reports:
+            by_date[report["report_date"]].append(report)
+        authoritative_hashes = {report["screenshot_hash"] for report in authoritative_reports}
+        for report_date, rows in sorted(by_date.items()):
+            if len(rows) <= 1:
+                continue
+            quality_count = sum(1 for row in rows if self._operations_quality_passed(row))
+            manual_count = len(rows) - quality_count
+            selected = next((row for row in rows if row["screenshot_hash"] in authoritative_hashes), rows[-1])
+            selected_status = "Ready" if self._operations_quality_passed(selected) else "Manual review"
+            duplicate_dates.append(
+                f"{report_date}: {len(rows)} records ({quality_count} ready, {manual_count} manual review); "
+                f"displaying {selected_status.lower()} record."
+            )
+        if not duplicate_dates:
+            return "No duplicate report dates found."
+        return "Multiple records can come from debug, reprocess, local test, or failed OCR attempts. " + " ".join(duplicate_dates)
+
+    def _operations_quality_passed(self, report: dict) -> bool:
+        required = ("accounts_worked", "attempts", "live_contacts", "contact_rate")
+        has_required = all(self._metric(report, field) is not None for field in required)
+        has_money = self._metric(report, "posted_cash") is not None or self._metric(report, "future_scheduled_cash") is not None
+        return has_required and has_money
+
+    def _trend_summary(self, reports: list[dict], *, days: int) -> str:
+        if len(reports) < 2:
+            return "No 7-day trend available yet."
+        recent = reports[-days:]
+        first = self._metric_sum(recent[0], "posted_cash", "posted_fees", "green_cleared_cash")
+        last = self._metric_sum(recent[-1], "posted_cash", "posted_fees", "green_cleared_cash")
+        calls = self._average(self._metric(report, "attempts") for report in recent)
+        contacts = self._average(self._metric(report, "live_contacts") for report in recent)
+        if first is None or last is None:
+            movement = "Collections trend needs review"
+        else:
+            delta = last - first
+            movement = "Collections are flat" if abs(delta) < 0.01 else f"Collections are {'up' if delta > 0 else 'down'} {self._money(abs(delta))}"
+        return f"{movement}. Average calls: {self._number(calls)}. Average live contacts: {self._number(contacts)}."
+
+    def _history_summary_text(self, reports: list[dict]) -> str:
+        if not reports:
+            return "No 30-day summary available yet."
+        summary = build_historical_summary(reports)
+        return (
+            f"Total collected: {self._money(summary.total_collected)}. "
+            f"Average daily collections: {self._money(summary.average_daily_collections)}. "
+            f"Average calls: {self._number(summary.average_calls)}. "
+            f"Reports passing quality gate: {summary.quality_passing_reports}."
+        )
+
+    def _historical_trends(self, latest: dict, passing_reports: list[dict]) -> dict:
+        if not self._operations_quality_passed(latest):
+            return self._empty_historical_trends()
+        previous_reports = [
+            report
+            for report in passing_reports
+            if report.get("screenshot_hash") != latest.get("screenshot_hash")
+        ]
+        context = build_historical_context(latest["report_date"], previous_reports)
+        analysis = build_historical_trend_analysis(latest, context)
+        summary = build_historical_summary(passing_reports[-30:])
+        return {
+            "average_7_day_collections": self._money(context.rolling_7_collections),
+            "average_30_day_collections": self._money(context.rolling_30_collections),
+            "best_collection_day": self._collection_day(summary.best_collection_day),
+            "lowest_collection_day": self._collection_day(summary.lowest_collection_day),
+            "same_weekday_average": self._money(context.same_weekday_collections),
+            "collection_trend_vs_7_day": self._signed_money(analysis.collections_vs_7_day_average),
+            "contact_rate_trend_vs_30_day": self._signed_percent(analysis.contact_rate_vs_30_day_average),
+            "forecast": "Beta / Dashboard only",
+        }
+
+    def _operations_executive_kpis(self, report: dict) -> list[dict]:
+        if not self._operations_quality_passed(report):
+            return [
+                {"label": "Today's Collections", "value": "Manual review", "tone": "warn"},
+                {"label": "Performance Score", "value": "Manual review", "tone": "warn"},
+                {"label": "Future Payments", "value": "Manual review", "tone": "warn"},
+                {"label": "Live Contacts", "value": "Manual review", "tone": "warn"},
+                {"label": "AI Confidence", "value": "Manual review", "tone": "warn"},
+            ]
+        return [
+            {
+                "label": "Today's Collections",
+                "value": self._money(self._metric_sum(report, "posted_cash", "posted_fees", "green_cleared_cash")),
+                "tone": "ready",
+            },
+            {"label": "Performance Score", "value": self._performance_score(report), "tone": "neutral"},
+            {
+                "label": "Future Payments",
+                "value": self._money(self._metric_sum(report, "future_scheduled_cash", "future_scheduled_fees")),
+                "tone": "neutral",
+            },
+            {"label": "Live Contacts", "value": self._number(self._metric(report, "live_contacts")), "tone": "neutral"},
+            {"label": "AI Confidence", "value": self._confidence_label(report), "tone": self._confidence_quality(report)},
+        ]
+
+    def _empty_executive_kpis(self) -> list[dict]:
+        return [
+            {"label": "Today's Collections", "value": "No report", "tone": "warn"},
+            {"label": "Performance Score", "value": "No report", "tone": "warn"},
+            {"label": "Future Payments", "value": "No report", "tone": "warn"},
+            {"label": "Live Contacts", "value": "No report", "tone": "warn"},
+            {"label": "AI Confidence", "value": "No report", "tone": "warn"},
+        ]
+
+    def _trend_cards(self, reports: list[dict]) -> list[dict]:
+        if not reports:
+            return self._empty_trend_cards()
+        summary = build_historical_summary(reports)
+        return [
+            {"label": "7-day avg collections", "value": self._money(self._average_collection(reports[-7:]))},
+            {"label": "30-day avg collections", "value": self._money(summary.average_daily_collections)},
+            {"label": "Best collection day", "value": self._collection_day(summary.best_collection_day)},
+            {"label": "Lowest collection day", "value": self._collection_day(summary.lowest_collection_day)},
+            {"label": "Reports passing quality gate", "value": self._number(summary.quality_passing_reports)},
+            {"label": "Forecast confidence", "value": "Beta / Dashboard only"},
+        ]
+
+    def _empty_trend_cards(self) -> list[dict]:
+        return [
+            {"label": "7-day avg collections", "value": "Manual review"},
+            {"label": "30-day avg collections", "value": "Manual review"},
+            {"label": "Best collection day", "value": "Manual review"},
+            {"label": "Lowest collection day", "value": "Manual review"},
+            {"label": "Reports passing quality gate", "value": "0"},
+            {"label": "Forecast confidence", "value": "Beta / Dashboard only"},
+        ]
+
+    def _operation_charts(self, reports: list[dict]) -> dict:
+        return {
+            "collections": self._chart_series(reports, "collections"),
+            "performance_score": self._chart_series(reports, "performance_score"),
+            "contact_rate": self._chart_series(reports, "contact_rate"),
+            "calls_vs_collections": [
+                {
+                    "label": report["report_date"],
+                    "x": self._metric(report, "attempts"),
+                    "y": self._collection_total(report),
+                }
+                for report in reports
+                if self._operations_quality_passed(report)
+            ],
+        }
+
+    def _empty_charts(self) -> dict:
+        return {
+            "collections": [],
+            "performance_score": [],
+            "contact_rate": [],
+            "calls_vs_collections": [],
+        }
+
+    def _chart_series(self, reports: list[dict], metric: str) -> list[dict]:
+        values = []
+        for report in reports:
+            if not self._operations_quality_passed(report):
+                continue
+            if metric == "collections":
+                value = self._collection_total(report)
+            elif metric == "performance_score":
+                value = self._performance_score_number(report)
+            elif metric == "contact_rate":
+                value = self._metric(report, "contact_rate")
+            else:
+                value = None
+            if isinstance(value, (int, float)):
+                values.append({"label": report["report_date"], "value": round(float(value), 2)})
+        return values
+
+    def _executive_insights(self, reports: list[dict]) -> list[str]:
+        passing = [report for report in reports if self._operations_quality_passed(report)]
+        if len(passing) < 3:
+            return ["Not enough historical data yet."]
+        latest = passing[-1]
+        insights: list[str] = []
+        latest_collections = self._collection_total(latest)
+        avg_30 = self._average_collection(passing[-30:])
+        if isinstance(latest_collections, (int, float)) and isinstance(avg_30, (int, float)):
+            direction = "above" if latest_collections >= avg_30 else "below"
+            insights.append(f"Collections are {direction} the 30-day average.")
+        latest_future = self._metric_sum(latest, "future_scheduled_cash", "future_scheduled_fees")
+        prior_future_avg = self._average(
+            self._metric_sum(report, "future_scheduled_cash", "future_scheduled_fees")
+            for report in passing[-8:-1]
+        )
+        if isinstance(latest_future, (int, float)) and isinstance(prior_future_avg, (int, float)):
+            direction = "stronger than" if latest_future >= prior_future_avg else "lighter than"
+            insights.append(f"Future payments are {direction} the recent average.")
+        recent_contact = [self._metric(report, "contact_rate") for report in passing[-3:]]
+        if len(recent_contact) == 3 and all(isinstance(value, (int, float)) for value in recent_contact):
+            if recent_contact[-1] < recent_contact[0]:
+                insights.append("Contact rate has declined over the last few reports.")
+            elif recent_contact[-1] > recent_contact[0]:
+                insights.append("Contact rate has improved over the last few reports.")
+        strongest_weekday = self._strongest_weekday(passing)
+        if strongest_weekday:
+            insights.append(f"{strongest_weekday} has been the strongest collection day.")
+        return insights[:5] or ["Not enough historical data yet."]
+
+    def _empty_historical_trends(self) -> dict:
+        return {
+            "average_7_day_collections": "Manual review",
+            "average_30_day_collections": "Manual review",
+            "best_collection_day": "Manual review",
+            "lowest_collection_day": "Manual review",
+            "same_weekday_average": "Manual review",
+            "collection_trend_vs_7_day": "Manual review",
+            "contact_rate_trend_vs_30_day": "Manual review",
+            "forecast": "Beta / Dashboard only",
+        }
+
+    def _performance_score(self, report: dict) -> str:
+        summary = report.get("summary_text") or ""
+        for line in summary.splitlines():
+            if " / 100" in line:
+                return line.strip()
+        confidence = self._confidence(report)
+        return f"{round(confidence * 100)} / 100"
+
+    def _performance_score_number(self, report: dict) -> float | None:
+        text = self._performance_score(report)
+        try:
+            return float(text.split("/", 1)[0].strip())
+        except (ValueError, IndexError):
+            return None
+
+    def _first_ai_takeaway(self, report: dict) -> str:
+        lines = [line.strip() for line in (report.get("summary_text") or "").splitlines()]
+        for index, line in enumerate(lines):
+            if "AI Insights" in line:
+                for insight in lines[index + 1:]:
+                    if insight and not insight.startswith("━"):
+                        return insight
+        return "Latest operations report is ready."
+
+    def _confidence_label(self, report: dict) -> str:
+        confidence = self._confidence(report)
+        if confidence <= 0:
+            return "Manual review"
+        return f"{round(confidence * 100)}%"
+
+    def _confidence_quality(self, report: dict) -> str:
+        confidence = self._confidence(report)
+        if confidence >= 0.9:
+            return "ready"
+        if confidence >= 0.72:
+            return "neutral"
+        return "warn"
+
+    def _confidence(self, report: dict) -> float:
+        values = [
+            metric.get("confidence")
+            for metric in report.get("metrics", {}).values()
+            if metric.get("value") is not None and isinstance(metric.get("confidence"), (int, float))
+        ]
+        if not values:
+            return 0.0
+        return sum(float(value) for value in values) / len(values)
+
+    def _metric_sum(self, report: dict, *fields: str) -> float | None:
+        values = [self._metric(report, field) for field in fields]
+        numeric = [float(value) for value in values if isinstance(value, (int, float))]
+        if not numeric:
+            return None
+        return round(sum(numeric), 2)
+
+    def _collection_total(self, report: dict) -> float | None:
+        return self._metric_sum(report, "posted_cash", "posted_fees", "green_cleared_cash")
+
+    def _average_collection(self, reports: list[dict]) -> float | None:
+        return self._average(self._collection_total(report) for report in reports)
+
+    def _strongest_weekday(self, reports: list[dict]) -> str:
+        totals: dict[int, list[float]] = defaultdict(list)
+        for report in reports:
+            total = self._collection_total(report)
+            if not isinstance(total, (int, float)):
+                continue
+            try:
+                weekday = datetime.fromisoformat(report["report_date"]).weekday()
+            except ValueError:
+                continue
+            totals[weekday].append(float(total))
+        if not totals:
+            return ""
+        names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        best = max(totals.items(), key=lambda item: sum(item[1]) / len(item[1]))
+        return names[best[0]]
+
+    def _metric(self, report: dict, field: str) -> float | int | None:
+        value = report.get("metrics", {}).get(field, {}).get("value")
+        return value if isinstance(value, (int, float)) else None
+
+    def _json_value(self, value: str, default):
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    def _money(self, value: float | int | None) -> str:
+        if not isinstance(value, (int, float)):
+            return "Manual review"
+        return f"${value:,.2f}"
+
+    def _signed_money(self, value: float | int | None) -> str:
+        if not isinstance(value, (int, float)):
+            return "Manual review"
+        if abs(value) < 0.01:
+            return "Flat"
+        prefix = "+" if value > 0 else "-"
+        return f"{prefix}{self._money(abs(value))}"
+
+    def _signed_percent(self, value: float | int | None) -> str:
+        if not isinstance(value, (int, float)):
+            return "Manual review"
+        if abs(value) < 0.01:
+            return "Flat"
+        prefix = "+" if value > 0 else "-"
+        return f"{prefix}{abs(value):.2f}%"
+
+    def _collection_day(self, value: tuple[str, float] | None) -> str:
+        if not value:
+            return "Manual review"
+        return f"{value[0]} ({self._money(value[1])})"
+
+    def _number(self, value: float | int | None) -> str:
+        if not isinstance(value, (int, float)):
+            return "Manual review"
+        if isinstance(value, float) and not value.is_integer():
+            return f"{value:,.1f}"
+        return f"{int(value):,}"
+
+    def _average(self, values) -> float | None:
+        numeric = [float(value) for value in values if isinstance(value, (int, float))]
+        if not numeric:
+            return None
+        return round(sum(numeric) / len(numeric), 1)
+
+    def _format_timestamp(self, value: str | None) -> str:
+        if not value:
+            return "Not available"
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+        local = parsed.astimezone(ZoneInfo(self.payment_settings.timezone))
+        return local.strftime("%Y-%m-%d %I:%M %p")
 
     def _recent_payments(self, database_path: Path) -> list[dict]:
         with sqlite3.connect(database_path) as conn:

@@ -50,10 +50,12 @@ def build_executive_brief(
     *,
     history: dict[str, Any] | None = None,
 ) -> str:
+    # Historical context is intentionally accepted for additive callers, but
+    # the daily Teams brief format and score remain based on the original inputs.
     collected = _sum_values(report, "posted_cash", "posted_fees", "green_cleared_cash")
     pending = _sum_values(report, "pending_cash", "pending_fees")
     future = _sum_values(report, "future_scheduled_cash", "future_scheduled_fees")
-    score, score_label = _performance_score(report, previous, collected, future, history=history)
+    score, score_label = _performance_score(report, previous, collected, future)
     confidence_label, confidence_note = _confidence_summary(report)
     attention = _attention_line(report)
 
@@ -308,8 +310,6 @@ def _performance_score(
     previous: dict[str, Any] | None,
     collected: float | None,
     future: float | None,
-    *,
-    history: dict[str, Any] | None = None,
 ) -> tuple[int, str]:
     if not report.passes_quality_gate:
         return 0, "MANUAL REVIEW REQUIRED"
@@ -320,15 +320,6 @@ def _performance_score(
         score += 7
     if isinstance(future, (int, float)) and isinstance(previous_future, (int, float)) and future >= previous_future:
         score += 5
-    rolling_7_collections = _history_value(history, "rolling_7_collections")
-    rolling_30_collections = _history_value(history, "rolling_30_collections")
-    same_weekday_collections = _history_value(history, "same_weekday_collections")
-    if isinstance(collected, (int, float)) and isinstance(rolling_7_collections, (int, float)):
-        score += 4 if collected >= rolling_7_collections else -4
-    if isinstance(collected, (int, float)) and isinstance(rolling_30_collections, (int, float)):
-        score += 3 if collected >= rolling_30_collections else -3
-    if isinstance(collected, (int, float)) and isinstance(same_weekday_collections, (int, float)):
-        score += 3 if collected >= same_weekday_collections else -3
     if report.metric_value("contact_rate") is not None:
         score += 3
     if report.metric_value("close_rate") is not None:
@@ -344,13 +335,6 @@ def _performance_score(
     else:
         label = "NEEDS ATTENTION"
     return score, label
-
-
-def _history_value(history: dict[str, Any] | None, field: str) -> float | None:
-    if not history:
-        return None
-    value = history.get(field)
-    return value if isinstance(value, (int, float)) else None
 
 
 def _performance_sentence(

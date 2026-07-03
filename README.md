@@ -791,7 +791,7 @@ Normal executive summaries are only posted when the minimum quality gate passes.
 
 Top Collector is strict. It is shown only when at least two collector rows are read from the whiteboard area, collector names match `OPS_COLLECTOR_CODES`, and the dollar amounts come from that whiteboard section. City/state text, addresses, phone numbers, and dashboard labels are never treated as collectors.
 
-Historical data from `ops_reports` is used in future Performance Scores when available: rolling 7-day average, rolling 30-day average, comparison against the prior readable report, and comparison against the same weekday average.
+Historical data from `ops_reports` is available as an additive data source for dashboard trend analysis and future forecasting. The current daily Teams brief, OCR quality gate, and Performance Score format remain unchanged.
 
 Install the local OCR engine before production use:
 

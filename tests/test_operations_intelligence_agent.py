@@ -6,7 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agents.operations_intelligence_agent.database import OperationsDatabase
-from agents.operations_intelligence_agent.history import build_historical_summary
+from agents.operations_intelligence_agent.history import (
+    build_historical_context,
+    build_historical_summary,
+    build_historical_trend_analysis,
+)
 from agents.operations_intelligence_agent.models import ExtractedReport, MetricValue, SavedScreenshot, TeamsImage
 from agents.operations_intelligence_agent.ocr import OcrRegion, ScreenshotOcrExtractor
 from agents.operations_intelligence_agent.reports import build_operations_message, build_summary_text
@@ -184,6 +188,23 @@ class OperationsReportTests(unittest.TestCase):
         self.assertIn("Confidence score:", summary)
         self.assertIn("Quality gate passed: No", summary)
 
+    def test_daily_brief_output_is_unchanged_by_historical_context(self) -> None:
+        report = build_report("2026-07-08", "hash-new", posted_cash=200, attempts=150, live_contacts=30)
+        previous = report_row(build_report("2026-07-07", "hash-prev", posted_cash=100, attempts=120, live_contacts=20))
+        history = {
+            "rolling_7_collections": 10000.0,
+            "rolling_30_collections": 10000.0,
+            "same_weekday_collections": 10000.0,
+            "rolling_7_attempts": 999.0,
+            "rolling_7_live_contacts": 999.0,
+            "rolling_7_contact_rate": 99.0,
+        }
+
+        without_history = build_operations_message(report, previous).text
+        with_history = build_operations_message(report, previous, history=history).text
+
+        self.assertEqual(with_history, without_history)
+
 
 class OperationsServiceTests(unittest.TestCase):
     def test_local_image_is_processed_once_by_hash(self) -> None:
@@ -288,6 +309,21 @@ class OperationsServiceTests(unittest.TestCase):
         self.assertEqual(summary.lowest_collection_day, ("2026-07-03", 50))
         self.assertEqual(summary.top_collector, ("KMAD", 75.0))
         self.assertEqual(summary.quality_passing_reports, 3)
+
+    def test_historical_trend_analysis_is_additive(self) -> None:
+        previous_reports = [
+            report_row(build_report("2026-07-01", "hash-1", posted_cash=100, attempts=10, live_contacts=2)),
+            report_row(build_report("2026-07-02", "hash-2", posted_cash=300, attempts=30, live_contacts=6)),
+        ]
+        current = report_row(build_report("2026-07-03", "hash-3", posted_cash=500, attempts=40, live_contacts=10))
+
+        context = build_historical_context("2026-07-03", previous_reports)
+        analysis = build_historical_trend_analysis(current, context)
+
+        self.assertEqual(context.rolling_7_collections, 200)
+        self.assertEqual(analysis.collections_vs_7_day_average, 300)
+        self.assertEqual(analysis.attempts_vs_7_day_average, 20)
+        self.assertEqual(analysis.live_contacts_vs_7_day_average, 6)
 
 
 class OperationsSetupCheckTests(unittest.TestCase):
