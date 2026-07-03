@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 from http import HTTPStatus
@@ -38,6 +39,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/operations":
             self._send_html(render_operations_page(self.dashboard_service.snapshot()["operations"]))
             return
+        review_match = re.fullmatch(r"/operations/review/(\d+)", parsed.path)
+        if review_match:
+            report = self.dashboard_service.operations_review_report(int(review_match.group(1)))
+            if not report:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_html(render_operations_review_page(report))
+            return
         if parsed.path == "/operations/screenshot":
             self._send_known_file(parsed.query, kind="screenshot")
             return
@@ -56,11 +65,33 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             "/api/open-remit-folder": self.dashboard_service.open_remit_folder,
         }
         action = actions.get(self.path)
-        if not action:
+        if action:
+            result = action()
+            self._send_json({"ok": result.ok, "message": result.message})
+            return
+
+        parsed = urlparse(self.path)
+        match = re.fullmatch(r"/operations/review/(\d+)/(save|approve|reprocess)", parsed.path)
+        if not match:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        result = action()
-        self._send_json({"ok": result.ok, "message": result.message})
+        report_id = int(match.group(1))
+        command = match.group(2)
+        form = self._read_form()
+        if command == "save":
+            result = self.dashboard_service.save_operations_corrections(report_id, form)
+        elif command == "approve":
+            result = self.dashboard_service.approve_operations_report(report_id)
+        else:
+            result = self.dashboard_service.reprocess_operations_report(report_id)
+        if result.ok:
+            self._redirect(f"/operations/review/{report_id}?message={quote(result.message)}")
+        else:
+            report = self.dashboard_service.operations_review_report(report_id)
+            if not report:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_html(render_operations_review_page(report, error=result.message))
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -80,6 +111,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _redirect(self, path: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", path)
+        self.end_headers()
+
+    def _read_form(self) -> dict[str, str]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length).decode("utf-8") if length else ""
+        parsed = parse_qs(body, keep_blank_values=True)
+        return {key: values[-1] if values else "" for key, values in parsed.items()}
 
     def _send_known_file(self, query: str, *, kind: str) -> None:
         params = parse_qs(query)
@@ -319,8 +361,10 @@ def render_operations_page(operations: dict) -> str:
     detail = operations["detail"]
     historical_rows = "".join(_render_operations_report_row(report) for report in detail["historical_reports"])
     manual_rows = "".join(_render_operations_report_row(report) for report in detail["manual_review_reports"])
+    queue_rows = "".join(_render_manual_review_queue_row(report) for report in detail.get("manual_review_queue", []))
     historical_rows = historical_rows or "<tr><td colspan='6' class='muted'>No historical reports available yet.</td></tr>"
     manual_rows = manual_rows or "<tr><td colspan='6' class='muted'>No reports need manual review.</td></tr>"
+    queue_rows = queue_rows or "<tr><td colspan='6' class='muted'>No owner review needed.</td></tr>"
     executive_kpis = _render_ops_kpi_cards(detail["executive_kpis"], class_name="ops-exec-kpis")
     trend_cards = _render_ops_kpi_cards(detail["trend_cards"], class_name="ops-trend-kpis")
     charts = _render_operation_charts(detail["charts"])
@@ -350,6 +394,18 @@ def render_operations_page(operations: dict) -> str:
     </section>
     {trend_cards}
     {historical_trends}
+    <section class="agent-card ops-table-card">
+      <div class="card-head">
+        <div>
+          <h2>Manual Review Queue</h2>
+          <p class="detail">One owner-facing item per business date. Debug and duplicate runs stay hidden here.</p>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Date</th><th>Reason for Review</th><th>Missing Fields</th><th>AI Confidence</th><th>Screenshot</th><th>Review</th></tr></thead>
+        <tbody>{queue_rows}</tbody>
+      </table>
+    </section>
     <details class="agent-card ops-brief-card">
       <summary>View Latest Full Brief</summary>
       <pre class="brief-text">{_e(detail['latest_brief'])}</pre>
@@ -390,6 +446,219 @@ def render_operations_page(operations: dict) -> str:
   </script>
 </body>
 </html>"""
+
+
+def render_operations_review_page(report: dict, *, error: str = "") -> str:
+    screenshot = f"/operations/screenshot?hash={quote(report['screenshot_hash'])}"
+    status = "Ready" if _report_quality_passed(report) else "Manual Review"
+    alert = f"<div class='banner error'>{_e(error)}</div>" if error else ""
+    metrics = _render_review_metrics(report)
+    form = _render_review_form(report)
+    missing = ", ".join(_e(field) for field in report.get("missing_fields", [])) or "None"
+    notes = "".join(f"<li>{_e(note)}</li>" for note in report.get("manual_review_notes", [])) or "<li>None</li>"
+    ocr_text = report.get("ocr_text") or "No OCR text saved."
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operations Manual Review</title>
+  <style>{CSS}</style>
+</head>
+<body>
+  <main>
+    <header class="topbar">
+      <div>
+        <h1>Operations Manual Review</h1>
+        <p>{_e(report['report_date'])} · {_e(status)} · {_e(_report_confidence(report))}</p>
+      </div>
+      <a class="button-link secondary" href="/operations">Back to Operations</a>
+    </header>
+    {alert}
+    <section class="review-grid">
+      <article class="agent-card">
+        <div class="card-head">
+          <h2>Original Screenshot</h2>
+          <a href="{screenshot}" target="_blank">Open image</a>
+        </div>
+        <img class="review-shot" src="{screenshot}" alt="Operations screenshot for {_e(report['report_date'])}">
+      </article>
+      <article class="agent-card">
+        <div class="card-head">
+          <h2>Review Values</h2>
+          <span class="badge {'ready' if status == 'Ready' else 'warn'}">{_e(status)}</span>
+        </div>
+        <dl>
+          <dt>Missing</dt><dd>{missing}</dd>
+          <dt>Confidence</dt><dd>{_e(_report_confidence(report))}</dd>
+          <dt>Approved</dt><dd>{_e(report.get('approved_at') or 'Not approved')}</dd>
+          <dt>Edited</dt><dd>{_e(', '.join(report.get('manually_edited_fields') or []) or 'None')}</dd>
+        </dl>
+        <h3>Extracted Values</h3>
+        {metrics}
+        <h3 class="subhead">Review Notes</h3>
+        <ul class="insight-list">{notes}</ul>
+      </article>
+    </section>
+    <section class="agent-card review-form-card">
+      <div class="card-head">
+        <h2>Corrections</h2>
+        <span class="badge neutral">Dashboard only</span>
+      </div>
+      {form}
+    </section>
+    <details class="agent-card ops-brief-card">
+      <summary>Raw OCR Output</summary>
+      <pre class="brief-text">{_e(ocr_text)}</pre>
+    </details>
+  </main>
+</body>
+</html>"""
+
+
+def _render_review_metrics(report: dict) -> str:
+    fields = (
+        ("posted_cash", "Collected Today"),
+        ("future_scheduled_cash", "Future Payments"),
+        ("pending_cash", "Pending Payments"),
+        ("attempts", "Calls"),
+        ("live_contacts", "Live Contacts"),
+        ("accounts_worked", "Accounts Worked"),
+        ("contact_rate", "Contact Rate"),
+        ("close_rate", "Close Rate"),
+    )
+    cards = ""
+    for field, label in fields:
+        metric = report.get("metrics", {}).get(field, {})
+        value = metric.get("value")
+        confidence = metric.get("confidence")
+        needs_review = value is None or (isinstance(confidence, (int, float)) and confidence < 0.72)
+        cards += f"""
+        <div class="review-value {'needs-review' if needs_review else ''}">
+          <span>{_e(label)}</span>
+          <strong>{_e(_format_metric_value(field, value))}</strong>
+          <small>{_e(_confidence_text(confidence))}</small>
+        </div>
+        """
+    top = _top_collector(report)
+    cards += f"""
+      <div class="review-value">
+        <span>Top Performer</span>
+        <strong>{_e(top)}</strong>
+        <small>Whiteboard only</small>
+      </div>
+    """
+    return f"<div class='review-values'>{cards}</div>"
+
+
+def _render_review_form(report: dict) -> str:
+    fields = (
+        ("posted_cash", "Collected Today", "money"),
+        ("future_scheduled_cash", "Future Payments", "money"),
+        ("pending_cash", "Pending Payments", "money"),
+        ("attempts", "Calls", "count"),
+        ("live_contacts", "Live Contacts", "count"),
+        ("accounts_worked", "Accounts Worked", "count"),
+        ("contact_rate", "Contact Rate", "percent"),
+        ("close_rate", "Close Rate", "percent"),
+    )
+    inputs = ""
+    for field, label, kind in fields:
+        value = report.get("metrics", {}).get(field, {}).get("value")
+        inputs += f"""
+          <label>
+            <span>{_e(label)}</span>
+            <input name="{field}" value="{_e(_input_value(kind, value))}" placeholder="{_e(_placeholder(kind))}">
+          </label>
+        """
+    return f"""
+      <form method="post" action="/operations/review/{report['id']}/save" id="save-corrections-form">
+        <div class="review-form-grid">{inputs}</div>
+        <div class="review-form-grid top-performer-fields">
+          <label><span>Top Performer Code</span><input name="top_performer_code" placeholder="KMAD"></label>
+          <label><span>Top Performer Amount</span><input name="top_performer_total" placeholder="$2,845.15"></label>
+        </div>
+        <label class="wide-field">
+          <span>Collector Totals</span>
+          <textarea name="collector_totals_text" rows="4" placeholder="KMAD - $2,845.15&#10;CSOLO - $1,250.00"></textarea>
+        </label>
+      </form>
+      <div class="actions">
+        <button type="submit" form="save-corrections-form">Save Corrections</button>
+        <form method="post" action="/operations/review/{report['id']}/approve">
+          <button type="submit" class="secondary">Approve Report</button>
+        </form>
+        <form method="post" action="/operations/review/{report['id']}/reprocess">
+          <button type="submit" class="secondary">Reprocess OCR</button>
+        </form>
+        <a class="button-link secondary" href="/operations">Cancel</a>
+      </div>
+    """
+
+
+def _render_manual_review_queue_row(report: dict) -> str:
+    screenshot_href = f"/operations/screenshot?hash={quote(report['screenshot_hash'])}"
+    review_href = f"/operations/review/{report['id']}"
+    return (
+        "<tr>"
+        f"<td>{_e(report['report_date'])}</td>"
+        f"<td>{_e(report['reason'])}</td>"
+        f"<td>{_e(report['missing_fields'])}</td>"
+        f"<td>{_e(report['confidence'])}</td>"
+        f"<td><a href='{screenshot_href}' target='_blank'>Screenshot</a></td>"
+        f"<td><a class='button-link small' href='{review_href}'>Review</a></td>"
+        "</tr>"
+    )
+
+
+def _format_metric_value(field: str, value: object) -> str:
+    if value is None:
+        return "Manual review"
+    if field in {"posted_cash", "future_scheduled_cash", "pending_cash"} and isinstance(value, (int, float)):
+        return f"${value:,.2f}"
+    if field in {"contact_rate", "close_rate"} and isinstance(value, (int, float)):
+        return f"{value:.2f}%"
+    if isinstance(value, float) and value.is_integer():
+        return f"{int(value):,}"
+    if isinstance(value, (int, float)):
+        return f"{value:,}"
+    return str(value)
+
+
+def _input_value(kind: str, value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return ""
+    if kind == "money":
+        return f"{value:.2f}"
+    if kind == "percent":
+        return f"{value:.2f}%"
+    return str(int(value))
+
+
+def _placeholder(kind: str) -> str:
+    if kind == "money":
+        return "$0.00"
+    if kind == "percent":
+        return "0.00%"
+    return "0"
+
+
+def _confidence_text(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "No confidence"
+    return f"{round(value * 100)}% confidence"
+
+
+def _top_collector(report: dict) -> str:
+    rows = [
+        row
+        for row in report.get("collector_totals", [])
+        if isinstance(row.get("total"), (int, float)) and row.get("collector")
+    ]
+    if not rows:
+        return "Manual review"
+    top = max(rows, key=lambda row: float(row["total"]))
+    return f"{top['collector']} (${float(top['total']):,.2f})"
 
 
 def _render_ops_kpi_cards(cards: list[dict], *, class_name: str) -> str:
@@ -594,6 +863,8 @@ def _render_operations_report_row(report: dict) -> str:
 
 
 def _report_quality_passed(report: dict) -> bool:
+    if report.get("manual_review") is False and report.get("approved_at"):
+        return True
     required = ("accounts_worked", "attempts", "live_contacts", "contact_rate")
     has_required = all(_metric_value(report, field) is not None for field in required)
     has_money = _metric_value(report, "posted_cash") is not None or _metric_value(report, "future_scheduled_cash") is not None
@@ -707,6 +978,11 @@ button.secondary, a.button-link.secondary {
 }
 a.button-link:hover { background: var(--brand-strong); }
 button.secondary:hover, a.button-link.secondary:hover { background: #d7e1e7; }
+a.button-link.small {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -954,6 +1230,86 @@ button:disabled {
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
+.review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(340px, 0.85fr);
+  gap: 14px;
+  align-items: start;
+}
+.review-shot {
+  display: block;
+  width: 100%;
+  max-height: 680px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+}
+.review-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.review-value {
+  min-height: 88px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+}
+.review-value.needs-review {
+  border-color: #f2c783;
+  background: var(--soft-warn);
+}
+.review-value span, .review-form-grid label span, .wide-field span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.review-value strong {
+  display: block;
+  font-size: 18px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.review-value small {
+  display: block;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.review-form-card {
+  margin-top: 14px;
+}
+.review-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.top-performer-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+input, textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--ink);
+  background: white;
+}
+textarea {
+  resize: vertical;
+}
+.wide-field {
+  display: block;
+  margin-top: 12px;
+}
+.actions form {
+  margin: 0;
+}
 .ops-brief-card {
   min-width: 0;
 }
@@ -1060,7 +1416,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   min-height: 110px;
 }
 @media (max-width: 860px) {
-  .summary-grid, .agent-grid, .future-grid, .ops-detail-grid, .ops-analytics-grid {
+  .summary-grid, .agent-grid, .future-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid {
     grid-template-columns: 1fr;
   }
   .ops-metric-grid {
@@ -1069,7 +1425,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .ops-exec-kpis, .ops-trend-kpis, .chart-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .trend-grid {
+  .trend-grid, .review-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .topbar {
@@ -1091,7 +1447,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .ops-exec-kpis, .ops-trend-kpis, .chart-grid {
     grid-template-columns: 1fr;
   }
-  .trend-grid {
+  .trend-grid, .review-form-grid, .review-values {
     grid-template-columns: 1fr;
   }
   table {

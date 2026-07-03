@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from collections import defaultdict
@@ -11,11 +12,15 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from agents.dashboard.config import DashboardSettings
+from agents.operations_intelligence_agent.config import load_operations_settings
+from agents.operations_intelligence_agent.database import OperationsDatabase
 from agents.operations_intelligence_agent.history import (
     build_historical_context,
     build_historical_summary,
     build_historical_trend_analysis,
 )
+from agents.operations_intelligence_agent.ocr import ScreenshotOcrExtractor
+from agents.operations_intelligence_agent.reports import build_operations_message
 from agents.payment_agent.config import Settings as PaymentSettings
 from agents.payment_agent.database import PaymentDatabase
 from agents.payment_agent.parser import cents_to_currency
@@ -183,14 +188,17 @@ class DashboardService:
 
     def _operations_reports(self) -> list[dict]:
         try:
+            OperationsDatabase(self.payment_settings.database_path).initialize()
             with sqlite3.connect(self.payment_settings.database_path) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     """
-                    SELECT report_date, screenshot_hash, screenshot_path, metrics_json,
+                    SELECT id, report_date, screenshot_hash, screenshot_path, metrics_json,
                            collector_totals_json, missing_fields_json,
                            manual_review_notes_json, summary_text, posted_to_teams,
-                           created_at, updated_at
+                           ocr_text, original_metrics_json, original_collector_totals_json,
+                           original_ocr_text, manual_review, manually_edited_fields_json,
+                           approved_at, last_reprocessed_at, created_at, updated_at
                     FROM ops_reports
                     ORDER BY report_date ASC, created_at ASC
                     """
@@ -204,11 +212,20 @@ class DashboardService:
         missing_fields = self._json_value(row["missing_fields_json"], [])
         manual_review_notes = self._json_value(row["manual_review_notes_json"], [])
         return {
+            "id": row["id"],
             "report_date": row["report_date"],
             "screenshot_hash": row["screenshot_hash"],
             "screenshot_path": row["screenshot_path"],
             "metrics": metrics,
             "collector_totals": self._json_value(row["collector_totals_json"], []),
+            "ocr_text": row["ocr_text"] or "",
+            "original_metrics": self._json_value(row["original_metrics_json"], None),
+            "original_collector_totals": self._json_value(row["original_collector_totals_json"], None),
+            "original_ocr_text": row["original_ocr_text"] or "",
+            "manual_review": None if row["manual_review"] is None else bool(row["manual_review"]),
+            "manually_edited_fields": self._json_value(row["manually_edited_fields_json"], []),
+            "approved_at": row["approved_at"],
+            "last_reprocessed_at": row["last_reprocessed_at"],
             "missing_fields": missing_fields,
             "manual_review_notes": manual_review_notes,
             "summary_text": row["summary_text"] or "",
@@ -262,6 +279,7 @@ class DashboardService:
             "charts": self._operation_charts(authoritative_reports[-30:]),
             "executive_insights": self._executive_insights(authoritative_reports),
             "duplicate_audit": self._duplicate_audit(reports, authoritative_reports),
+            "manual_review_queue": self._manual_review_queue(authoritative_reports),
             "historical_reports": list(reversed(authoritative_reports[-30:])),
             "manual_review_reports": list(reversed(manual_review[-30:])),
         }
@@ -277,6 +295,7 @@ class DashboardService:
             "charts": self._empty_charts(),
             "executive_insights": ["Not enough historical data yet."],
             "duplicate_audit": "No duplicate report dates found.",
+            "manual_review_queue": [],
             "historical_reports": [],
             "manual_review_reports": [],
         }
@@ -318,11 +337,226 @@ class DashboardService:
             return "No duplicate report dates found."
         return "Multiple records can come from debug, reprocess, local test, or failed OCR attempts. " + " ".join(duplicate_dates)
 
+    def _manual_review_queue(self, authoritative_reports: list[dict]) -> list[dict]:
+        queue = []
+        for report in reversed(authoritative_reports):
+            if self._operations_quality_passed(report):
+                continue
+            if not self._is_owner_facing_report(report):
+                continue
+            queue.append(
+                {
+                    "id": report["id"],
+                    "report_date": report["report_date"],
+                    "reason": self._review_reason(report),
+                    "missing_fields": self._missing_fields_label(report),
+                    "confidence": self._confidence_label(report),
+                    "screenshot_hash": report["screenshot_hash"],
+                }
+            )
+        return queue
+
+    def _is_owner_facing_report(self, report: dict) -> bool:
+        path = str(report.get("screenshot_path") or "").lower()
+        name = Path(path).name.lower()
+        if "/debug/" in path or "\\debug\\" in path:
+            return False
+        if "test" in name or name.startswith("local-"):
+            return False
+        return True
+
+    def _review_reason(self, report: dict) -> str:
+        missing = report.get("missing_fields") or []
+        notes = report.get("manual_review_notes") or []
+        quality_missing = self._quality_missing_fields(report)
+        if quality_missing:
+            return "Required fields missing"
+        if missing:
+            return "Fields need review"
+        if notes:
+            return notes[0]
+        return "Manual review needed"
+
+    def _missing_fields_label(self, report: dict) -> str:
+        fields = self._quality_missing_fields(report) or report.get("missing_fields") or []
+        return ", ".join(self._field_label(field) for field in fields[:8]) or "None listed"
+
+    def _quality_missing_fields(self, report: dict) -> list[str]:
+        missing = [
+            field
+            for field in ("accounts_worked", "attempts", "live_contacts", "contact_rate")
+            if self._metric(report, field) is None
+        ]
+        if self._metric(report, "posted_cash") is None and self._metric(report, "future_scheduled_cash") is None:
+            missing.append("posted_cash_or_future_scheduled_cash")
+        return missing
+
     def _operations_quality_passed(self, report: dict) -> bool:
+        if report.get("manual_review") is False and report.get("approved_at"):
+            return True
         required = ("accounts_worked", "attempts", "live_contacts", "contact_rate")
         has_required = all(self._metric(report, field) is not None for field in required)
         has_money = self._metric(report, "posted_cash") is not None or self._metric(report, "future_scheduled_cash") is not None
         return has_required and has_money
+
+    def operations_review_report(self, report_id: int) -> dict | None:
+        reports = self._operations_reports()
+        return next((report for report in reports if report["id"] == report_id), None)
+
+    def save_operations_corrections(self, report_id: int, form: dict[str, str]) -> ActionResult:
+        report = self.operations_review_report(report_id)
+        if not report:
+            return ActionResult(False, "Operations report was not found.")
+        errors, updates, collector_totals, edited = self._validated_corrections(report, form)
+        if errors:
+            return ActionResult(False, " ".join(errors))
+        metrics = json.loads(json.dumps(report.get("metrics", {})))
+        for field, value in updates.items():
+            current = metrics.get(field, {})
+            metrics[field] = {
+                "value": value,
+                "raw_text": str(form.get(field, "")),
+                "confidence": 1.0,
+                "needs_review": False,
+                "manually_edited": True,
+            }
+            if current.get("raw_text") and not metrics[field]["raw_text"]:
+                metrics[field]["raw_text"] = current.get("raw_text")
+        if collector_totals:
+            edited.append("collector_totals")
+        OperationsDatabase(self.payment_settings.database_path).save_manual_corrections(
+            report_id,
+            metrics,
+            collector_totals or report.get("collector_totals", []),
+            edited,
+        )
+        return ActionResult(True, "Manual corrections saved.")
+
+    def approve_operations_report(self, report_id: int) -> ActionResult:
+        if not self.operations_review_report(report_id):
+            return ActionResult(False, "Operations report was not found.")
+        OperationsDatabase(self.payment_settings.database_path).approve_report(report_id)
+        return ActionResult(True, "Report approved. It will be used for dashboard trends without posting to Teams.")
+
+    def reprocess_operations_report(self, report_id: int) -> ActionResult:
+        report = self.operations_review_report(report_id)
+        if not report:
+            return ActionResult(False, "Operations report was not found.")
+        screenshot_path = Path(report["screenshot_path"])
+        if not screenshot_path.exists():
+            return ActionResult(False, f"Screenshot is missing: {screenshot_path}")
+        settings = load_operations_settings()
+        extractor = ScreenshotOcrExtractor(
+            settings.ocr_command,
+            settings.ocr_min_confidence,
+            settings.collector_codes,
+            settings.ocr_debug,
+            settings.reports_dir / "debug",
+        )
+        extracted = extractor.extract(screenshot_path, report["report_date"], report["screenshot_hash"])
+        previous = OperationsDatabase(self.payment_settings.database_path).previous_report(
+            extracted.report_date,
+            extracted.screenshot_hash,
+        )
+        message = build_operations_message(extracted, previous)
+        OperationsDatabase(self.payment_settings.database_path).replace_reprocessed_report(report_id, extracted, message.text)
+        return ActionResult(True, "OCR reprocessed from the existing screenshot. Nothing was posted to Teams.")
+
+    def _validated_corrections(self, report: dict, form: dict[str, str]) -> tuple[list[str], dict[str, float | int], list[dict], list[str]]:
+        errors: list[str] = []
+        updates: dict[str, float | int] = {}
+        edited: list[str] = []
+        money_fields = ("posted_cash", "future_scheduled_cash", "pending_cash")
+        count_fields = ("attempts", "live_contacts", "accounts_worked")
+        percent_fields = ("contact_rate", "close_rate")
+        for field in money_fields:
+            raw = form.get(field, "").strip()
+            if not raw:
+                continue
+            value = self._parse_money(raw)
+            if value is None:
+                errors.append(f"{self._field_label(field)} must be a valid money amount.")
+            else:
+                updates[field] = value
+                edited.append(field)
+        for field in count_fields:
+            raw = form.get(field, "").strip()
+            if not raw:
+                continue
+            if not re.fullmatch(r"\d+", raw.replace(",", "")):
+                errors.append(f"{self._field_label(field)} must be a whole number.")
+            else:
+                updates[field] = int(raw.replace(",", ""))
+                edited.append(field)
+        for field in percent_fields:
+            raw = form.get(field, "").strip()
+            if not raw:
+                continue
+            value = self._parse_percent(raw)
+            if value is None:
+                errors.append(f"{self._field_label(field)} must be a valid percentage.")
+            else:
+                updates[field] = value
+                edited.append(field)
+        collector_totals = self._parse_collector_totals(form, errors)
+        return errors, updates, collector_totals, edited
+
+    def _parse_collector_totals(self, form: dict[str, str], errors: list[str]) -> list[dict]:
+        allowed = {item.strip().upper() for item in os.getenv("OPS_COLLECTOR_CODES", "CSOLO,VMAR,KMAD,UNITED HOUSE").split(",") if item.strip()}
+        totals: list[dict] = []
+        top_code = form.get("top_performer_code", "").strip().upper()
+        top_total_raw = form.get("top_performer_total", "").strip()
+        if top_code or top_total_raw:
+            if allowed and top_code not in allowed:
+                errors.append("Top Performer must match an allowed collector code.")
+            total = self._parse_money(top_total_raw)
+            if total is None:
+                errors.append("Top Performer amount must be a valid money amount.")
+            elif top_code:
+                totals.append({"collector": top_code, "total": total, "source": "manual_review", "manually_edited": True})
+        for line in form.get("collector_totals_text", "").splitlines():
+            if not line.strip():
+                continue
+            match = re.match(r"^\s*([A-Za-z0-9 ]+?)\s*[-,:]\s*(.+?)\s*$", line)
+            if not match:
+                errors.append("Collector totals must use CODE - $amount format.")
+                continue
+            code = match.group(1).strip().upper()
+            if allowed and code not in allowed:
+                errors.append(f"{code} is not an allowed collector code.")
+                continue
+            total = self._parse_money(match.group(2))
+            if total is None:
+                errors.append(f"{code} total must be a valid money amount.")
+                continue
+            totals.append({"collector": code, "total": total, "source": "manual_review", "manually_edited": True})
+        return totals
+
+    def _parse_money(self, raw: str) -> float | None:
+        cleaned = raw.strip().replace("$", "").replace(",", "")
+        if not re.fullmatch(r"-?\d+(?:\.\d{1,2})?", cleaned):
+            return None
+        return round(float(cleaned), 2)
+
+    def _parse_percent(self, raw: str) -> float | None:
+        cleaned = raw.strip().replace("%", "")
+        if not re.fullmatch(r"-?\d+(?:\.\d{1,2})?", cleaned):
+            return None
+        return round(float(cleaned), 2)
+
+    def _field_label(self, field: str) -> str:
+        labels = {
+            "posted_cash": "Collected Today",
+            "future_scheduled_cash": "Future Payments",
+            "pending_cash": "Pending Payments",
+            "attempts": "Calls",
+            "live_contacts": "Live Contacts",
+            "accounts_worked": "Accounts Worked",
+            "contact_rate": "Contact Rate",
+            "close_rate": "Close Rate",
+            "posted_cash_or_future_scheduled_cash": "Posted Cash or Future Scheduled Cash",
+        }
+        return labels.get(field, field.replace("_", " ").title())
 
     def _trend_summary(self, reports: list[dict], *, days: int) -> str:
         if len(reports) < 2:

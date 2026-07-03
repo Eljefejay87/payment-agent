@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS ops_reports (
     manual_review_notes_json TEXT NOT NULL,
     summary_text TEXT,
     posted_to_teams INTEGER NOT NULL DEFAULT 0,
+    original_metrics_json TEXT,
+    original_collector_totals_json TEXT,
+    original_ocr_text TEXT,
+    manual_review INTEGER,
+    manually_edited_fields_json TEXT,
+    approved_at TEXT,
+    last_reprocessed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(screenshot_hash)
@@ -54,6 +61,23 @@ ON ops_reports(report_date);
 class OperationsDatabase(SQLiteDatabase):
     def initialize(self) -> None:
         self.initialize_schema(SCHEMA)
+        self._migrate_ops_reports()
+
+    def _migrate_ops_reports(self) -> None:
+        columns = {
+            "original_metrics_json": "TEXT",
+            "original_collector_totals_json": "TEXT",
+            "original_ocr_text": "TEXT",
+            "manual_review": "INTEGER",
+            "manually_edited_fields_json": "TEXT",
+            "approved_at": "TEXT",
+            "last_reprocessed_at": "TEXT",
+        }
+        with self.connect() as conn:
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info(ops_reports)").fetchall()}
+            for column, column_type in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE ops_reports ADD COLUMN {column} {column_type}")
 
     def screenshot_exists(self, message_id: str, image_id: str, sha256: str | None = None) -> bool:
         with self.connect() as conn:
@@ -125,9 +149,12 @@ class OperationsDatabase(SQLiteDatabase):
                 INSERT OR REPLACE INTO ops_reports
                 (report_date, screenshot_hash, screenshot_path, metrics_json, collector_totals_json,
                  ocr_text, missing_fields_json, manual_review_notes_json, summary_text,
-                 posted_to_teams, created_at, updated_at)
+                 posted_to_teams, manual_review, manually_edited_fields_json,
+                 created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                         COALESCE((SELECT posted_to_teams FROM ops_reports WHERE screenshot_hash = ?), 0),
+                        ?,
+                        COALESCE((SELECT manually_edited_fields_json FROM ops_reports WHERE screenshot_hash = ?), '[]'),
                         COALESCE((SELECT created_at FROM ops_reports WHERE screenshot_hash = ?), ?), ?)
                 """,
                 (
@@ -141,9 +168,129 @@ class OperationsDatabase(SQLiteDatabase):
                     json.dumps(report.manual_review_notes),
                     summary_text,
                     report.screenshot_hash,
+                    0 if report.passes_quality_gate else 1,
+                    report.screenshot_hash,
                     report.screenshot_hash,
                     now,
                     now,
+                ),
+            )
+
+    def report_by_id(self, report_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM ops_reports WHERE id = ?", (report_id,)).fetchone()
+            return _row_to_report(row)
+
+    def save_manual_corrections(
+        self,
+        report_id: int,
+        metrics: dict[str, Any],
+        collector_totals: list[dict[str, Any]],
+        edited_fields: list[str],
+    ) -> None:
+        now = _utc_now()
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM ops_reports WHERE id = ?", (report_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Operations report {report_id} was not found.")
+            existing_edited = _json_load(row["manually_edited_fields_json"], [])
+            merged_fields = sorted({*existing_edited, *edited_fields})
+            conn.execute(
+                """
+                UPDATE ops_reports
+                SET metrics_json = ?,
+                    collector_totals_json = ?,
+                    original_metrics_json = COALESCE(original_metrics_json, ?),
+                    original_collector_totals_json = COALESCE(original_collector_totals_json, ?),
+                    original_ocr_text = COALESCE(original_ocr_text, ?),
+                    manually_edited_fields_json = ?,
+                    manual_review = 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(metrics, sort_keys=True),
+                    json.dumps(collector_totals, sort_keys=True),
+                    row["metrics_json"],
+                    row["collector_totals_json"],
+                    row["ocr_text"],
+                    json.dumps(merged_fields, sort_keys=True),
+                    now,
+                    report_id,
+                ),
+            )
+
+    def approve_report(self, report_id: int) -> None:
+        now = _utc_now()
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM ops_reports WHERE id = ?", (report_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Operations report {report_id} was not found.")
+            conn.execute(
+                """
+                UPDATE ops_reports
+                SET missing_fields_json = '[]',
+                    manual_review_notes_json = '[]',
+                    original_metrics_json = COALESCE(original_metrics_json, ?),
+                    original_collector_totals_json = COALESCE(original_collector_totals_json, ?),
+                    original_ocr_text = COALESCE(original_ocr_text, ?),
+                    manual_review = 0,
+                    approved_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    row["metrics_json"],
+                    row["collector_totals_json"],
+                    row["ocr_text"],
+                    now,
+                    now,
+                    report_id,
+                ),
+            )
+
+    def replace_reprocessed_report(self, report_id: int, report: ExtractedReport, summary_text: str) -> None:
+        now = _utc_now()
+        metrics = {field: metric.to_dict() for field, metric in report.metrics.items()}
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM ops_reports WHERE id = ?", (report_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Operations report {report_id} was not found.")
+            conn.execute(
+                """
+                UPDATE ops_reports
+                SET screenshot_hash = ?,
+                    screenshot_path = ?,
+                    metrics_json = ?,
+                    collector_totals_json = ?,
+                    ocr_text = ?,
+                    missing_fields_json = ?,
+                    manual_review_notes_json = ?,
+                    summary_text = ?,
+                    original_metrics_json = COALESCE(original_metrics_json, ?),
+                    original_collector_totals_json = COALESCE(original_collector_totals_json, ?),
+                    original_ocr_text = COALESCE(original_ocr_text, ?),
+                    manual_review = ?,
+                    last_reprocessed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    report.screenshot_hash,
+                    str(report.screenshot_path),
+                    json.dumps(metrics, sort_keys=True),
+                    json.dumps(report.collector_totals, sort_keys=True),
+                    report.ocr_text,
+                    json.dumps(report.missing_fields),
+                    json.dumps(report.manual_review_notes),
+                    summary_text,
+                    row["metrics_json"],
+                    row["collector_totals_json"],
+                    row["ocr_text"],
+                    0 if report.passes_quality_gate else 1,
+                    now,
+                    now,
+                    report_id,
                 ),
             )
 
@@ -211,8 +358,21 @@ def _row_to_report(row: Any) -> dict[str, Any] | None:
     data["collector_totals"] = json.loads(data.pop("collector_totals_json"))
     data["missing_fields"] = json.loads(data.pop("missing_fields_json"))
     data["manual_review_notes"] = json.loads(data.pop("manual_review_notes_json"))
+    data["original_metrics"] = _json_load(data.pop("original_metrics_json", None), None)
+    data["original_collector_totals"] = _json_load(data.pop("original_collector_totals_json", None), None)
+    data["manually_edited_fields"] = _json_load(data.pop("manually_edited_fields_json", None), [])
+    data["manual_review"] = None if data.get("manual_review") is None else bool(data["manual_review"])
     return data
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _json_load(value: str | None, default):
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return default

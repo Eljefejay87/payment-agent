@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -261,6 +262,137 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Performance Score</th>", html)
         self.assertIn("Historical Reports", html)
         self.assertIn("/operations/report-file?date=2026-07-01", html)
+
+    def test_manual_review_queue_collapses_duplicate_business_dates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            db = OperationsDatabase(payment_settings.database_path)
+            db.initialize()
+            old_manual = build_operations_report("2026-07-01", "manual-old")
+            old_manual.metrics["attempts"] = MetricValue(None, "", 0.0)
+            db.save_report(old_manual, "manual old")
+            new_manual = build_operations_report("2026-07-01", "manual-new")
+            new_manual.metrics["live_contacts"] = MetricValue(None, "", 0.0)
+            db.save_report(new_manual, "manual new")
+
+            snapshot = DashboardService(
+                payment_settings,
+                build_remit_settings(base),
+                build_dashboard_settings(),
+            ).snapshot()
+
+            queue = snapshot["operations"]["detail"]["manual_review_queue"]
+            self.assertEqual(len(queue), 1)
+            self.assertEqual(queue[0]["report_date"], "2026-07-01")
+            self.assertEqual(queue[0]["id"], 2)
+
+    def test_debug_manual_review_records_are_hidden_from_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            db = OperationsDatabase(payment_settings.database_path)
+            db.initialize()
+            debug_report = build_operations_report("2026-07-01", "debug-hash")
+            debug_report.metrics["attempts"] = MetricValue(None, "", 0.0)
+            db.save_report(debug_report, "debug")
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE ops_reports SET screenshot_path = ? WHERE screenshot_hash = ?",
+                    ("reports/operations-intelligence/debug/2026-07-01/original.png", "debug-hash"),
+                )
+
+            snapshot = DashboardService(
+                payment_settings,
+                build_remit_settings(base),
+                build_dashboard_settings(),
+            ).snapshot()
+
+            self.assertEqual(snapshot["operations"]["detail"]["manual_review_queue"], [])
+
+    def test_manual_correction_saves_and_preserves_original_ocr_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            db = OperationsDatabase(payment_settings.database_path)
+            db.initialize()
+            report = build_operations_report("2026-07-01", "manual-hash")
+            report.metrics["attempts"] = MetricValue(None, "", 0.0)
+            db.save_report(report, "manual")
+            service = DashboardService(payment_settings, build_remit_settings(base), build_dashboard_settings())
+
+            result = service.save_operations_corrections(
+                1,
+                {
+                    "posted_cash": "$250.25",
+                    "attempts": "42",
+                    "contact_rate": "12.5%",
+                    "top_performer_code": "KMAD",
+                    "top_performer_total": "$50.00",
+                },
+            )
+
+            self.assertTrue(result.ok)
+            saved = OperationsDatabase(payment_settings.database_path).report_by_id(1)
+            self.assertEqual(saved["metrics"]["posted_cash"]["value"], 250.25)
+            self.assertEqual(saved["metrics"]["attempts"]["value"], 42)
+            self.assertTrue(saved["metrics"]["attempts"]["manually_edited"])
+            self.assertEqual(saved["original_metrics"]["posted_cash"]["value"], 100.0)
+            self.assertIn("attempts", saved["manually_edited_fields"])
+            self.assertEqual(saved["collector_totals"][0]["collector"], "KMAD")
+
+    def test_approving_report_changes_manual_review_to_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            db = OperationsDatabase(payment_settings.database_path)
+            db.initialize()
+            report = build_operations_report("2026-07-01", "manual-hash")
+            report.metrics["attempts"] = MetricValue(None, "", 0.0)
+            db.save_report(report, "manual")
+            service = DashboardService(payment_settings, build_remit_settings(base), build_dashboard_settings())
+
+            result = service.approve_operations_report(1)
+
+            self.assertTrue(result.ok)
+            saved = OperationsDatabase(payment_settings.database_path).report_by_id(1)
+            self.assertFalse(saved["manual_review"])
+            self.assertIsNotNone(saved["approved_at"])
+            self.assertEqual(saved["missing_fields"], [])
+            self.assertEqual(saved["manual_review_notes"], [])
+
+    def test_reprocess_ocr_does_not_post_to_teams(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            db = OperationsDatabase(payment_settings.database_path)
+            db.initialize()
+            image = base / "shot.png"
+            image.write_bytes(b"not-a-real-image")
+            report = build_operations_report("2026-07-01", "manual-hash")
+            report.metrics["attempts"] = MetricValue(None, "", 0.0)
+            report = ExtractedReport(
+                report_date=report.report_date,
+                screenshot_hash=report.screenshot_hash,
+                screenshot_path=image,
+                ocr_text=report.ocr_text,
+                metrics=report.metrics,
+                collector_totals=report.collector_totals,
+                missing_fields=report.missing_fields,
+                manual_review_notes=report.manual_review_notes,
+            )
+            db.save_report(report, "manual")
+            service = DashboardService(payment_settings, build_remit_settings(base), build_dashboard_settings())
+            reprocessed = build_operations_report("2026-07-01", "manual-hash", posted_cash=321)
+
+            with patch("agents.dashboard.service.ScreenshotOcrExtractor") as extractor:
+                extractor.return_value.extract.return_value = reprocessed
+                result = service.reprocess_operations_report(1)
+
+            self.assertTrue(result.ok)
+            saved = OperationsDatabase(payment_settings.database_path).report_by_id(1)
+            self.assertEqual(saved["metrics"]["posted_cash"]["value"], 321)
+            self.assertIsNotNone(saved["last_reprocessed_at"])
 
 
 def build_payment_settings(base: Path) -> SimpleNamespace:
