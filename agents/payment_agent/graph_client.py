@@ -12,7 +12,7 @@ from .config import Settings
 LOGGER = logging.getLogger(__name__)
 
 APPROVED_CARD_PAYMENT_SUBJECT = re.compile(
-    r"^Online (Debit|Credit) Card payment was approved .* Reference number:",
+    r"^Online (Debit|Credit|Credit or Debit) Card payment was approved .* Reference number:",
     re.IGNORECASE,
 )
 

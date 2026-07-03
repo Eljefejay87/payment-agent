@@ -96,7 +96,7 @@ class GraphClient:
             flow = app.initiate_device_flow(scopes=scopes)
             if "user_code" not in flow:
                 raise RuntimeError(f"Could not create Microsoft Graph device flow: {flow}")
-            print(flow["message"])
+            print(flow["message"], flush=True)
             result = app.acquire_token_by_device_flow(flow)
 
         if cache.has_state_changed and cache_path:

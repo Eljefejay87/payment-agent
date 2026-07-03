@@ -88,6 +88,45 @@ Reserved future agent locations:
 
 Do not create these agents until their business requirements are defined.
 
+## Voicemail Tracker Agent
+
+Phase 1 has been added for the United Account Services Voicemail Tracker Agent.
+This phase only reads Outlook voicemail emails and parses the voicemail details.
+It does not write to Google Sheets, send Teams summaries, move emails, delete emails, or contact consumers.
+
+Phase 1 parses:
+
+- Date Received
+- Time Received
+- Phone Number
+- Duration
+- Transcript
+- Audio attachment/reference
+- Source Email ID
+
+Run the safe sample-data test:
+
+```bash
+python main.py voicemail-test-sample
+```
+
+Run a live Outlook intake scan:
+
+```bash
+python main.py voicemail-scan-once
+```
+
+Voicemail settings:
+
+```dotenv
+VOICEMAIL_MAILBOX_USER_ID=voicemail@example.com
+VOICEMAIL_SENDER_EMAIL=voicemail@vaspian.com
+VOICEMAIL_SUBJECT_CONTAINS=voicemail
+VOICEMAIL_LOOKBACK_HOURS=48
+```
+
+The voicemail agent uses Outlook message ID / internet message ID as the source identifier for duplicate protection in the next phase. Duplicate protection and Google Sheet appending will be added in Phase 2.
+
 ## Files
 
 - `main.py` - compatibility command-line entry point.
@@ -364,7 +403,7 @@ V1 includes:
 Dashboard settings:
 
 ```dotenv
-DASHBOARD_HOST=127.0.0.1
+DASHBOARD_HOST=0.0.0.0
 DASHBOARD_PORT=8080
 ```
 
@@ -379,6 +418,8 @@ Then open:
 ```text
 http://127.0.0.1:8080
 ```
+
+When the dashboard starts, it logs the local, LAN, and Tailscale URLs using the configured dashboard port.
 
 Mac double-click option:
 
@@ -527,3 +568,240 @@ Payment amount: $123.45
 ```
 
 It also handles simple HTML emails by converting HTML to text before parsing.
+
+## Operations Intelligence Agent
+
+The Operations Intelligence Agent watches the Microsoft Teams leadership chat for the daily SCollect dashboard screenshot, saves the image locally, extracts visible metrics with OCR, stores structured history, and posts a daily executive summary back to Teams.
+
+### Architecture
+
+- `agents/operations_intelligence_agent/graph_client.py` reads Teams chat messages and downloads pasted images or image attachments.
+- `agents/operations_intelligence_agent/ocr.py` runs local OCR once per screenshot and extracts known SCollect labels.
+- `agents/operations_intelligence_agent/database.py` stores screenshot hashes, metric JSON, OCR text, missing fields, and report status.
+- `agents/operations_intelligence_agent/reports.py` builds the executive summary and compares it with the previous available report.
+- `agents/operations_intelligence_agent/service.py` coordinates duplicate detection, saving, extraction, reporting, and Teams posting.
+
+### Required Environment Variables
+
+Add these to `.env`:
+
+```dotenv
+DRY_RUN=true
+DATABASE_PATH=payment_agent.sqlite3
+TIMEZONE=America/New_York
+
+TEAMS_GRAPH_TENANT_ID=your-tenant-id
+TEAMS_GRAPH_CLIENT_ID=your-app-client-id
+TEAMS_GRAPH_CLIENT_SECRET=your-app-client-secret
+TEAMS_GRAPH_TOKEN_CACHE_PATH=.graph_teams_token_cache.bin
+
+OPS_LEADERSHIP_CHAT_ID=the-leadership-chat-id
+OPS_DAILY_SCAN_START=17:00
+OPS_DAILY_SCAN_END=18:15
+OPS_SCAN_INTERVAL_MINUTES=10
+OPS_LOOKBACK_HOURS=30
+OPS_SCREENSHOTS_DIR=screenshots/operations-intelligence
+OPS_REPORTS_DIR=reports/operations-intelligence
+OPS_OCR_COMMAND=tesseract
+OPS_OCR_MIN_CONFIDENCE=0.72
+OPS_POST_SUMMARY_TO_TEAMS=true
+OPS_LOW_QUALITY_ACTION=alert
+OPS_COLLECTOR_CODES=CSOLO,VMAR,KMAD,UNITED HOUSE
+```
+
+Microsoft Graph delegated permissions needed for V1:
+
+- `Chat.Read` to read the leadership chat and download image content.
+- `ChatMessage.Send` to post the executive summary back to the chat.
+
+Run this once to sign in and create the local Teams token cache:
+
+```bash
+python main.py ops-auth
+```
+
+### Teams Chat Setup
+
+Use the leadership chat where the manager posts the SCollect dashboard screenshot around 5:20 PM each weekday. Set `OPS_LEADERSHIP_CHAT_ID` to that chat id. If you need to discover chat ids, use Microsoft Graph Explorer or the existing Teams chat debug command if available in your environment.
+
+### How Screenshots Are Detected
+
+During the configured window, the agent reads recent messages from `OPS_LEADERSHIP_CHAT_ID`. It treats pasted Teams images and image attachments as candidate SCollect screenshots. Each image is saved under:
+
+```text
+screenshots/operations-intelligence/YYYY-MM-DD/
+```
+
+The agent stores the Teams message id, image id, file path, and SHA-256 hash. If the same screenshot appears again, it is skipped and OCR is not run again.
+
+### Extracted Data Storage
+
+Structured history is stored in SQLite at `DATABASE_PATH`.
+
+- `ops_screenshots` records each saved screenshot and prevents duplicate processing.
+- `ops_reports` stores metric JSON, collector totals if readable, OCR text, missing fields, manual review notes, report text, and Teams-post status.
+
+A plain-text copy of each summary is written to:
+
+```text
+reports/operations-intelligence/YYYY-MM-DD.txt
+```
+
+### Running Locally
+
+Initialize the database tables:
+
+```bash
+python main.py ops-init-db
+```
+
+Check local setup before the first live Teams test:
+
+```bash
+python main.py ops-check-setup
+```
+
+Process a local screenshot for testing:
+
+```bash
+python main.py ops-process-image --image /path/to/scollect-screenshot.png --report-date 2026-07-02
+```
+
+Post a corrected report from a specific local screenshot:
+
+```bash
+python main.py ops-post-image --image /path/to/scollect-screenshot.png --report-date 2026-07-02
+```
+
+Create OCR debug artifacts for a screenshot without posting to Teams:
+
+```bash
+python main.py ops-debug-image --image /path/to/scollect-screenshot.png --report-date 2026-07-02
+```
+
+Reprocess saved screenshots for a date without posting to Teams:
+
+```bash
+python main.py ops-reprocess-date --date 2026-07-02 --dry-run
+```
+
+Reprocess saved screenshots for a date and post the latest quality-passing corrected report to Teams:
+
+```bash
+python main.py ops-post-report --date 2026-07-02
+```
+
+Import historical screenshots from the leadership Teams chat without posting anything back to Teams:
+
+```bash
+python main.py ops-import-history --days 30
+```
+
+Safe preview mode searches Teams and reports what would be imported, but does not write screenshot/report rows to the database:
+
+```bash
+python main.py ops-import-history --days 30 --dry-run
+```
+
+Save OCR debug files during the historical import:
+
+```bash
+python main.py ops-import-history --days 30 --debug
+```
+
+Re-run OCR for screenshots that were already imported:
+
+```bash
+python main.py ops-import-history --days 30 --force-reprocess
+```
+
+The historical importer:
+
+- searches `OPS_LEADERSHIP_CHAT_ID` for image messages in the last N days;
+- saves screenshots under `screenshots/operations-intelligence/YYYY-MM-DD/`;
+- processes each screenshot through the same OCR pipeline and quality gate as the daily run;
+- stores metrics in `ops_reports` and writes report files under `reports/operations-intelligence/`;
+- skips duplicate Teams image ids and duplicate screenshot hashes;
+- never posts to Teams during the import.
+
+The import summary shows days searched, screenshots found, successfully imported reports, manual-review reports, duplicates skipped, missing weekdays, failed downloads/errors, and a historical summary with total collected, daily averages, best/lowest collection day, reliable top collector, and quality-gate pass count.
+
+Debug artifacts are written to:
+
+```text
+reports/operations-intelligence/debug/YYYY-MM-DD/
+```
+
+Scan Teams once:
+
+```bash
+python main.py ops-scan-once --force
+```
+
+Run continuously:
+
+```bash
+python main.py ops-run
+```
+
+### Daily Scheduling
+
+For V1, the simplest Mac schedule is to run `python main.py ops-run` at startup and let the agent check every `OPS_SCAN_INTERVAL_MINUTES` during `OPS_DAILY_SCAN_START` through `OPS_DAILY_SCAN_END`.
+
+Install the Operations Intelligence Agent as a macOS background job:
+
+```bash
+./scripts/install_operations_agent.sh
+```
+
+Check status:
+
+```bash
+./scripts/status_operations_agent.sh
+```
+
+Stop:
+
+```bash
+./scripts/stop_operations_agent.sh
+```
+
+Uninstall:
+
+```bash
+./scripts/uninstall_operations_agent.sh
+```
+
+The background job runs `ops-run`, which checks Teams during the configured daily screenshot window.
+
+For a weekday-only schedule, create a macOS Calendar alert or LaunchAgent that runs:
+
+```bash
+cd "/Users/jcollins/Documents/AI AGENT UCM/payment-agent"
+python main.py ops-scan-once --force
+```
+
+Set it for 5:25 PM Monday through Friday so the 5:20 PM screenshot has time to arrive.
+
+### Data Quality Rules
+
+The agent does not guess. Missing fields, unreadable OCR, low-confidence fields, and unreadable collector totals are clearly listed under `Data Quality` in the Teams report.
+
+Normal executive summaries are only posted when the minimum quality gate passes. V1 requires Accounts Worked, Attempts, Live Contacts, Contact Rate, and either Posted Cash or Future Scheduled Cash. If the gate fails, `OPS_LOW_QUALITY_ACTION=alert` posts only a short manual-review alert. Set `OPS_LOW_QUALITY_ACTION=skip` to save the report locally without posting anything.
+
+Top Collector is strict. It is shown only when at least two collector rows are read from the whiteboard area, collector names match `OPS_COLLECTOR_CODES`, and the dollar amounts come from that whiteboard section. City/state text, addresses, phone numbers, and dashboard labels are never treated as collectors.
+
+Historical data from `ops_reports` is used in future Performance Scores when available: rolling 7-day average, rolling 30-day average, comparison against the prior readable report, and comparison against the same weekday average.
+
+Install the local OCR engine before production use:
+
+```bash
+brew install tesseract
+```
+
+### Future Improvements
+
+- Add a curated SCollect screenshot template once several real examples are available.
+- Add optional AI vision fallback for hard-to-read screenshots after OCR fails.
+- Add dashboard charts from the stored `ops_reports` history.
+- Add a chat-id discovery command for non-technical setup.

@@ -73,6 +73,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 def render_dashboard(snapshot: dict, banner: str = "") -> str:
     payment = snapshot["payment"]
     remit = snapshot["remit"]
+    checklist = snapshot["manager_checklist"]
     future_agents = snapshot["future_agents"]
     banner_html = f"<div id='banner' class='banner'>{_e(banner)}</div>" if banner else "<div id='banner'></div>"
     payment_rows = "".join(
@@ -98,6 +99,15 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         for agent in future_agents
     )
     remit_send_disabled = "disabled" if remit["status"] != "Ready" else ""
+    checklist_open_link = (
+        f"<a class='button-link' href='{_e(checklist['url'])}' target='_blank' rel='noopener'>Open Checklist</a>"
+        if checklist["url"]
+        else "<button disabled>Open Checklist</button>"
+    )
+    checklist_sheet_link = (
+        f"<a class='button-link secondary' href='{_e(checklist['sheet_url'])}' target='_blank' rel='noopener'>Open Sheet</a>"
+    )
+    checklist_status_url = json.dumps(checklist["url"] + "?dashboard=1&callback=renderChecklistStatus")
 
     return f"""<!doctype html>
 <html lang="en">
@@ -163,6 +173,36 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
           <button {remit_send_disabled} onclick="postAction('/api/remit-send', true)">Send Weekly Remit</button>
         </div>
       </article>
+      <article class="agent-card">
+        <div class="card-head">
+          <h2>Daily Checklist</h2>
+          <span id="checklistStatusBadge" class="badge {'ready' if checklist['url'] else 'warn'}">{_e(checklist['status'])}</span>
+        </div>
+        <p class="detail">{_e(checklist['detail'])}</p>
+        <dl>
+          <dt>Checklist</dt><dd id="checklistPct">Loading...</dd>
+          <dt>Attendance</dt><dd id="attendanceSubmitted">Loading...</dd>
+          <dt>Submitted</dt><dd id="attendanceSubmittedAt">-</dd>
+          <dt>Alerts</dt><dd>{_e(checklist['schedule'])}</dd>
+        </dl>
+        <div class="mini-columns">
+          <div>
+            <h3>At Work</h3>
+            <ul id="atWorkList" class="compact-list"><li>Loading...</li></ul>
+          </div>
+          <div>
+            <h3>Not At Work</h3>
+            <ul id="notAtWorkList" class="compact-list"><li>Loading...</li></ul>
+          </div>
+        </div>
+        <p class="detail" id="checklistFlags">New Biz flags: Loading...</p>
+        <p class="detail" id="scheduledTimeOff">Scheduled time off: Loading...</p>
+        <p class="detail" id="checklistWarnings">Warnings: Loading...</p>
+        <div class="actions">
+          {checklist_open_link}
+          {checklist_sheet_link}
+        </div>
+      </article>
     </section>
     <section>
       <h2 class="section-title">Future Agents</h2>
@@ -181,6 +221,47 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       banner.textContent = data.message;
       if (data.ok) setTimeout(() => location.reload(), 1200);
     }}
+    function renderList(id, items, emptyText) {{
+      const list = document.getElementById(id);
+      list.innerHTML = '';
+      const values = items && items.length ? items : [emptyText];
+      values.forEach((item) => {{
+        const li = document.createElement('li');
+        li.textContent = item;
+        list.appendChild(li);
+      }});
+    }}
+    function renderChecklistStatus(data) {{
+      const badge = document.getElementById('checklistStatusBadge');
+      if (badge) {{
+        badge.textContent = data.status || 'Ready';
+        badge.className = 'badge ' + (data.status === 'Complete' ? 'ready' : data.status === 'Ready' ? 'neutral' : 'warn');
+      }}
+      const completed = data.checklistCompleted || 0;
+      const total = data.checklistTotal || 0;
+      document.getElementById('checklistPct').textContent = total ? completed + ' / ' + total + ' (' + (data.checklistPercent || 0) + '%)' : (data.checklistPercent || 0) + '%';
+      document.getElementById('attendanceSubmitted').textContent = data.morningAttendanceSaved ? 'Morning Saved' : data.attendanceSubmitted ? 'Submitted' : 'Not Submitted';
+      document.getElementById('attendanceSubmittedAt').textContent = data.submittedAt || '-';
+      renderList('atWorkList', data.atWork, 'None submitted');
+      renderList('notAtWorkList', data.notAtWork, 'None submitted');
+      document.getElementById('checklistFlags').textContent = 'New Biz flags: ' + (data.flags && data.flags.length ? data.flags.join(', ') : 'None');
+      document.getElementById('scheduledTimeOff').textContent = 'Scheduled time off: ' + (data.scheduledTimeOff && data.scheduledTimeOff.length ? data.scheduledTimeOff.join(', ') : 'None');
+      document.getElementById('checklistWarnings').textContent = 'Warnings: ' + (data.warnings && data.warnings.length ? data.warnings.join(', ') : 'None');
+    }}
+    function loadChecklistStatus() {{
+      const script = document.createElement('script');
+      script.src = {checklist_status_url} + '&_=' + Date.now();
+      document.body.appendChild(script);
+      script.onload = () => script.remove();
+      script.onerror = () => {{
+        document.getElementById('checklistPct').textContent = 'Unable to load';
+        document.getElementById('attendanceSubmitted').textContent = 'Unable to load';
+        document.getElementById('checklistWarnings').textContent = 'Warnings: Checklist status feed is not reachable.';
+        script.remove();
+      }};
+    }}
+    loadChecklistStatus();
+    setInterval(loadChecklistStatus, 30000);
   </script>
 </body>
 </html>"""
@@ -188,7 +269,6 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
 
 def _e(value: object) -> str:
     return html.escape(str(value))
-
 
 CSS = """
 :root {
@@ -239,12 +319,29 @@ button {
   font-weight: 650;
   cursor: pointer;
 }
+a.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  appearance: none;
+  border: 0;
+  background: var(--brand);
+  color: white;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  text-decoration: none;
+}
 button:hover { background: var(--brand-strong); }
-button.secondary {
+button.secondary, a.button-link.secondary {
   background: #e8eef2;
   color: var(--ink);
 }
-button.secondary:hover { background: #d7e1e7; }
+a.button-link:hover { background: var(--brand-strong); }
+button.secondary:hover, a.button-link.secondary:hover { background: #d7e1e7; }
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -290,7 +387,7 @@ button:disabled {
   letter-spacing: 0;
 }
 .agent-grid {
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
 }
 .agent-card {
@@ -350,6 +447,21 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .file-list {
   padding-left: 20px;
   color: var(--ink);
+}
+.compact-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--ink);
+}
+.mini-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.mini-columns h3 {
+  font-size: 13px;
+  color: var(--muted);
 }
 .section-title {
   margin: 22px 0 12px;

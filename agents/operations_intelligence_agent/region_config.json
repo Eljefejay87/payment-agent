@@ -1,0 +1,8 @@
+{
+  "overview_cards": {"x": 0.14, "y": 0.10, "w": 0.48, "h": 0.20},
+  "whiteboard": {"x": 0.14, "y": 0.23, "w": 0.58, "h": 0.30},
+  "money_section": {"x": 0.72, "y": 0.22, "w": 0.24, "h": 0.36},
+  "portfolio_section": {"x": 0.14, "y": 0.80, "w": 0.82, "h": 0.20},
+  "activity_section": {"x": 0.14, "y": 0.80, "w": 0.82, "h": 0.20},
+  "performance_section": {"x": 0.14, "y": 0.10, "w": 0.48, "h": 0.20}
+}

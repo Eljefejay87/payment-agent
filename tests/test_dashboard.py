@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from agents.dashboard.config import DashboardSettings
 from agents.dashboard.service import DashboardService
 from agents.dashboard.web import render_dashboard
 from agents.payment_agent.database import PaymentDatabase
@@ -18,7 +19,11 @@ class DashboardTests(unittest.TestCase):
             remit_settings = build_remit_settings(base)
             PaymentDatabase(payment_settings.database_path).initialize()
 
-            snapshot = DashboardService(payment_settings, remit_settings).snapshot()
+            snapshot = DashboardService(
+                payment_settings,
+                remit_settings,
+                build_dashboard_settings(),
+            ).snapshot()
 
             self.assertEqual(snapshot["payment"]["status"], "Ready")
             self.assertEqual(snapshot["remit"]["status"], "Waiting")
@@ -45,6 +50,13 @@ class DashboardTests(unittest.TestCase):
             "future_agents": [
                 {"name": "Placement Agent", "status": "Planned", "priority": "High"},
             ],
+            "manager_checklist": {
+                "status": "Ready",
+                "detail": "Daily checklist",
+                "url": "https://example.com/checklist",
+                "sheet_url": "https://example.com/sheet",
+                "schedule": "Mon-Thu 5:00 PM, Fri 3:30 PM",
+            },
         }
 
         html = render_dashboard(snapshot)
@@ -67,6 +79,16 @@ def build_payment_settings(base: Path) -> SimpleNamespace:
         graph_client_id="client",
         graph_client_secret="secret",
         dry_run=True,
+    )
+
+
+def build_dashboard_settings() -> DashboardSettings:
+    return DashboardSettings(
+        host="0.0.0.0",
+        port=8080,
+        log_level="INFO",
+        manager_checklist_url="https://example.com/checklist",
+        manager_checklist_sheet_url="https://example.com/sheet",
     )
 
 

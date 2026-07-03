@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from agents.dashboard.config import DashboardSettings
 from agents.payment_agent.config import Settings as PaymentSettings
 from agents.payment_agent.database import PaymentDatabase
 from agents.payment_agent.parser import cents_to_currency
@@ -25,20 +26,36 @@ class ActionResult:
 
 
 class DashboardService:
-    def __init__(self, payment_settings: PaymentSettings, remit_settings: RemitSettings) -> None:
+    def __init__(
+        self,
+        payment_settings: PaymentSettings,
+        remit_settings: RemitSettings,
+        dashboard_settings: DashboardSettings,
+    ) -> None:
         self.payment_settings = payment_settings
         self.remit_settings = remit_settings
+        self.dashboard_settings = dashboard_settings
 
     def snapshot(self) -> dict:
         return {
             "payment": self.payment_snapshot(),
             "remit": self.remit_snapshot(),
+            "manager_checklist": self.manager_checklist_snapshot(),
             "future_agents": [
                 {"name": "Placement Agent", "status": "Planned", "priority": "High"},
                 {"name": "Compliance Agent", "status": "Planned", "priority": "High"},
                 {"name": "Finance Agent", "status": "Planned", "priority": "Medium"},
                 {"name": "Executive Dashboard", "status": "Planned", "priority": "Medium"},
             ],
+        }
+
+    def manager_checklist_snapshot(self) -> dict:
+        return {
+            "status": "Ready" if self.dashboard_settings.manager_checklist_url else "Needs URL",
+            "detail": "Daily checklist for C Solo. Reports and alerts send to Jaye.",
+            "url": self.dashboard_settings.manager_checklist_url,
+            "sheet_url": self.dashboard_settings.manager_checklist_sheet_url,
+            "schedule": "Mon-Thu 5:00 PM, Fri 3:30 PM",
         }
 
     def payment_snapshot(self) -> dict:

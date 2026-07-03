@@ -11,3 +11,5 @@ logs/
 !logs/.gitkeep
 .graph_teams_token_cache.bin
 remits/
+reports/operations-intelligence/
+screenshots/operations-intelligence/

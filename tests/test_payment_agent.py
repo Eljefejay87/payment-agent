@@ -75,6 +75,14 @@ class PaymentSubjectTests(unittest.TestCase):
             )
         )
 
+    def test_approved_credit_or_debit_card_subject_matches(self) -> None:
+        self.assertTrue(
+            is_payment_subject(
+                "Online Credit or Debit Card payment was approved (040144) Reference number: C205815",
+                "Online Payment -",
+            )
+        )
+
     def test_non_payment_subject_does_not_match(self) -> None:
         self.assertFalse(is_payment_subject("Email batch is ready for review", "Online Payment -"))
 
