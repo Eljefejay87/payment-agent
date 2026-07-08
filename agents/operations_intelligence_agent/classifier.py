@@ -11,7 +11,10 @@ from pathlib import Path
 ACCEPT_INDICATORS: dict[str, tuple[str, ...]] = {
     "scollect": ("scollect", "admin tools", "administrator tools", "live dashboard"),
     "overview_cards": ("accounts worked", "accounts", "attempts", "rpc", "contact rate", "close rate"),
+    "portfolio_table": ("collections by portfolio", "accounts_worked", "calls_per_act", "leftmsglive"),
+    "agent_table": ("collections by agent", "lftmsgmach", "no_answer"),
     "collections": ("collections in range", "posted", "pending", "future scheduled", "future payments"),
+    "run_during_time": ("run during time", "run rate"),
     "whiteboard": ("whiteboard",),
     "payment_summary": ("posted cash", "pending cash", "posted fees", "pending fees", "future scheduled cash"),
 }
@@ -78,6 +81,12 @@ class OperationsScreenshotClassifier:
     def _has_dashboard_signal(self, matched: list[str], normalized: str) -> bool:
         matched_set = set(matched)
         if "scollect" in matched_set and len(matched_set) >= 2:
+            return True
+        if {"portfolio_table", "collections"} <= matched_set:
+            return True
+        if {"agent_table", "collections"} <= matched_set:
+            return True
+        if "portfolio_table" in matched_set and "run_during_time" in matched_set:
             return True
         overview_terms = sum(
             1

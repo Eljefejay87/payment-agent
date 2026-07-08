@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import sqlite3
@@ -15,6 +16,7 @@ from .config import load_operations_settings, validate_operations_settings
 from .classifier import OperationsScreenshotClassifier
 from .database import OperationsDatabase
 from .graph_client import save_delegated_token
+from .models import ExtractedReport, MetricValue
 from .ocr import ScreenshotOcrExtractor
 from .reports import build_detailed_report_text, build_operations_message
 from .service import OperationsIntelligenceAgent
@@ -46,6 +48,8 @@ def main() -> int:
     parser.add_argument("--image", default="", help="Local screenshot path for ops-process-image.")
     parser.add_argument("--report-date", default="", help="Report date for local image processing, YYYY-MM-DD.")
     parser.add_argument("--date", default="", help="Report date for ops-reprocess-date or ops-post-report, YYYY-MM-DD.")
+    parser.add_argument("--corrections-json", default="", help="Manual correction JSON for ops-reprocess-date without Teams posting.")
+    parser.add_argument("--approve-corrections", action="store_true", help="Approve a manually corrected Operations report.")
     parser.add_argument("--dry-run", action="store_true", help="Do not post to Teams during reprocessing.")
     parser.add_argument("--days", type=int, default=30, help="Number of days for ops-import-history.")
     parser.add_argument("--debug", action="store_true", help="Save OCR debug files during history import.")
@@ -109,6 +113,15 @@ def main() -> int:
         return 0
 
     if args.command == "ops-reprocess-date":
+        if args.corrections_json:
+            report_id = _apply_report_corrections(
+                settings,
+                args.date,
+                Path(args.corrections_json),
+                approve=args.approve_corrections,
+            )
+            print(f"Applied manual corrections to Operations report {report_id} for {args.date}. Nothing was posted to Teams.")
+            return 0
         count, _ = _reprocess_date(settings, args.date)
         print(f"Reprocessed {count} screenshot(s) for {args.date} without posting to Teams.")
         return 0
@@ -166,6 +179,82 @@ def _debug_dir(settings, report_date: str, name: str) -> Path:
     return settings.reports_dir / "debug" / report_date / safe_name
 
 
+def _apply_report_corrections(settings, report_date: str, corrections_path: Path, *, approve: bool = False) -> int:
+    payload = json.loads(corrections_path.read_text())
+    db = OperationsDatabase(settings.database_path)
+    db.initialize()
+    report_id = int(payload.get("report_id") or 0)
+    if not report_id:
+        reports = [
+            report
+            for report in db.reports_between(report_date, report_date)
+            if report.get("is_operations_dashboard") is not False
+        ]
+        if not reports:
+            raise ValueError(f"No Operations report found for {report_date}.")
+        report_id = max(reports, key=lambda report: report.get("updated_at") or report.get("created_at") or "")["id"]
+    report = db.report_by_id(report_id)
+    if not report:
+        raise ValueError(f"Operations report {report_id} was not found.")
+    if report["report_date"] != report_date:
+        raise ValueError(f"Operations report {report_id} is for {report['report_date']}, not {report_date}.")
+
+    metrics = json.loads(json.dumps(report.get("metrics") or {}))
+    edited_fields: list[str] = []
+    for field, value in (payload.get("metrics") or {}).items():
+        metrics[field] = {
+            "value": value,
+            "raw_text": payload.get("source_note", "Manual correction"),
+            "confidence": 1.0,
+            "needs_review": False,
+            "manually_edited": True,
+        }
+        edited_fields.append(field)
+
+    collector_totals = payload.get("collector_totals")
+    if collector_totals is not None:
+        edited_fields.append("collector_totals")
+    else:
+        collector_totals = report.get("collector_totals") or []
+
+    db.save_manual_corrections(report_id, metrics, collector_totals, edited_fields)
+    if approve:
+        db.approve_report(report_id)
+    corrected = db.report_by_id(report_id)
+    if not corrected:
+        raise ValueError(f"Operations report {report_id} was not found after correction.")
+    _refresh_corrected_report_text(settings, db, corrected)
+    return report_id
+
+
+def _refresh_corrected_report_text(settings, db: OperationsDatabase, report: dict) -> None:
+    metric_values = {
+        field: MetricValue(metric.get("value"), metric.get("raw_text", ""), float(metric.get("confidence") or 0))
+        for field, metric in (report.get("metrics") or {}).items()
+    }
+    extracted = ExtractedReport(
+        report_date=report["report_date"],
+        screenshot_hash=report["screenshot_hash"],
+        screenshot_path=Path(report["screenshot_path"]),
+        ocr_text=report.get("ocr_text") or "",
+        metrics=metric_values,
+        collector_totals=report.get("collector_totals") or [],
+        missing_fields=report.get("missing_fields") or [],
+        manual_review_notes=report.get("manual_review_notes") or [],
+    )
+    previous = db.previous_report(extracted.report_date, extracted.screenshot_hash)
+    message = build_operations_message(extracted, previous)
+    detailed = build_detailed_report_text(extracted, previous)
+    now = datetime.now(ZoneInfo("UTC")).isoformat()
+    with sqlite3.connect(settings.database_path) as conn:
+        conn.execute(
+            "UPDATE ops_reports SET summary_text = ?, updated_at = ? WHERE id = ?",
+            (message.text, now, report["id"]),
+        )
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    (settings.reports_dir / f"{extracted.report_date}.txt").write_text(detailed)
+
+
 def _reprocess_date(settings, report_date: str, *, post_to_teams: bool = False) -> tuple[int, int]:
     db = OperationsDatabase(settings.database_path)
     db.initialize()
@@ -213,6 +302,8 @@ def _reprocess_date(settings, report_date: str, *, post_to_teams: bool = False) 
     if post_to_teams:
         if selected is None:
             logging.error("No quality-passing Operations report found for %s. Nothing was posted.", report_date)
+        elif db.report_posted_for_date(report_date):
+            logging.warning("Operations report for %s was already posted to Teams; skipping duplicate post.", report_date)
         else:
             agent = OperationsIntelligenceAgent(settings)
             agent.teams.send(selected_message)

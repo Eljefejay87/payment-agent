@@ -1,0 +1,55 @@
+{
+  "report_id": 19,
+  "source_note": "Manual correction from provided 2026-06-19 SCollect screenshot",
+  "metrics": {
+    "accounts_worked": 84,
+    "attempts": 489,
+    "rpc": 3,
+    "contact_rate": 0.61,
+    "close_rate": 300.0,
+    "dollars_per_contact": 481.0,
+    "activated": 28,
+    "moved_to_hot": 0,
+    "live_contacts": 18,
+    "no_answer": 2,
+    "left_message": 203,
+    "average_agent": 163.0,
+    "emails_sent": 77,
+    "campaigns": 0,
+    "unique_open": 20,
+    "unique_link": 6,
+    "open_rate": 25.97,
+    "pay_rate": 0.4,
+    "posted_cash": 8214.5,
+    "posted_fees": 3043.16,
+    "pending_cash": 2352.62,
+    "pending_fees": 969.7,
+    "green_cleared_cash": 687.26
+  },
+  "collector_totals": [
+    {
+      "collector": "CSOLO",
+      "total": 85.0,
+      "portal": 85.0,
+      "green": 45.0,
+      "source": "whiteboard",
+      "manually_edited": true
+    },
+    {
+      "collector": "KMAD",
+      "total": 126.1,
+      "portal": 0.0,
+      "green": 0.0,
+      "source": "whiteboard",
+      "manually_edited": true
+    },
+    {
+      "collector": "UNITED HOUSE",
+      "total": 602.26,
+      "portal": 602.26,
+      "green": 602.26,
+      "source": "whiteboard",
+      "manually_edited": true
+    }
+  ]
+}

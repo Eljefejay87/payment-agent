@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
 from agents.dashboard.config import DashboardSettings
-from agents.dashboard.service import DashboardService
+from agents.dashboard.service import DashboardService, build_cash_flow_dashboard
 from agents.dashboard.web import render_dashboard, render_operations_page
 from agents.operations_intelligence_agent.database import OperationsDatabase
 from agents.operations_intelligence_agent.models import ExtractedReport, MetricValue
@@ -144,6 +144,96 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Placement Agent", html)
         self.assertIn("Operations Intelligence", html)
         self.assertIn("View Full Operations Report", html)
+
+    def test_cash_flow_dashboard_summary_lists_and_sorting(self) -> None:
+        rows = [
+            {
+                "vendor": "Later Vendor",
+                "amount": 300.0,
+                "due_date": date(2026, 7, 12),
+                "due_status": "Due in 4 Days",
+                "status": "Upcoming",
+                "category": "Software",
+                "notes": "Imported from Outlook",
+            },
+            {
+                "vendor": "Needs Vendor",
+                "amount": None,
+                "due_date": None,
+                "due_status": "",
+                "status": "Needs Review",
+                "category": "",
+                "notes": "Needs Review: Missing amount",
+            },
+            {
+                "vendor": "Past Vendor",
+                "amount": 75.0,
+                "due_date": date(2026, 7, 6),
+                "due_status": "Past Due by 2 Days",
+                "status": "Upcoming",
+                "category": "Utilities",
+                "notes": "Imported from Outlook",
+            },
+            {
+                "vendor": "Paid Vendor",
+                "amount": 50.0,
+                "due_date": date(2026, 7, 7),
+                "due_status": "Past Due by 1 Days",
+                "status": "Paid",
+                "category": "Rent",
+                "notes": "",
+            },
+            {
+                "vendor": "Soon Vendor",
+                "amount": 125.0,
+                "due_date": date(2026, 7, 9),
+                "due_status": "Due Tomorrow",
+                "status": "Upcoming",
+                "category": "Insurance",
+                "notes": "",
+            },
+        ]
+
+        dashboard = build_cash_flow_dashboard(rows, date(2026, 7, 8))
+
+        self.assertEqual(dashboard["summary"]["needs_review_count"], 1)
+        self.assertEqual(dashboard["summary"]["past_due_count"], 1)
+        self.assertEqual(dashboard["summary"]["upcoming_count"], 3)
+        self.assertEqual(dashboard["summary"]["paid_count"], 1)
+        self.assertEqual(dashboard["summary"]["due_this_week_total"], "$425.00")
+        self.assertEqual([item["vendor"] for item in dashboard["upcoming_bills"]], ["Past Vendor", "Soon Vendor", "Later Vendor"])
+        self.assertEqual([item["vendor"] for item in dashboard["needs_attention"]], ["Needs Vendor", "Past Vendor", "Paid Vendor"])
+
+        html = render_dashboard(
+            {
+                "payment": {"status": "Ready", "today_count": 0, "today_total": "$0.00", "recent": [], "detail": ""},
+                "remit": {
+                    "status": "Waiting",
+                    "broker": "ICR",
+                    "incoming_folder": "",
+                    "detail": "",
+                    "files": [],
+                    "last_sent": "Never",
+                    "send_deadline": "Monday by 15:00",
+                },
+                "cash_flow": dashboard,
+                "future_agents": [],
+                "manager_checklist": {
+                    "status": "Ready",
+                    "detail": "",
+                    "url": "https://example.com/checklist",
+                    "sheet_url": "https://example.com/sheet",
+                    "schedule": "",
+                },
+                "operations": empty_operations_snapshot(),
+            }
+        )
+
+        self.assertIn("Cash Flow HQ", html)
+        self.assertIn("Bills Due This Week", html)
+        self.assertIn("Needs Attention", html)
+        self.assertIn("Upcoming Bills", html)
+        self.assertIn("$425.00", html)
 
     def test_operations_snapshot_reads_latest_processed_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -568,6 +658,40 @@ def empty_historical_trends() -> dict:
         "collection_trend_vs_7_day": "Manual review",
         "contact_rate_trend_vs_30_day": "Manual review",
         "forecast": "Beta / Dashboard only",
+    }
+
+
+def empty_operations_snapshot() -> dict:
+    return {
+        "status": "Ready",
+        "has_report": True,
+        "message": "",
+        "card": {
+            "performance_score": "Manual review",
+            "collected_today": "Manual review",
+            "future_payments": "Manual review",
+            "pending_payments": "Manual review",
+            "calls": "Manual review",
+            "live_contacts": "Manual review",
+            "accounts_worked": "Manual review",
+            "takeaway": "Manual review",
+            "last_updated": "Not available",
+            "confidence": "Manual review",
+            "quality": "neutral",
+        },
+        "detail": {
+            "executive_kpis": empty_executive_kpis(),
+            "latest_brief": "",
+            "trend_7_day": "",
+            "summary_30_day": "",
+            "historical_trends": empty_historical_trends(),
+            "trend_cards": empty_trend_cards(),
+            "charts": empty_charts(),
+            "executive_insights": [],
+            "duplicate_audit": "",
+            "historical_reports": [],
+            "manual_review_reports": [],
+        },
     }
 
 

@@ -7,10 +7,12 @@ import sqlite3
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from agents.cash_flow_hq.config import load_cash_flow_settings
+from agents.cash_flow_hq.service import CashFlowHQService, plain_rich_text, plain_title
 from agents.dashboard.config import DashboardSettings
 from agents.operations_intelligence_agent.config import load_operations_settings
 from agents.operations_intelligence_agent.database import OperationsDatabase
@@ -38,6 +40,110 @@ class ActionResult:
     message: str
 
 
+def empty_cash_flow_dashboard(message: str = "") -> dict:
+    return {
+        "status": "Unavailable" if message else "Ready",
+        "message": message,
+        "summary": {
+            "due_this_week_total": "$0.00",
+            "needs_review_count": 0,
+            "upcoming_count": 0,
+            "past_due_count": 0,
+            "paid_count": 0,
+        },
+        "needs_attention": [],
+        "upcoming_bills": [],
+    }
+
+
+def build_cash_flow_dashboard(rows: list[dict], today: date) -> dict:
+    summary = empty_cash_flow_dashboard()["summary"]
+    due_this_week_total = 0.0
+    for row in rows:
+        status = row.get("status", "")
+        due_date = row.get("due_date")
+        amount = row.get("amount")
+        if status == "Needs Review":
+            summary["needs_review_count"] += 1
+        if status == "Upcoming":
+            summary["upcoming_count"] += 1
+        if status == "Paid":
+            summary["paid_count"] += 1
+        if due_date and due_date < today and status != "Paid":
+            summary["past_due_count"] += 1
+        if due_date and 0 <= (due_date - today).days <= 7 and isinstance(amount, (int, float)):
+            due_this_week_total += float(amount)
+    summary["due_this_week_total"] = format_cash_flow_money(due_this_week_total)
+    needs_attention = [
+        row
+        for row in rows
+        if row.get("status") == "Needs Review" or str(row.get("due_status", "")).startswith("Past Due")
+    ]
+    upcoming = sorted(
+        [row for row in rows if row.get("status") == "Upcoming" and row.get("due_date")],
+        key=lambda row: row["due_date"],
+    )[:10]
+    return {
+        "status": "Ready",
+        "message": "",
+        "summary": summary,
+        "needs_attention": needs_attention,
+        "upcoming_bills": upcoming,
+    }
+
+
+def cash_flow_notion_rows(pages: list[dict]) -> list[dict]:
+    return [cash_flow_row_from_page(page) for page in pages]
+
+
+def cash_flow_row_from_page(page: dict) -> dict:
+    properties = page.get("properties", {})
+    return {
+        "vendor": plain_rich_text(properties.get("Vendor / Payee", {})),
+        "expense_name": plain_title(properties.get("Expense Name", {}).get("title", [])),
+        "amount": number_property(properties.get("Amount", {})),
+        "due_date": date_property(properties.get("Due Date", {})),
+        "due_status": formula_string(properties.get("Due Status", {})),
+        "notes": plain_rich_text(properties.get("Notes", {})),
+        "status": select_property_name(properties.get("Status", {})),
+        "category": select_property_name(properties.get("Category", {})),
+    }
+
+
+def number_property(property_value: dict) -> float | None:
+    value = property_value.get("number")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def date_property(property_value: dict) -> date | None:
+    start = (property_value.get("date") or {}).get("start")
+    if not start:
+        return None
+    try:
+        return date.fromisoformat(start[:10])
+    except ValueError:
+        return None
+
+
+def select_property_name(property_value: dict) -> str:
+    return (property_value.get("select") or {}).get("name") or ""
+
+
+def formula_string(property_value: dict) -> str:
+    formula = property_value.get("formula") or {}
+    if formula.get("type") == "string":
+        return formula.get("string") or ""
+    return ""
+
+
+def format_cash_flow_money(value: float | None) -> str:
+    return "" if value is None else f"${value:,.2f}"
+
+
+def format_cash_flow_date(value: date | None) -> str:
+    return "" if value is None else value.isoformat()
+
+
 class DashboardService:
     def __init__(
         self,
@@ -53,6 +159,7 @@ class DashboardService:
         return {
             "payment": self.payment_snapshot(),
             "remit": self.remit_snapshot(),
+            "cash_flow": self.cash_flow_snapshot(),
             "manager_checklist": self.manager_checklist_snapshot(),
             "operations": self.operations_snapshot(),
             "future_agents": [
@@ -198,6 +305,24 @@ class DashboardService:
         except Exception as exc:
             return ActionResult(False, f"Could not open folder: {exc}")
         return ActionResult(True, f"Opened {folder}.")
+
+    def cash_flow_snapshot(self) -> dict:
+        settings = load_cash_flow_settings()
+        if not settings.notion_api_key:
+            return empty_cash_flow_dashboard("Not configured")
+        try:
+            cash_flow = CashFlowHQService(settings)
+            foundation = cash_flow.get_existing_foundation()
+            rows = cash_flow_notion_rows(
+                cash_flow.notion.request(
+                    "POST",
+                    f"/data_sources/{foundation['data_source_id']}/query",
+                    json={"page_size": 100},
+                ).get("results", [])
+            )
+        except Exception as exc:
+            return empty_cash_flow_dashboard(f"Unavailable: {exc}")
+        return build_cash_flow_dashboard(rows, today_in_timezone(self.payment_settings.timezone))
 
     def _operations_reports(self) -> list[dict]:
         try:

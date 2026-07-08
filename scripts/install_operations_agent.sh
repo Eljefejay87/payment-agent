@@ -50,6 +50,12 @@ cat > "$PLIST_TARGET" <<PLIST
     <key>WorkingDirectory</key>
     <string>$INSTALL_DIR</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 

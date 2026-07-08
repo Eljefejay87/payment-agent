@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,7 +51,7 @@ def load_operations_settings(env_file: str | None = None) -> OperationsSettings:
         daily_scan_end=os.getenv("OPS_DAILY_SCAN_END", "18:15"),
         screenshots_dir=Path(os.getenv("OPS_SCREENSHOTS_DIR", "screenshots/operations-intelligence")),
         reports_dir=Path(os.getenv("OPS_REPORTS_DIR", "reports/operations-intelligence")),
-        ocr_command=os.getenv("OPS_OCR_COMMAND", "tesseract"),
+        ocr_command=_ocr_command(os.getenv("OPS_OCR_COMMAND")),
         ocr_min_confidence=float(os.getenv("OPS_OCR_MIN_CONFIDENCE", "0.72")),
         ocr_debug=get_bool("OPS_OCR_DEBUG", False),
         post_summary_to_teams=get_bool("OPS_POST_SUMMARY_TO_TEAMS", True),
@@ -79,3 +80,12 @@ def validate_operations_settings(settings: OperationsSettings, *, offline_image_
 
 def _csv_tuple(value: str) -> tuple[str, ...]:
     return tuple(item.strip().upper() for item in value.split(",") if item.strip())
+
+
+def _ocr_command(configured: str | None) -> str:
+    if configured:
+        return configured
+    for command in ("tesseract", "/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"):
+        if shutil.which(command) or Path(command).exists():
+            return command
+    return "tesseract"

@@ -156,6 +156,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 def render_dashboard(snapshot: dict, banner: str = "") -> str:
     payment = snapshot["payment"]
     remit = snapshot["remit"]
+    cash_flow = snapshot.get("cash_flow") or {
+        "status": "Unavailable",
+        "message": "Not available",
+        "summary": {
+            "due_this_week_total": "$0.00",
+            "needs_review_count": 0,
+            "upcoming_count": 0,
+            "past_due_count": 0,
+            "paid_count": 0,
+        },
+        "needs_attention": [],
+        "upcoming_bills": [],
+    }
     checklist = snapshot["manager_checklist"]
     operations = snapshot["operations"]
     future_agents = snapshot["future_agents"]
@@ -184,6 +197,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
     )
     remit_badge_class = "ready" if remit["status"] in {"Ready", "Sent"} else "warn"
     remit_send_disabled = "disabled" if remit["status"] != "Ready" else ""
+    cash_flow_dashboard = _render_cash_flow_dashboard(cash_flow)
     operations_card = _render_operations_card(operations)
     checklist_open_link = (
         f"<a class='button-link' href='{_e(checklist['url'])}' target='_blank' rel='noopener'>Open Checklist</a>"
@@ -228,6 +242,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         <strong>{_e(remit['status'])}</strong>
       </div>
     </section>
+    {cash_flow_dashboard}
     <section class="agent-grid">
       <article class="agent-card">
         <div class="card-head">
@@ -380,6 +395,69 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
 
 def _e(value: object) -> str:
     return html.escape(str(value))
+
+
+def _render_cash_flow_dashboard(cash_flow: dict) -> str:
+    summary = cash_flow["summary"]
+    needs_attention = "".join(
+        f"""
+        <div class="cash-flow-attention-item">
+          <strong>{_e(item.get('vendor') or item.get('expense_name') or 'Unknown vendor')}</strong>
+          <span>{_e(_cash_amount(item.get('amount')))}</span>
+          <span>{_e(item.get('due_status') or 'No due date')}</span>
+          <p>{_e(item.get('notes') or '')}</p>
+        </div>
+        """
+        for item in cash_flow.get("needs_attention", [])
+    ) or "<p class='muted'>No bills need attention.</p>"
+    upcoming_rows = "".join(
+        "<tr>"
+        f"<td>{_e(item.get('vendor') or item.get('expense_name') or 'Unknown vendor')}</td>"
+        f"<td>{_e(_cash_date(item.get('due_date')))}</td>"
+        f"<td>{_e(item.get('due_status') or '')}</td>"
+        f"<td>{_e(_cash_amount(item.get('amount')))}</td>"
+        f"<td>{_e(item.get('category') or '')}</td>"
+        "</tr>"
+        for item in cash_flow.get("upcoming_bills", [])
+    ) or "<tr><td colspan='5' class='muted'>No upcoming bills found.</td></tr>"
+    message = f"<p class='detail'>{_e(cash_flow['message'])}</p>" if cash_flow.get("message") else ""
+    return f"""
+    <section class="agent-card cash-flow-dashboard">
+      <div class="card-head">
+        <h2>Cash Flow HQ</h2>
+        <span class="badge {'ready' if cash_flow.get('status') == 'Ready' else 'warn'}">{_e(cash_flow.get('status', 'Ready'))}</span>
+      </div>
+      {message}
+      <div class="cash-flow-summary">
+        <div class="cash-flow-card"><span>Bills Due This Week</span><strong>{_e(summary['due_this_week_total'])}</strong></div>
+        <div class="cash-flow-card"><span>Needs Review</span><strong>{summary['needs_review_count']}</strong></div>
+        <div class="cash-flow-card"><span>Upcoming Bills</span><strong>{summary['upcoming_count']}</strong></div>
+        <div class="cash-flow-card"><span>Past Due</span><strong>{summary['past_due_count']}</strong></div>
+        <div class="cash-flow-card"><span>Paid</span><strong>{summary['paid_count']}</strong></div>
+      </div>
+      <div class="cash-flow-sections">
+        <section>
+          <h3>Needs Attention</h3>
+          <div class="cash-flow-attention-list">{needs_attention}</div>
+        </section>
+        <section>
+          <h3>Upcoming Bills</h3>
+          <table>
+            <thead><tr><th>Vendor</th><th>Due Date</th><th>Due Status</th><th>Amount</th><th>Category</th></tr></thead>
+            <tbody>{upcoming_rows}</tbody>
+          </table>
+        </section>
+      </div>
+    </section>
+    """
+
+
+def _cash_amount(value: object) -> str:
+    return f"${float(value):,.2f}" if isinstance(value, (int, float)) else ""
+
+
+def _cash_date(value: object) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
 
 
 def render_operations_page(operations: dict) -> str:
@@ -1063,6 +1141,68 @@ button:disabled {
   font-size: 28px;
   letter-spacing: 0;
 }
+.cash-flow-dashboard {
+  margin-bottom: 14px;
+}
+.cash-flow-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+.cash-flow-card {
+  min-height: 82px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+}
+.cash-flow-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.cash-flow-card strong {
+  display: block;
+  font-size: 22px;
+  overflow-wrap: anywhere;
+}
+.cash-flow-sections {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.4fr);
+  gap: 14px;
+  align-items: start;
+}
+.cash-flow-sections h3 {
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+.cash-flow-attention-list {
+  display: grid;
+  gap: 10px;
+}
+.cash-flow-attention-item {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+}
+.cash-flow-attention-item strong,
+.cash-flow-attention-item span {
+  display: block;
+}
+.cash-flow-attention-item span {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.cash-flow-attention-item p {
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+}
 .agent-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
@@ -1452,8 +1592,11 @@ dd { margin: 0; overflow-wrap: anywhere; }
   min-height: 110px;
 }
 @media (max-width: 860px) {
-  .summary-grid, .agent-grid, .future-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid {
+  .summary-grid, .agent-grid, .future-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections {
     grid-template-columns: 1fr;
+  }
+  .cash-flow-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .ops-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1484,6 +1627,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
     grid-template-columns: 1fr;
   }
   .trend-grid, .review-form-grid, .review-values {
+    grid-template-columns: 1fr;
+  }
+  .cash-flow-summary {
     grid-template-columns: 1fr;
   }
   table {
