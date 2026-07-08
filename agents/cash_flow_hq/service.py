@@ -11,9 +11,11 @@ from .config import CashFlowHQSettings
 from .models import BillCandidate, BillEmail, VendorRule
 from .notion_client import NotionClient
 from .schema import (
+    DUE_STATUS_PROPERTY_NAME,
     VENDOR_RULE_DATABASE_NAME,
     VENDOR_RULE_SEEDS,
     build_database_payload,
+    due_status_property,
     build_vendor_rules_database_payload,
     build_view_payload,
     build_view_specs,
@@ -46,6 +48,7 @@ class CashFlowHQService:
             foundation = self.foundation_from_database(database)
         database_id = foundation["database_id"]
         data_source_id = foundation["data_source_id"]
+        self.ensure_due_status_property(data_source_id)
         created_views = self.ensure_views(database_id, data_source_id)
         self.ensure_vendor_rules_foundation()
         return {
@@ -115,6 +118,17 @@ class CashFlowHQService:
         LOGGER.info("Created Notion database: %s", self.settings.database_name)
         return database
 
+    def ensure_due_status_property(self, data_source_id: str) -> None:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        if DUE_STATUS_PROPERTY_NAME in data_source.get("properties", {}):
+            return
+        self.notion.request(
+            "PATCH",
+            f"/data_sources/{data_source_id}",
+            json={"properties": {DUE_STATUS_PROPERTY_NAME: due_status_property()}},
+        )
+        LOGGER.info("Added Notion property: %s", DUE_STATUS_PROPERTY_NAME)
+
     def ensure_vendor_rules_foundation(self) -> dict[str, str]:
         foundation = self.find_foundation_by_name(VENDOR_RULE_DATABASE_NAME)
         if foundation is None:
@@ -156,6 +170,7 @@ class CashFlowHQService:
         properties: dict[str, Any] = {
             "Vendor Name": title_property(rule.vendor_name),
             "Match Text": rich_text_property(rule.match_text),
+            "Display Name": rich_text_property(rule.display_name or ""),
             "Default Status": {"select": {"name": rule.default_status}},
             "Active": {"checkbox": rule.active},
             "Notes": rich_text_property(rule.notes),
@@ -190,6 +205,10 @@ class CashFlowHQService:
         updates: dict[str, Any] = {}
         field_sources = dict(candidate.field_sources)
         review_reasons = tuple(candidate.review_reasons)
+        display_name = rule.display_name or rule.vendor_name
+        if display_name and candidate.vendor_payee != display_name:
+            updates["vendor_payee"] = display_name
+            field_sources["vendor"] = "vendor rules"
         if not candidate.category and rule.category:
             updates["category"] = rule.category
             field_sources["category"] = "vendor rules"
@@ -216,8 +235,7 @@ class CashFlowHQService:
         if updates:
             updates["field_sources"] = field_sources
             updates["review_reasons"] = review_reasons
-            if "due_date" in updates:
-                updates["notes"] = candidate.notes + " Vendor Rules filled due date."
+            updates["notes"] = format_business_notes(review_reasons)
             return replace(candidate, **updates)
         return candidate
 
@@ -374,6 +392,7 @@ def vendor_rule_from_page(page: dict[str, Any]) -> VendorRule:
     return VendorRule(
         vendor_name=plain_title(properties.get("Vendor Name", {}).get("title", [])),
         match_text=plain_rich_text(properties.get("Match Text", {})),
+        display_name=plain_rich_text(properties.get("Display Name", {})) or None,
         category=select_name(properties.get("Category", {})),
         frequency=select_name(properties.get("Frequency", {})),
         due_day=number_value(properties.get("Due Day", {})),
@@ -394,6 +413,22 @@ def number_value(property_value: dict[str, Any]) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def format_business_notes(review_reasons: tuple[str, ...]) -> str:
+    if not review_reasons:
+        return "Imported from Outlook\n✓ Ready for payment"
+    lines = ["Imported from Outlook", "", "Needs Review:"]
+    lines.extend(f"• {display_review_reason(reason)}" for reason in review_reasons)
+    return "\n".join(lines)[:1800]
+
+
+def display_review_reason(reason: str) -> str:
+    if reason == "missing due date":
+        return "Missing due date"
+    if reason == "missing amount":
+        return "Missing amount"
+    return reason
 
 
 def match_vendor_rule(candidate: BillCandidate, message: BillEmail, rules: list[VendorRule]) -> VendorRule | None:

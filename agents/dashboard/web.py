@@ -213,6 +213,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       <button class="secondary" onclick="location.reload()">Refresh</button>
     </header>
     {banner_html}
+    <div id="scheduledOffTodayAlert" class="scheduled-off-banner" hidden></div>
     <section class="summary-grid">
       <div class="metric">
         <span>Payments Today</span>
@@ -318,6 +319,28 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         list.appendChild(li);
       }});
     }}
+    function renderScheduledOffToday(items) {{
+      const alert = document.getElementById('scheduledOffTodayAlert');
+      const names = (items || [])
+        .map((item) => String(item).split(':')[0].trim())
+        .filter(Boolean);
+      alert.innerHTML = '';
+      if (!names.length) {{
+        alert.hidden = true;
+        return;
+      }}
+      const title = document.createElement('strong');
+      title.textContent = 'Scheduled Off Today:';
+      const list = document.createElement('ul');
+      names.forEach((name) => {{
+        const li = document.createElement('li');
+        li.textContent = name;
+        list.appendChild(li);
+      }});
+      alert.appendChild(title);
+      alert.appendChild(list);
+      alert.hidden = false;
+    }}
     function renderChecklistStatus(data) {{
       const badge = document.getElementById('checklistStatusBadge');
       if (badge) {{
@@ -331,6 +354,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       document.getElementById('attendanceSubmittedAt').textContent = data.submittedAt || '-';
       renderList('atWorkList', data.atWork, 'None submitted');
       renderList('notAtWorkList', data.notAtWork, 'None submitted');
+      renderScheduledOffToday(data.scheduledTimeOff);
       document.getElementById('checklistFlags').textContent = 'New Biz flags: ' + (data.flags && data.flags.length ? data.flags.join(', ') : 'None');
       document.getElementById('scheduledTimeOff').textContent = 'Scheduled time off: ' + (data.scheduledTimeOff && data.scheduledTimeOff.length ? data.scheduledTimeOff.join(', ') : 'None');
       document.getElementById('checklistWarnings').textContent = 'Warnings: ' + (data.warnings && data.warnings.length ? data.warnings.join(', ') : 'None');
@@ -1001,6 +1025,17 @@ button:disabled {
 }
 .banner.ok { border-color: #a7d7c3; background: var(--soft-ok); }
 .banner.error { border-color: #f2c783; background: var(--soft-warn); }
+.scheduled-off-banner {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #f2c783;
+  border-radius: 8px;
+  background: var(--soft-warn);
+}
+.scheduled-off-banner ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
 .summary-grid, .agent-grid, .future-grid {
   display: grid;
   gap: 14px;

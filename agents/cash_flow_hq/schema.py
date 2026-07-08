@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 
@@ -20,16 +21,48 @@ CATEGORY_OPTIONS = [
 ]
 
 STATUS_OPTIONS = ["Upcoming", "Paid", "Past Due", "Needs Review"]
+STATUS_OPTION_COLORS = {
+    "Upcoming": "green",
+    "Needs Review": "yellow",
+    "Past Due": "red",
+    "Paid": "blue",
+}
 PAYMENT_TYPE_OPTIONS = ["Auto Pay", "Manual"]
 FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual", "One-Time"]
 SOURCE_OPTIONS = ["Email", "Manual", "Payroll", "Jim Remit"]
+DUE_STATUS_PROPERTY_NAME = "Due Status"
+DUE_STATUS_FORMULA = (
+    'if(empty(prop("Due Date")), "", '
+    'if(dateBetween(prop("Due Date"), now(), "days") < 0, '
+    '"Past Due by " + format(abs(dateBetween(prop("Due Date"), now(), "days"))) + " Days", '
+    'if(dateBetween(prop("Due Date"), now(), "days") == 0, "Due Today", '
+    'if(dateBetween(prop("Due Date"), now(), "days") == 1, "Due Tomorrow", '
+    '"Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days"))))'
+)
 VENDOR_RULE_FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual"]
+VENDOR_RULE_CATEGORY_OPTIONS = [
+    "Rent",
+    "Software",
+    "Insurance",
+    "Payroll",
+    "Utilities",
+    "Office Supplies",
+    "Marketing",
+    "Professional Services",
+    "Banking",
+    "Taxes",
+    "Licensing",
+    "Travel",
+    "Collections",
+    "Telecommunications",
+]
 VENDOR_RULE_DEFAULT_STATUS_OPTIONS = ["Upcoming"]
 VENDOR_RULE_DATABASE_NAME = "Vendor Rules"
 VENDOR_RULE_SEEDS = [
     {
         "vendor_name": "D1AL",
         "match_text": "D1AL",
+        "display_name": "D1AL",
         "category": "Software",
         "frequency": "Monthly",
         "due_day": 5,
@@ -41,6 +74,7 @@ VENDOR_RULE_SEEDS = [
     {
         "vendor_name": "Pope and Land",
         "match_text": "Pope and Land",
+        "display_name": "Pope & Land",
         "category": "Rent",
         "frequency": "Monthly",
         "due_day": 1,
@@ -106,8 +140,9 @@ def build_properties() -> dict[str, Any]:
         "Category": select_property(CATEGORY_OPTIONS),
         "Amount": {"number": {"format": "dollar"}},
         "Due Date": {"date": {}},
+        DUE_STATUS_PROPERTY_NAME: due_status_property(),
         "Payment Date": {"date": {}},
-        "Status": select_property(STATUS_OPTIONS),
+        "Status": status_select_property(),
         "Payment Type": select_property(PAYMENT_TYPE_OPTIONS),
         "Frequency": select_property(FREQUENCY_OPTIONS),
         "Week": {
@@ -130,7 +165,8 @@ def build_vendor_rule_properties() -> dict[str, Any]:
     return {
         "Vendor Name": {"title": {}},
         "Match Text": {"rich_text": {}},
-        "Category": select_property(CATEGORY_OPTIONS),
+        "Display Name": {"rich_text": {}},
+        "Category": select_property(VENDOR_RULE_CATEGORY_OPTIONS),
         "Frequency": select_property(VENDOR_RULE_FREQUENCY_OPTIONS),
         "Due Day": {"number": {"format": "number"}},
         "Payment Type": select_property(PAYMENT_TYPE_OPTIONS),
@@ -142,6 +178,34 @@ def build_vendor_rule_properties() -> dict[str, Any]:
 
 def select_property(options: list[str]) -> dict[str, Any]:
     return {"select": {"options": [{"name": option} for option in options]}}
+
+
+def status_select_property() -> dict[str, Any]:
+    return {
+        "select": {
+            "options": [
+                {"name": option, "color": STATUS_OPTION_COLORS[option]}
+                for option in STATUS_OPTIONS
+            ]
+        }
+    }
+
+
+def due_status_property() -> dict[str, Any]:
+    return {"formula": {"expression": DUE_STATUS_FORMULA}}
+
+
+def due_status_label(due_date: date | None, today: date) -> str:
+    if due_date is None:
+        return ""
+    days = (due_date - today).days
+    if days < 0:
+        return f"Past Due by {abs(days)} Days"
+    if days == 0:
+        return "Due Today"
+    if days == 1:
+        return "Due Tomorrow"
+    return f"Due in {days} Days"
 
 
 def build_view_specs() -> list[ViewSpec]:

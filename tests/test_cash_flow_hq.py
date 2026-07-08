@@ -4,7 +4,7 @@ import os
 import sys
 import unittest
 from base64 import b64encode
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ from agents.cash_flow_hq.models import AttachmentMetadata, BillEmail, VendorRule
 from agents.cash_flow_hq.parser import extract_amount, extract_due_date, is_bill_related, message_from_graph, parse_bill_candidate
 from agents.cash_flow_hq.schema import (
     CATEGORY_OPTIONS,
+    DUE_STATUS_PROPERTY_NAME,
     SOURCE_OPTIONS,
     STATUS_OPTIONS,
     VENDOR_RULE_DATABASE_NAME,
@@ -25,6 +26,7 @@ from agents.cash_flow_hq.schema import (
     build_vendor_rules_database_payload,
     build_view_payload,
     build_view_specs,
+    due_status_label,
 )
 from agents.cash_flow_hq.service import CashFlowHQService
 
@@ -38,11 +40,21 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(properties["Vendor / Payee"], {"rich_text": {}})
         self.assertEqual(properties["Amount"], {"number": {"format": "dollar"}})
         self.assertEqual(properties["Due Date"], {"date": {}})
+        self.assertIn('prop("Due Date")', properties[DUE_STATUS_PROPERTY_NAME]["formula"]["expression"])
         self.assertEqual(properties["Payment Date"], {"date": {}})
         self.assertEqual(properties["Email Link"], {"url": {}})
         self.assertEqual(properties["Notes"], {"rich_text": {}})
         self.assertIn('prop("Due Date")', properties["Week"]["formula"]["expression"])
         self.assertIn('prop("Due Date")', properties["Month"]["formula"]["expression"])
+
+    def test_due_status_labels_are_human_friendly(self) -> None:
+        today = date(2026, 7, 8)
+
+        self.assertEqual(due_status_label(today, today), "Due Today")
+        self.assertEqual(due_status_label(date(2026, 7, 9), today), "Due Tomorrow")
+        self.assertEqual(due_status_label(date(2026, 7, 11), today), "Due in 3 Days")
+        self.assertEqual(due_status_label(date(2026, 7, 6), today), "Past Due by 2 Days")
+        self.assertEqual(due_status_label(None, today), "")
 
     def test_database_payload_uses_current_notion_parent_and_initial_data_source_shape(self) -> None:
         payload = build_database_payload("395d2fa0e6ed80e79603f4ca876c10f1", "Cash Flow HQ")
@@ -59,6 +71,10 @@ class CashFlowHQSchemaTests(unittest.TestCase):
 
         self.assertEqual([item["name"] for item in properties["Category"]["select"]["options"]], CATEGORY_OPTIONS)
         self.assertEqual([item["name"] for item in properties["Status"]["select"]["options"]], STATUS_OPTIONS)
+        self.assertEqual(
+            {item["name"]: item["color"] for item in properties["Status"]["select"]["options"]},
+            {"Upcoming": "green", "Needs Review": "yellow", "Past Due": "red", "Paid": "blue"},
+        )
         self.assertEqual([item["name"] for item in properties["Source"]["select"]["options"]], SOURCE_OPTIONS)
 
     def test_view_specs_include_requested_views(self) -> None:
@@ -112,8 +128,28 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(payload["title"][0]["text"]["content"], VENDOR_RULE_DATABASE_NAME)
         self.assertEqual(properties["Vendor Name"], {"title": {}})
         self.assertEqual(properties["Match Text"], {"rich_text": {}})
+        self.assertEqual(properties["Display Name"], {"rich_text": {}})
         self.assertEqual(properties["Due Day"], {"number": {"format": "number"}})
         self.assertEqual(properties["Active"], {"checkbox": {}})
+        self.assertEqual(
+            [item["name"] for item in properties["Category"]["select"]["options"]],
+            [
+                "Rent",
+                "Software",
+                "Insurance",
+                "Payroll",
+                "Utilities",
+                "Office Supplies",
+                "Marketing",
+                "Professional Services",
+                "Banking",
+                "Taxes",
+                "Licensing",
+                "Travel",
+                "Collections",
+                "Telecommunications",
+            ],
+        )
         self.assertEqual(
             [item["name"] for item in properties["Frequency"]["select"]["options"]],
             ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual"],
@@ -175,6 +211,7 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(len(notion.views), 9)
         self.assertEqual(notion.created_pages, 0)
         self.assertEqual(len(notion.created_vendor_rules), 2)
+        self.assertIn(DUE_STATUS_PROPERTY_NAME, notion.data_source_properties)
 
     def test_manual_expense_payload_is_reusable_for_later_phases(self) -> None:
         settings = SimpleNamespace(
@@ -256,6 +293,10 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.status, "Upcoming")
         self.assertEqual(updated.review_reasons, ())
         self.assertEqual(updated.field_sources["due_date"], "vendor rules")
+        self.assertNotIn("Missing due date", updated.notes)
+        self.assertEqual(updated.notes, "Imported from Outlook\n✓ Ready for payment")
+        self.assertIn("Category", service.create_bill_properties(updated))
+        self.assertIn("Frequency", service.create_bill_properties(updated))
 
     def test_vendor_rule_partial_match_uses_match_text(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
@@ -273,6 +314,82 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.category, "Rent")
         self.assertEqual(updated.due_date.isoformat(), "2026-07-01")
         self.assertEqual(updated.status, "Upcoming")
+        self.assertEqual(updated.frequency, "Monthly")
+        self.assertNotIn("Missing due date", updated.notes)
+        self.assertEqual(updated.notes, "Imported from Outlook\n✓ Ready for payment")
+
+    def test_vendor_rule_display_name_replaces_sender_email(self) -> None:
+        service = CashFlowHQService(build_settings(), notion=FakeNotion())
+        cases = [
+            (
+                build_email(
+                    sender_name="yardinotifications@popeandland.com",
+                    sender_email="yardinotifications@popeandland.com",
+                    subject="Payment Notification",
+                    body="Pope and Land statement. Amount Due: $126.95.",
+                ),
+                VendorRule(
+                    "Pope and Land",
+                    "Pope and Land",
+                    "Rent",
+                    "Monthly",
+                    1,
+                    "Manual",
+                    "Upcoming",
+                    True,
+                    display_name="Pope & Land",
+                ),
+                "Pope & Land",
+            ),
+            (
+                build_email(
+                    sender_name="receipts@d1al.com",
+                    sender_email="receipts@d1al.com",
+                    subject="Your D1AL receipt",
+                    body="Amount Due: $315.37.",
+                ),
+                VendorRule(
+                    "D1AL",
+                    "D1AL",
+                    "Software",
+                    "Monthly",
+                    5,
+                    "Manual",
+                    "Upcoming",
+                    True,
+                    display_name="D1AL",
+                ),
+                "D1AL",
+            ),
+            (
+                build_email(
+                    sender_name="maria@smaxcollectionsoftware.com",
+                    sender_email="maria@smaxcollectionsoftware.com",
+                    subject="SCollect Monthly Invoice",
+                    body="SCollect invoice. Due Date: July 15, 2026.",
+                ),
+                VendorRule(
+                    "SCollect",
+                    "SCollect",
+                    "Software",
+                    "Monthly",
+                    None,
+                    "Manual",
+                    "Upcoming",
+                    True,
+                    display_name="SCollect",
+                ),
+                "SCollect",
+            ),
+        ]
+
+        for email, rule, expected in cases:
+            with self.subTest(expected=expected):
+                candidate = parse_bill_candidate(email)
+                updated = service.apply_vendor_rules(candidate, email, [rule])
+
+                self.assertEqual(updated.vendor_payee, expected)
+                self.assertNotIn("@", updated.vendor_payee)
 
     def test_vendor_rule_due_date_prefers_invoice_month(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
@@ -304,6 +421,28 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.payment_type, "Auto Pay")
         self.assertEqual(updated.due_date.isoformat(), "2026-07-20")
         self.assertEqual(updated.frequency, "Monthly")
+
+    def test_missing_due_date_example_populates_notes_and_needs_review(self) -> None:
+        service = CashFlowHQService(build_settings(), notion=FakeNotion())
+        candidate = parse_bill_candidate(
+            build_email(
+                sender_name="Unknown Vendor",
+                subject="Invoice available",
+                body="Amount Due: $100.00.",
+            )
+        )
+
+        properties = service.create_bill_properties(candidate)
+
+        self.assertEqual(properties["Vendor / Payee"]["rich_text"][0]["text"]["content"], "Unknown Vendor")
+        self.assertEqual(properties["Status"]["select"]["name"], "Needs Review")
+        self.assertEqual(properties["Source"]["select"]["name"], "Email")
+        self.assertIn("Missing due date", properties["Notes"]["rich_text"][0]["text"]["content"])
+        self.assertNotIn("Due Date", properties)
+        self.assertEqual(
+            properties["Notes"]["rich_text"][0]["text"]["content"],
+            "Imported from Outlook\n\nNeeds Review:\n• Missing due date",
+        )
 
     def test_vendor_rule_seed_creation_adds_initial_rules_once(self) -> None:
         notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
@@ -347,6 +486,10 @@ class CashFlowHQParserTests(unittest.TestCase):
         self.assertIsNone(candidate.due_date)
         self.assertEqual(candidate.status, "Needs Review")
         self.assertEqual(candidate.review_reasons, ("missing amount", "missing due date"))
+        self.assertIn("Missing amount", candidate.notes)
+        self.assertIn("Missing due date", candidate.notes)
+        self.assertNotIn("Confidence", candidate.notes)
+        self.assertNotIn("Subject:", candidate.notes)
 
     def test_due_date_extraction_supports_common_phase_two_point_five_phrases(self) -> None:
         examples = {
@@ -442,7 +585,7 @@ class CashFlowHQParserTests(unittest.TestCase):
 
         self.assertEqual(candidate.status, "Needs Review")
         self.assertIn("PDF not parseable", candidate.review_reasons)
-        self.assertIn("invoice-2026-07.pdf application/pdf", candidate.notes)
+        self.assertNotIn("invoice-2026-07.pdf application/pdf", candidate.notes)
 
     def test_text_pdf_fills_missing_email_amount_due_date_and_invoice_number(self) -> None:
         email = build_email(
@@ -545,6 +688,7 @@ class FakeNotion:
         self.views: list[dict] = []
         self.query_results: list[dict] = []
         self.vendor_rule_pages: list[dict] = []
+        self.data_source_properties: dict = {}
         self.search_payload: dict | None = None
 
     def request(self, method: str, path: str, **kwargs):
@@ -582,7 +726,13 @@ class FakeNotion:
                 self.existing_vendor_rules = True
                 return {"id": "vendor-database-id", "data_sources": [{"id": "vendor-source-id"}]}
             self.existing_database = True
+            self.data_source_properties = kwargs["json"]["initial_data_source"]["properties"]
             return {"id": "database-id", "data_sources": [{"id": "source-id"}]}
+        if method == "GET" and path == "/data_sources/source-id":
+            return {"id": "source-id", "properties": self.data_source_properties}
+        if method == "PATCH" and path == "/data_sources/source-id":
+            self.data_source_properties.update(kwargs["json"]["properties"])
+            return {"id": "source-id", "properties": self.data_source_properties}
         if method == "GET" and path == "/databases/database-id":
             return {"id": "database-id", "data_sources": [{"id": "source-id"}]}
         if method == "GET" and path == "/databases/vendor-database-id":

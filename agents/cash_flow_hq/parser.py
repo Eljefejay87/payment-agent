@@ -299,18 +299,23 @@ def build_notes(
     confidence: str,
     review_reasons: tuple[str, ...],
 ) -> str:
-    parts = [
-        f"Imported from Outlook email received {message.received_at.isoformat() if message.received_at else 'unknown date'}.",
-        f"Confidence: {confidence}.",
-    ]
-    if invoice_number:
-        parts.append(f"Invoice number: {invoice_number}.")
-    if review_reasons:
-        parts.append(f"Needs review: {'; '.join(review_reasons)}.")
-    if message.attachments:
-        parts.append(f"Attachments: {attachment_metadata_text(message.attachments)}.")
-    parts.append(f"Subject: {message.subject}")
-    return " ".join(parts)[:1800]
+    return format_business_notes(review_reasons)
+
+
+def format_business_notes(review_reasons: tuple[str, ...]) -> str:
+    if not review_reasons:
+        return "Imported from Outlook\n✓ Ready for payment"
+    lines = ["Imported from Outlook", "", "Needs Review:"]
+    lines.extend(f"• {display_review_reason(reason)}" for reason in review_reasons)
+    return "\n".join(lines)[:1800]
+
+
+def display_review_reason(reason: str) -> str:
+    if reason == "missing due date":
+        return "Missing due date"
+    if reason == "missing amount":
+        return "Missing amount"
+    return reason
 
 
 def parse_received_at(value: str) -> datetime | None:

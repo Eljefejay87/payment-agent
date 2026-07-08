@@ -66,4 +66,5 @@ class VendorRule:
     payment_type: str | None
     default_status: str
     active: bool
+    display_name: str | None = None
     notes: str = ""
