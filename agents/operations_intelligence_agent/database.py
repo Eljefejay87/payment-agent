@@ -168,6 +168,21 @@ class OperationsDatabase(SQLiteDatabase):
             ).fetchone()
             return _row_to_report(row)
 
+    def report_posted_for_date(self, report_date: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM ops_reports
+                WHERE report_date = ?
+                  AND posted_to_teams = 1
+                  AND COALESCE(is_operations_dashboard, 1) = 1
+                LIMIT 1
+                """,
+                (report_date,),
+            ).fetchone()
+            return row is not None
+
     def save_report(self, report: ExtractedReport, summary_text: str) -> None:
         now = _utc_now()
         metrics = {field: metric.to_dict() for field, metric in report.metrics.items()}

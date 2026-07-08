@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 from agents.weekly_remit_agent.database import RemitDatabase
 from agents.weekly_remit_agent.file_detector import RemitFileValidationError, find_required_remit_files
+from agents.weekly_remit_agent.models import RemitBatch, RemitFiles
+from agents.weekly_remit_agent.reports import build_broker_email_html, build_broker_email_subject
 from agents.weekly_remit_agent.service import WeeklyRemitAgent
 
 
@@ -32,6 +34,44 @@ class WeeklyRemitFileTests(unittest.TestCase):
 
             with self.assertRaises(RemitFileValidationError):
                 find_required_remit_files(folder, "United Remit", "United Liq", (".xlsx", ".xls"))
+
+    def test_finds_csv_exports_when_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            remit = folder / "United Remit 7-6-26.csv"
+            liq = folder / "United Liq Rate.csv"
+            remit.write_text("remit")
+            liq.write_text("liq")
+
+            files = find_required_remit_files(folder, "United Remit", "United Liq", (".xlsx", ".xls", ".csv"))
+
+            self.assertEqual(files.remit, remit)
+            self.assertEqual(files.liquidation, liq)
+
+
+class WeeklyRemitReportTests(unittest.TestCase):
+    def test_broker_email_template_is_professional_and_lists_attachments(self) -> None:
+        batch = RemitBatch(
+            broker_name="ICR",
+            recipient_email="jprawel@icroffice.com",
+            week_start="2026-07-06",
+            sent_date="2026-07-06",
+            files=RemitFiles(
+                remit=Path("United Remit 7-6-26.xlsx"),
+                liquidation=Path("United Liq Rate.xlsx"),
+            ),
+            remit_hash="remit-hash",
+            liquidation_hash="liq-hash",
+        )
+
+        subject = build_broker_email_subject(batch)
+        html = build_broker_email_html(batch)
+
+        self.assertIn("United Capital Management Weekly Remit", subject)
+        self.assertIn("Hi Jim", html)
+        self.assertIn("week of 2026-07-06", html)
+        self.assertIn("United Remit 7-6-26.xlsx", html)
+        self.assertIn("United Liq Rate.xlsx", html)
 
 
 class WeeklyRemitDatabaseTests(unittest.TestCase):

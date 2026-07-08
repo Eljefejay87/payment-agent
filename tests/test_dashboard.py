@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ from agents.dashboard.web import render_dashboard, render_operations_page
 from agents.operations_intelligence_agent.database import OperationsDatabase
 from agents.operations_intelligence_agent.models import ExtractedReport, MetricValue
 from agents.payment_agent.database import PaymentDatabase
+from agents.weekly_remit_agent.database import RemitDatabase
+from agents.weekly_remit_agent.models import RemitBatch, RemitFiles
 
 
 class DashboardTests(unittest.TestCase):
@@ -32,6 +35,45 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(snapshot["remit"]["status"], "Waiting")
             self.assertEqual(snapshot["remit"]["broker"], "ICR")
             self.assertEqual(snapshot["operations"]["message"], "No operations report available yet.")
+
+    def test_current_week_sent_remit_shows_sent_even_when_drop_folder_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            payment_settings = build_payment_settings(base)
+            remit_settings = build_remit_settings(base)
+            PaymentDatabase(payment_settings.database_path).initialize()
+            db = RemitDatabase(remit_settings.database_path)
+            db.initialize()
+            db.save_sent_batch(
+                RemitBatch(
+                    broker_name="ICR",
+                    recipient_email="jprawel@icroffice.com",
+                    week_start="2026-07-06",
+                    sent_date="2026-07-06",
+                    files=RemitFiles(
+                        remit=Path("United Remit 7-6-26.xlsx"),
+                        liquidation=Path("United Liq Rate.xlsx"),
+                    ),
+                    remit_hash="remit-hash",
+                    liquidation_hash="liquidation-hash",
+                )
+            )
+
+            with patch("agents.dashboard.service.datetime") as mock_datetime:
+                mock_datetime.now.return_value = datetime.fromisoformat("2026-07-06T10:00:00-04:00")
+                snapshot = DashboardService(
+                    payment_settings,
+                    remit_settings,
+                    build_dashboard_settings(),
+                ).snapshot()
+
+            self.assertEqual(snapshot["remit"]["status"], "Sent")
+            self.assertEqual(snapshot["remit"]["detail"], "Weekly remit has been sent and archived for this week.")
+            self.assertEqual(snapshot["remit"]["last_sent"], "2026-07-06 for week 2026-07-06")
+            self.assertEqual(
+                snapshot["remit"]["files"],
+                ["United Remit 7-6-26.xlsx", "United Liq Rate.xlsx"],
+            )
 
     def test_dashboard_html_renders_agent_cards(self) -> None:
         snapshot = {

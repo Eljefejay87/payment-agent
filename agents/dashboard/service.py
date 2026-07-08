@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -135,6 +135,19 @@ class DashboardService:
 
     def remit_snapshot(self) -> dict:
         settings = self.remit_settings
+        current_week_start = self._current_remit_week_start()
+        latest_batch = self._latest_remit_batch(settings.database_path, settings.broker_name)
+        if latest_batch and latest_batch["week_start"] == current_week_start:
+            return {
+                "status": "Sent",
+                "broker": settings.broker_name,
+                "incoming_folder": str(settings.incoming_folder),
+                "detail": "Weekly remit has been sent and archived for this week.",
+                "files": [latest_batch["remit_file_name"], latest_batch["liquidation_file_name"]],
+                "last_sent": self._format_remit_sent(latest_batch),
+                "send_deadline": f"{settings.run_day.title()} by {settings.send_deadline}",
+            }
+
         try:
             files = find_required_remit_files(
                 settings.incoming_folder,
@@ -150,7 +163,7 @@ class DashboardService:
             detail = str(exc)
             filenames = []
 
-        last_sent = self._last_remit_sent(settings.database_path, settings.broker_name)
+        last_sent = self._format_remit_sent(latest_batch) if latest_batch else "Never"
         return {
             "status": file_status,
             "broker": settings.broker_name,
@@ -925,12 +938,17 @@ class DashboardService:
         ]
 
     def _last_remit_sent(self, database_path: Path, broker_name: str) -> str:
+        latest_batch = self._latest_remit_batch(database_path, broker_name)
+        return self._format_remit_sent(latest_batch) if latest_batch else "Never"
+
+    def _latest_remit_batch(self, database_path: Path, broker_name: str) -> dict | None:
         try:
             RemitDatabase(database_path).initialize()
             with sqlite3.connect(database_path) as conn:
+                conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """
-                    SELECT sent_date, week_start
+                    SELECT sent_date, week_start, remit_file_name, liquidation_file_name
                     FROM remit_batches
                     WHERE lower(broker_name) = lower(?)
                     ORDER BY created_at DESC
@@ -939,10 +957,19 @@ class DashboardService:
                     (broker_name,),
                 ).fetchone()
         except sqlite3.Error:
-            return "Unavailable"
-        if not row:
+            return None
+        return dict(row) if row else None
+
+    def _format_remit_sent(self, batch: dict | None) -> str:
+        if not batch:
             return "Never"
-        return f"{row[0]} for week {row[1]}"
+        return f"{batch['sent_date']} for week {batch['week_start']}"
+
+    def _current_remit_week_start(self) -> str:
+        timezone = getattr(self.remit_settings, "timezone", self.payment_settings.timezone)
+        now = datetime.now(ZoneInfo(timezone))
+        monday = now.date() - timedelta(days=now.weekday())
+        return monday.isoformat()
 
     def _local_time_label(self) -> str:
         now = datetime.now(ZoneInfo(self.payment_settings.timezone))

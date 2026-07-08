@@ -257,6 +257,40 @@ class OperationsServiceTests(unittest.TestCase):
             self.assertIn("Manual Review Required", agent.teams.messages[0].text)
             self.assertNotIn("GOOD DAY", agent.teams.messages[0].text)
 
+    def test_daily_scan_skips_prior_day_screenshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            settings = build_settings(base)
+            image = build_teams_image("message-1", "image-1", "2026-07-02T21:20:00Z", b"old-image")
+            agent = build_test_agent(settings, graph=FakeHistoryGraph([image]), ocr=PassingExtractor())
+            agent._inside_daily_window = lambda: True
+            agent._today = lambda: "2026-07-03"
+
+            processed = agent.scan_once()
+
+            self.assertEqual(processed, 0)
+            self.assertEqual(agent.ocr.calls, 0)
+            self.assertEqual(agent.teams.sent_count, 0)
+
+    def test_daily_scan_posts_only_once_per_report_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            settings = build_settings(base, dry_run=False)
+            images = [
+                build_teams_image("message-1", "image-1", "2026-07-03T21:01:00Z", b"image-1"),
+                build_teams_image("message-2", "image-2", "2026-07-03T21:02:00Z", b"image-2"),
+            ]
+            agent = build_test_agent(settings, graph=FakeHistoryGraph(images), ocr=LowQualityExtractor())
+            agent._inside_daily_window = lambda: True
+            agent._today = lambda: "2026-07-03"
+
+            processed = agent.scan_once()
+
+            self.assertEqual(processed, 2)
+            self.assertEqual(agent.ocr.calls, 2)
+            self.assertEqual(agent.teams.sent_count, 1)
+            self.assertTrue(agent.db.report_posted_for_date("2026-07-03"))
+
     def test_history_import_is_idempotent_and_skips_duplicate_screenshots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -493,6 +527,9 @@ class FakeHistoryGraph:
     def __init__(self, images: list[TeamsImage]) -> None:
         self.images = images
 
+    def find_recent_images(self) -> list[TeamsImage]:
+        return self.images
+
     def find_images_for_days(self, days: int) -> list[TeamsImage]:
         return self.images
 
@@ -526,6 +563,7 @@ class FakeClassifier:
 
 def build_settings(base: Path, **overrides) -> SimpleNamespace:
     values = dict(
+        dry_run=True,
         graph_tenant_id="",
         graph_client_id="",
         graph_client_secret="",
@@ -535,7 +573,7 @@ def build_settings(base: Path, **overrides) -> SimpleNamespace:
     )
     values.update(overrides)
     return SimpleNamespace(
-        dry_run=True,
+        dry_run=values["dry_run"],
         database_path=base / "ops.sqlite3",
         timezone="America/New_York",
         screenshots_dir=base / "screenshots",

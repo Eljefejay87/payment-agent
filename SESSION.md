@@ -72,14 +72,17 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 - Added `VMAR` to the Operations Intelligence collector allowlist.
 - Added explicit `ops-post-report` command to reprocess a date and post the latest quality-passing corrected Operations report to Teams.
 - Added `ops-post-image` so a corrected report can be posted from a specific clear local screenshot when Teams saved multiple or compressed images for the same day.
+- Updated Weekly Remit Agent to recognize `.csv` exports in addition to `.xlsx/.xls`.
+- Added a professional ICR broker email template for weekly remit delivery.
+- Fixed UCM Admin Dashboard remit status so a remit sent for the current week shows `Sent` after files are archived, instead of falling back to `Waiting` because the drop folder is empty.
 
 ## Current Task
 
-Operations Intelligence OCR has been corrected for the July 2 SCollect dashboard screenshot, and a safe corrected-report post command is available. The screenshot is clear; the previous manual-review result came from incorrect crop regions and missing fallback extraction for the portfolio table.
+Weekly Remit Agent sent the current week remit. The Admin Dashboard now reads the remit database first and reports `Sent` for the current week even when the drop folder is empty.
 
 ## Next Recommended Task
 
-Run `python main.py ops-post-image --image /path/to/clear-scollect-screenshot.png --report-date 2026-07-02` from the project virtual environment to post the corrected July 2 Operations report to Teams from the known clear screenshot.
+Restart or refresh the local dashboard server so the browser picks up the dashboard remit status fix.
 
 ## Known Issues
 

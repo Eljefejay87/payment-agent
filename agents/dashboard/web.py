@@ -182,6 +182,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         """
         for agent in future_agents
     )
+    remit_badge_class = "ready" if remit["status"] in {"Ready", "Sent"} else "warn"
     remit_send_disabled = "disabled" if remit["status"] != "Ready" else ""
     operations_card = _render_operations_card(operations)
     checklist_open_link = (
@@ -244,7 +245,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       <article class="agent-card">
         <div class="card-head">
           <h2>Weekly Remit Agent</h2>
-          <span class="badge {'ready' if remit['status'] == 'Ready' else 'warn'}">{_e(remit['status'])}</span>
+          <span class="badge {remit_badge_class}">{_e(remit['status'])}</span>
         </div>
         <p class="detail">{_e(remit['detail'])}</p>
         <dl>

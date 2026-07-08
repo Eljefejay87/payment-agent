@@ -79,9 +79,17 @@ class OperationsIntelligenceAgent:
             LOGGER.info("Operations Intelligence Agent waiting for daily screenshot window")
             return 0
 
+        today = self._today()
         processed = 0
         for image in self.graph.find_recent_images():
             try:
+                report_date = self._report_date(image.created_at)
+                if report_date != today:
+                    LOGGER.info(
+                        "Skipping Teams screenshot from %s during today's Operations scan",
+                        report_date,
+                    )
+                    continue
                 if self._process_image(image):
                     processed += 1
             except Exception:
@@ -191,6 +199,12 @@ class OperationsIntelligenceAgent:
             self.db.update_report_classification(report.screenshot_hash, classification.to_dict())
         self._write_text_report(report.report_date, build_detailed_report_text(report, previous))
         if self.settings.post_summary_to_teams:
+            if self.db.report_posted_for_date(report.report_date):
+                LOGGER.warning(
+                    "Operations report for %s was already posted to Teams; skipping duplicate post.",
+                    report.report_date,
+                )
+                return message.text
             posted_message = self._post_quality_checked_message(report, message)
             if posted_message and not self.settings.dry_run:
                 self.db.mark_report_posted(report.screenshot_hash)

@@ -310,14 +310,33 @@ remits/incoming/ICR/
 Required filenames:
 
 ```text
-United Remit*.xlsx
-United Liq*.xlsx
+United Remit*.xlsx or United Remit*.csv
+United Liq*.xlsx or United Liq*.csv
 ```
 
 The spreadsheet contents and formatting are not changed. The agent only validates that both files exist, sends them, records the send in SQLite, sends the owner Teams confirmation, and moves the sent files into a dated folder:
 
 ```text
 remits/sent/ICR/YYYY-MM-DD/
+```
+
+Broker email template:
+
+```text
+Subject: United Capital Management Weekly Remit - ICR - Week of YYYY-MM-DD
+
+Hi Jim,
+
+Attached are United Capital Management's weekly ICR remit report and liquidation report for the week of YYYY-MM-DD.
+
+Attached files:
+- United Remit...
+- United Liq...
+
+Please let us know if you need anything else.
+
+Thank you,
+United Capital Management
 ```
 
 ### Weekly Remit Configuration
@@ -333,7 +352,7 @@ REMIT_FAILED_FOLDER=remits/failed/ICR
 REMIT_DUPLICATE_FOLDER=remits/duplicates/ICR
 REMIT_REMIT_FILENAME_CONTAINS=United Remit
 REMIT_LIQUIDATION_FILENAME_CONTAINS=United Liq
-REMIT_ALLOWED_EXTENSIONS=.xlsx,.xls
+REMIT_ALLOWED_EXTENSIONS=.xlsx,.xls,.csv
 REMIT_SEND_MODE=send
 REMIT_RUN_DAY=monday
 REMIT_SEND_DEADLINE=15:00
@@ -816,3 +835,84 @@ brew install tesseract
 - Add optional AI vision fallback for hard-to-read screenshots after OCR fails.
 - Add dashboard charts from the stored `ops_reports` history.
 - Add a chat-id discovery command for non-technical setup.
+
+## Cash Flow HQ
+
+Cash Flow HQ creates a Notion foundation for business bills, payroll, Jim remit, manual expenses, and weekly/monthly cash obligations.
+
+Phase 1 creates the Notion database and views. Phase 2 scans Outlook for likely bill-related emails and creates Cash Flow HQ rows for review. It does not detect payment confirmations, create daily automation, mark anything paid, run advanced analytics, or connect to the main dashboard.
+
+### Configuration
+
+Add these values to `.env`:
+
+```bash
+NOTION_API_KEY=
+CASH_FLOW_HQ_PARENT_PAGE_ID=
+CASH_FLOW_HQ_DATABASE_NAME=Cash Flow HQ
+NOTION_VERSION=2026-03-11
+CASH_FLOW_HQ_MAILBOX_USER_ID=
+```
+
+Notion values:
+
+| Variable | Where it comes from |
+| --- | --- |
+| `NOTION_API_KEY` | Notion Developer portal. Use an internal integration token or a personal access token. Keep it private. |
+| `CASH_FLOW_HQ_PARENT_PAGE_ID` | The Notion page URL where Cash Flow HQ should live. Copy the page ID from the URL after sharing that page with the Notion integration. |
+| `CASH_FLOW_HQ_DATABASE_NAME` | The database name this tool creates/finds. Leave it as `Cash Flow HQ` unless you intentionally renamed it. |
+| `NOTION_VERSION` | The Notion API version header used by the code. Leave it as `2026-03-11`. |
+
+Before running a scan, open the parent page in Notion, use the page menu to add/share the Notion connection, and confirm the connection can insert and query content. The Outlook scan also uses the existing `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`, and `MS_GRAPH_CLIENT_SECRET` settings with Microsoft Graph `Mail.Read`.
+
+If a scan is started without the required Notion settings, the tool stops before scanning and prints a Cash Flow HQ Notion setup error listing the missing values.
+
+### Preview Phase 1
+
+Preview the schema and view names without contacting Notion:
+
+```bash
+python main.py cash-flow-preview
+```
+
+### Create Phase 1
+
+Create or reuse the `Cash Flow HQ` Notion database and add the Phase 1 views:
+
+```bash
+python main.py cash-flow-init
+```
+
+The script creates the requested properties, including `Week` and `Month` formulas based on `Due Date`, then creates the requested table views: Dashboard, This Week, This Month, Paid, Auto Pay, Manual Entries, Payroll, Jim Remit, Needs Review, and Past Due.
+
+### Scan Outlook Email
+
+Preview likely bill email imports without writing Notion rows:
+
+```bash
+python main.py cashflow-scan-email --dry-run --days 7 --limit 50
+```
+
+Run the Phase 2 import:
+
+```bash
+python main.py cashflow-scan-email --days 7 --limit 50
+```
+
+Add `--debug` to log extracted vendor, amount, due date, and status for each candidate:
+
+```bash
+python main.py cashflow-scan-email --dry-run --debug --days 7 --limit 50
+```
+
+The scanner searches the configured mailbox Inbox for recent bill-related terms such as invoice, bill, statement, amount due, payment due, due date, autopay, subscription, renewal, receipt, and payment reminder.
+
+When an email has enough detail, the scanner creates a Cash Flow HQ row with `Status = Upcoming` and `Source = Email`. If the amount or due date is missing, it creates the row as `Status = Needs Review`. It does not guess missing amounts or due dates, does not mark anything paid, and does not overwrite Manual, Payroll, or Jim Remit entries.
+
+Duplicate protection checks the original email link first, then checks for an existing row with the same vendor/payee, amount, and due date. Matching rows are skipped rather than updated.
+
+### Phase 3 Connection Point
+
+The reusable service layer lives in `agents/cash_flow_hq/`. Phase 3 payment confirmation detection should be added as a separate pass that proposes `Payment Date` updates for review without automatically marking rows paid.
+
+Daily schedule prep is marked in code for a future 10:00 AM run, but no Cash Flow HQ scheduler is created in Phase 2.

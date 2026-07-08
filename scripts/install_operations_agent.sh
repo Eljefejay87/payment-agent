@@ -14,12 +14,17 @@ launchctl bootout "gui/$(id -u)" "$PLIST_TARGET" >/dev/null 2>&1 || true
 
 mkdir -p "$HOME/Library/LaunchAgents" "$INSTALL_DIR" "$INSTALL_DIR/logs"
 
-rsync -a --delete \
+rsync -a \
   --exclude ".git" \
   --exclude ".venv" \
   --exclude "__pycache__" \
   --exclude "*.pyc" \
   --exclude "logs" \
+  --exclude "reports" \
+  --exclude "screenshots" \
+  --exclude "work" \
+  --exclude "database" \
+  --exclude "payment_agent.sqlite3" \
   --exclude "remits" \
   "$PROJECT_DIR/" "$INSTALL_DIR/"
 

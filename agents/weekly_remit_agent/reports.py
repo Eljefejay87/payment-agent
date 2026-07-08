@@ -7,14 +7,24 @@ from .models import RemitBatch
 
 
 def build_broker_email_subject(batch: RemitBatch) -> str:
-    return f"Weekly Remit - {batch.broker_name} - Week of {batch.week_start}"
+    return f"United Capital Management Weekly Remit - {batch.broker_name} - Week of {batch.week_start}"
 
 
 def build_broker_email_html(batch: RemitBatch) -> str:
     broker = escape_html(batch.broker_name)
+    week_start = escape_html(batch.week_start)
+    remit_name = escape_html(batch.files.remit.name)
+    liquidation_name = escape_html(batch.files.liquidation.name)
     return (
-        "<p>Hello,</p>"
-        f"<p>Attached are this week's {broker} remit report and liquidation report.</p>"
+        "<p>Hi Jim,</p>"
+        f"<p>Attached are United Capital Management's weekly {broker} remit report "
+        f"and liquidation report for the week of {week_start}.</p>"
+        "<p><strong>Attached files:</strong></p>"
+        "<ul>"
+        f"<li>{remit_name}</li>"
+        f"<li>{liquidation_name}</li>"
+        "</ul>"
+        "<p>Please let us know if you need anything else.</p>"
         "<p>Thank you,<br>United Capital Management</p>"
     )
 
@@ -45,4 +55,3 @@ def build_owner_teams_message(batch: RemitBatch) -> TeamsMessage:
         "</ul>"
     )
     return TeamsMessage(title=title, text=text, html=html)
-
