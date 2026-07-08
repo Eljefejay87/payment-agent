@@ -175,6 +175,22 @@ class CashFlowHQConfigTests(unittest.TestCase):
         self.assertEqual(settings.database_name, "Cash Flow HQ")
         self.assertEqual(settings.notion_version, "2026-03-11")
 
+    def test_load_settings_reads_explicit_notion_data_source_ids(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "secret",
+                "CASH_FLOW_HQ_PARENT_PAGE_ID": "page",
+                "CASH_FLOW_HQ_DATA_SOURCE_ID": "cash-source-id",
+                "VENDOR_RULES_DATA_SOURCE_ID": "vendor-source-id",
+            },
+            clear=True,
+        ):
+            settings = load_cash_flow_settings()
+
+        self.assertEqual(settings.cash_flow_data_source_id, "cash-source-id")
+        self.assertEqual(settings.vendor_rules_data_source_id, "vendor-source-id")
+
     def test_validate_scan_requires_graph_settings(self) -> None:
         settings = SimpleNamespace(
             notion_api_key="secret",
@@ -236,6 +252,26 @@ class CashFlowHQServiceTests(unittest.TestCase):
 
         self.assertEqual(foundation, {"database_id": "database-id", "data_source_id": "source-id"})
         self.assertEqual(notion.search_payload["filter"], {"property": "object", "value": "data_source"})
+
+    def test_explicit_data_source_ids_are_preferred_over_title_search(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        service = CashFlowHQService(
+            build_settings(
+                cash_flow_data_source_id="cash-source-id",
+                vendor_rules_data_source_id="rules-source-id",
+            ),
+            notion=notion,
+        )
+
+        self.assertEqual(
+            service.get_existing_foundation(),
+            {"database_id": "cash-database-id", "data_source_id": "cash-source-id"},
+        )
+        self.assertEqual(
+            service.get_existing_vendor_rules_foundation(),
+            {"database_id": "rules-database-id", "data_source_id": "rules-source-id"},
+        )
+        self.assertIsNone(notion.search_payload)
 
     def test_create_bill_properties_marks_missing_details_needs_review(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
@@ -676,6 +712,7 @@ class CashFlowHQEmailScannerTests(unittest.TestCase):
 
         self.assertEqual(len(result.imported), 1)
         self.assertEqual(notion.created_pages, 1)
+        self.assertEqual(notion.vendor_rules_search_count, 1)
 
 
 class FakeNotion:
@@ -690,6 +727,7 @@ class FakeNotion:
         self.vendor_rule_pages: list[dict] = []
         self.data_source_properties: dict = {}
         self.search_payload: dict | None = None
+        self.vendor_rules_search_count = 0
 
     def request(self, method: str, path: str, **kwargs):
         if method == "POST" and path == "/search":
@@ -706,6 +744,7 @@ class FakeNotion:
                     ]
                 }
             if query == VENDOR_RULE_DATABASE_NAME and self.existing_vendor_rules:
+                self.vendor_rules_search_count += 1
                 return {
                     "results": [
                         {
@@ -715,6 +754,8 @@ class FakeNotion:
                         }
                     ]
                 }
+            if query == VENDOR_RULE_DATABASE_NAME:
+                self.vendor_rules_search_count += 1
             return {"results": []}
         if method == "POST" and path == "/data_sources/source-id/query":
             return {"results": self.query_results}
@@ -730,6 +771,18 @@ class FakeNotion:
             return {"id": "database-id", "data_sources": [{"id": "source-id"}]}
         if method == "GET" and path == "/data_sources/source-id":
             return {"id": "source-id", "properties": self.data_source_properties}
+        if method == "GET" and path == "/data_sources/cash-source-id":
+            return {
+                "id": "cash-source-id",
+                "parent": {"type": "database_id", "database_id": "cash-database-id"},
+                "properties": self.data_source_properties,
+            }
+        if method == "GET" and path == "/data_sources/rules-source-id":
+            return {
+                "id": "rules-source-id",
+                "parent": {"type": "database_id", "database_id": "rules-database-id"},
+                "properties": {},
+            }
         if method == "PATCH" and path == "/data_sources/source-id":
             self.data_source_properties.update(kwargs["json"]["properties"])
             return {"id": "source-id", "properties": self.data_source_properties}
@@ -791,12 +844,18 @@ def vendor_rule_page_from_properties(properties: dict) -> dict:
     return {"properties": readable}
 
 
-def build_settings() -> SimpleNamespace:
+def build_settings(**overrides) -> SimpleNamespace:
+    values = {
+        "notion_api_key": "secret",
+        "notion_version": "2026-03-11",
+        "notion_parent_page_id": "page-id",
+        "database_name": "Cash Flow HQ",
+        "cash_flow_data_source_id": "",
+        "vendor_rules_data_source_id": "",
+    }
+    values.update(overrides)
     return SimpleNamespace(
-        notion_api_key="secret",
-        notion_version="2026-03-11",
-        notion_parent_page_id="page-id",
-        database_name="Cash Flow HQ",
+        **values,
     )
 
 

@@ -17,7 +17,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Cash Flow HQ Notion tools")
     parser.add_argument(
         "command",
-        choices=["cash-flow-init", "cash-flow-preview", "cashflow-scan-email", "cash-flow-scan-email"],
+        choices=[
+            "cash-flow-init",
+            "cash-flow-preview",
+            "cash-flow-list-notion-data-sources",
+            "cashflow-scan-email",
+            "cash-flow-scan-email",
+        ],
         help="Action to run.",
     )
     parser.add_argument("--env-file", default=None, help="Optional path to .env file.")
@@ -33,6 +39,13 @@ def main() -> int:
 
     if args.command == "cash-flow-preview":
         print(json.dumps(service.build_payload_preview(), indent=2))
+        return 0
+
+    if args.command == "cash-flow-list-notion-data-sources":
+        if not settings.notion_api_key:
+            logging.error("NOTION_API_KEY is required.")
+            return 2
+        print(json.dumps(service.list_data_source_metadata(), indent=2))
         return 0
 
     if args.command in {"cashflow-scan-email", "cash-flow-scan-email"}:

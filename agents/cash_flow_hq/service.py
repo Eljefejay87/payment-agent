@@ -39,8 +39,37 @@ class CashFlowHQService:
             "views": [spec.name for spec in build_view_specs()],
         }
 
+    def list_data_source_metadata(self) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for query in (self.settings.database_name, VENDOR_RULE_DATABASE_NAME):
+            response = self.notion.request(
+                "POST",
+                "/search",
+                json={
+                    "query": query,
+                    "filter": {"property": "object", "value": "data_source"},
+                    "page_size": 25,
+                },
+            )
+            for result in response.get("results", []):
+                data_source_id = result.get("id", "")
+                if not data_source_id or data_source_id in seen:
+                    continue
+                seen.add(data_source_id)
+                parent = result.get("parent", {})
+                rows.append(
+                    {
+                        "title": plain_title(result.get("title", [])),
+                        "data_source_id": data_source_id,
+                        "parent_type": parent.get("type", ""),
+                        "parent_id": parent.get("database_id") or parent.get("page_id") or "",
+                    }
+                )
+        return rows
+
     def ensure_foundation(self) -> dict[str, Any]:
-        foundation = self.find_foundation_by_name(self.settings.database_name)
+        foundation = self.find_cash_flow_foundation()
         created = False
         if foundation is None:
             database = self.create_database()
@@ -50,19 +79,26 @@ class CashFlowHQService:
         data_source_id = foundation["data_source_id"]
         self.ensure_due_status_property(data_source_id)
         created_views = self.ensure_views(database_id, data_source_id)
-        self.ensure_vendor_rules_foundation()
+        vendor_rules_foundation = self.ensure_vendor_rules_foundation()
         return {
             "database_id": database_id,
             "data_source_id": data_source_id,
             "database_created": created,
             "views_created": created_views,
+            "vendor_rules_foundation": vendor_rules_foundation,
         }
 
     def get_existing_foundation(self) -> dict[str, str]:
-        foundation = self.find_foundation_by_name(self.settings.database_name)
+        foundation = self.find_cash_flow_foundation()
         if foundation is None:
             raise RuntimeError(f"Notion database not found: {self.settings.database_name}")
         return foundation
+
+    def find_cash_flow_foundation(self) -> dict[str, str] | None:
+        data_source_id = getattr(self.settings, "cash_flow_data_source_id", "")
+        if data_source_id:
+            return self.foundation_from_data_source(self.retrieve_data_source(data_source_id))
+        return self.find_foundation_by_name(self.settings.database_name)
 
     def find_database_by_name(self, database_name: str) -> dict[str, Any] | None:
         foundation = self.find_foundation_by_name(database_name)
@@ -130,7 +166,7 @@ class CashFlowHQService:
         LOGGER.info("Added Notion property: %s", DUE_STATUS_PROPERTY_NAME)
 
     def ensure_vendor_rules_foundation(self) -> dict[str, str]:
-        foundation = self.find_foundation_by_name(VENDOR_RULE_DATABASE_NAME)
+        foundation = self.get_existing_vendor_rules_foundation()
         if foundation is None:
             database = self.notion.request(
                 "POST",
@@ -143,6 +179,9 @@ class CashFlowHQService:
         return foundation
 
     def get_existing_vendor_rules_foundation(self) -> dict[str, str] | None:
+        data_source_id = getattr(self.settings, "vendor_rules_data_source_id", "")
+        if data_source_id:
+            return self.foundation_from_data_source(self.retrieve_data_source(data_source_id))
         return self.find_foundation_by_name(VENDOR_RULE_DATABASE_NAME)
 
     def ensure_vendor_rule_seeds(self, data_source_id: str) -> None:
@@ -241,6 +280,9 @@ class CashFlowHQService:
 
     def retrieve_database(self, database_id: str) -> dict[str, Any]:
         return self.notion.request("GET", f"/databases/{database_id}")
+
+    def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
+        return self.notion.request("GET", f"/data_sources/{data_source_id}")
 
     def ensure_views(self, database_id: str, data_source_id: str) -> list[str]:
         existing = self.list_views(database_id)

@@ -32,7 +32,7 @@ class CashFlowEmailScanner:
         vendor_rules_foundation = (
             self.cash_flow.get_existing_vendor_rules_foundation()
             if dry_run
-            else self.cash_flow.ensure_vendor_rules_foundation()
+            else foundation.get("vendor_rules_foundation")
         )
         vendor_rules = (
             self.cash_flow.list_vendor_rules(vendor_rules_foundation["data_source_id"])

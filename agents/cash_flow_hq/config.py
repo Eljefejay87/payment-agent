@@ -18,6 +18,8 @@ class CashFlowHQSettings:
     notion_parent_page_id: str
     notion_version: str
     database_name: str
+    cash_flow_data_source_id: str
+    vendor_rules_data_source_id: str
     mailbox_user_id: str
     graph_tenant_id: str
     graph_client_id: str
@@ -32,6 +34,8 @@ def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
         notion_parent_page_id=os.getenv("CASH_FLOW_HQ_PARENT_PAGE_ID", ""),
         notion_version=os.getenv("NOTION_VERSION", "2026-03-11"),
         database_name=os.getenv("CASH_FLOW_HQ_DATABASE_NAME", "Cash Flow HQ"),
+        cash_flow_data_source_id=os.getenv("CASH_FLOW_HQ_DATA_SOURCE_ID", ""),
+        vendor_rules_data_source_id=os.getenv("VENDOR_RULES_DATA_SOURCE_ID", ""),
         mailbox_user_id=os.getenv("CASH_FLOW_HQ_MAILBOX_USER_ID", os.getenv("MAILBOX_USER_ID", "")),
         graph_tenant_id=os.getenv("MS_GRAPH_TENANT_ID", ""),
         graph_client_id=os.getenv("MS_GRAPH_CLIENT_ID", ""),
