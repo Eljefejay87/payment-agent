@@ -30,6 +30,8 @@ class CashFlowHQSettings:
     teams_graph_client_id: str
     teams_graph_client_secret: str
     teams_graph_token_cache_path: Path
+    cash_flow_notification_time: str
+    cash_flow_notification_state_path: Path
 
 
 def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
@@ -51,6 +53,8 @@ def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
         teams_graph_client_id=os.getenv("TEAMS_GRAPH_CLIENT_ID") or os.getenv("MS_GRAPH_CLIENT_ID", ""),
         teams_graph_client_secret=os.getenv("TEAMS_GRAPH_CLIENT_SECRET") or os.getenv("MS_GRAPH_CLIENT_SECRET", ""),
         teams_graph_token_cache_path=Path(os.getenv("TEAMS_GRAPH_TOKEN_CACHE_PATH", ".graph_teams_token_cache.bin")),
+        cash_flow_notification_time=os.getenv("CASH_FLOW_HQ_NOTIFICATION_TIME", "08:00"),
+        cash_flow_notification_state_path=Path(os.getenv("CASH_FLOW_HQ_NOTIFICATION_STATE_PATH", ".cash_flow_hq_notifications.json")),
     )
 
 
@@ -84,4 +88,6 @@ def validate_cash_flow_settings(
             errors.append("TEAMS_GRAPH_CLIENT_ID or MS_GRAPH_CLIENT_ID is required.")
         if not settings.teams_graph_client_secret:
             errors.append("TEAMS_GRAPH_CLIENT_SECRET or MS_GRAPH_CLIENT_SECRET is required.")
+        if not getattr(settings, "cash_flow_notification_time", ""):
+            errors.append("CASH_FLOW_HQ_NOTIFICATION_TIME is required.")
     return errors

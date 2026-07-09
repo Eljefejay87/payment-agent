@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agents.cash_flow_hq.alerts import CashFlowBill, CashFlowTeamsAlerts, build_cash_flow_alert
+from agents.cash_flow_hq.alerts import CashFlowBill, CashFlowTeamsAlerts, already_sent, build_morning_brief, mark_sent
 from agents.cash_flow_hq.config import load_cash_flow_settings, validate_cash_flow_settings
 from agents.cash_flow_hq.email_scan import CashFlowEmailScanner
 from agents.cash_flow_hq.graph_client import CashFlowGraphClient
@@ -23,6 +23,8 @@ from agents.cash_flow_hq.schema import (
     DUE_STATUS_PROPERTY_NAME,
     SOURCE_OPTIONS,
     STATUS_OPTIONS,
+    THIS_WEEK_VIEW_PROPERTIES,
+    TODAYS_PRIORITIES_VIEW_PROPERTIES,
     VENDOR_RULE_DATABASE_NAME,
     VENDOR_RULE_SEEDS,
     build_database_payload,
@@ -88,6 +90,7 @@ class CashFlowHQSchemaTests(unittest.TestCase):
             names,
             [
                 "Dashboard",
+                "Today's Priorities",
                 "This Week",
                 "This Month",
                 "Paid",
@@ -101,14 +104,22 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         )
 
     def test_view_payload_targets_database_and_data_source(self) -> None:
-        spec = build_view_specs()[1]
+        spec = build_view_specs()[2]
         payload = build_view_payload("database-id", "source-id", spec)
 
         self.assertEqual(payload["database_id"], "database-id")
         self.assertEqual(payload["data_source_id"], "source-id")
         self.assertEqual(payload["name"], "This Week")
-        self.assertEqual(payload["filter"]["property"], "Due Date")
-        self.assertEqual(payload["filter"]["date"], {"this_week": {}})
+        self.assertEqual(
+            payload["filter"],
+            {
+                "and": [
+                    {"property": "Due Date", "date": {"on_or_after": "today"}},
+                    {"property": "Due Date", "date": {"on_or_before": "one_week_from_now"}},
+                ]
+            },
+        )
+        self.assertEqual([item["property"] for item in payload["configuration"]["properties"][: len(THIS_WEEK_VIEW_PROPERTIES)]], THIS_WEEK_VIEW_PROPERTIES)
 
     def test_dashboard_view_payload_orders_columns_and_hides_notes(self) -> None:
         spec = build_view_specs()[0]
@@ -120,10 +131,39 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(properties[3]["property"], DUE_STATUS_PROPERTY_NAME)
         for property_name in DASHBOARD_HIDDEN_PROPERTIES:
             self.assertFalse(next(item for item in properties if item["property"] == property_name)["visible"])
-        self.assertEqual(DASHBOARD_HIDDEN_PROPERTIES, {"Notes", "Month", "Week", "Payment Date"})
+        self.assertEqual(
+            DASHBOARD_HIDDEN_PROPERTIES,
+            {"Email Link", "Source", "Frequency", "Month", "Week", "Payment Date", "Notes"},
+        )
+
+    def test_todays_priorities_view_filters_sorts_and_hides_properties(self) -> None:
+        spec = build_view_specs()[1]
+        payload = build_view_payload("database-id", "source-id", spec)
+        properties = payload["configuration"]["properties"]
+
+        self.assertEqual(payload["name"], "Today's Priorities")
+        self.assertEqual(
+            payload["filter"],
+            {
+                "or": [
+                    {"property": "Status", "select": {"equals": "Needs Review"}},
+                    {"property": "Due Status", "formula": {"string": {"contains": "Today"}}},
+                    {"property": "Due Status", "formula": {"string": {"contains": "Past Due"}}},
+                ]
+            },
+        )
+        self.assertEqual(
+            payload["sorts"],
+            [
+                {"property": "Due Date", "direction": "ascending"},
+                {"property": "Amount", "direction": "descending"},
+            ],
+        )
+        self.assertEqual([item["property"] for item in properties[: len(TODAYS_PRIORITIES_VIEW_PROPERTIES)]], TODAYS_PRIORITIES_VIEW_PROPERTIES)
+        self.assertFalse(next(item for item in properties if item["property"] == "Notes")["visible"])
 
     def test_month_view_uses_supported_notion_date_filter_conditions(self) -> None:
-        spec = build_view_specs()[2]
+        spec = build_view_specs()[3]
         payload = build_view_payload("database-id", "source-id", spec)
 
         self.assertEqual(payload["name"], "This Month")
@@ -191,6 +231,7 @@ class CashFlowHQConfigTests(unittest.TestCase):
         self.assertEqual(settings.database_name, "Cash Flow HQ")
         self.assertEqual(settings.notion_version, "2026-03-11")
         self.assertEqual(settings.cash_flow_teams_user, "jaye@unitedaccountservices.com")
+        self.assertEqual(settings.cash_flow_notification_time, "08:00")
 
     def test_load_settings_reads_explicit_notion_data_source_ids(self) -> None:
         with patch.dict(
@@ -255,9 +296,9 @@ class CashFlowHQServiceTests(unittest.TestCase):
         result = service.ensure_foundation()
 
         self.assertTrue(result["database_created"])
-        self.assertEqual(len(result["views_created"]), 10)
+        self.assertEqual(len(result["views_created"]), 11)
         self.assertEqual(notion.patched_views, 1)
-        self.assertEqual(len(notion.views), 9)
+        self.assertEqual(len(notion.views), 10)
         self.assertEqual(notion.created_pages, 0)
         self.assertEqual(len(notion.created_vendor_rules), 2)
         self.assertIn(DUE_STATUS_PROPERTY_NAME, notion.data_source_properties)
@@ -750,24 +791,30 @@ class CashFlowHQGraphClientTests(unittest.TestCase):
 
 
 class CashFlowHQTeamsAlertTests(unittest.TestCase):
-    def test_alert_contains_direct_trigger_counts_and_due_this_week_total(self) -> None:
+    def test_morning_brief_contains_counts_totals_and_sorted_priorities(self) -> None:
         bills = [
-            CashFlowBill("Due Today LLC", 100.0, date(2026, 7, 8), "Due Today", "Upcoming"),
-            CashFlowBill("Due Tomorrow LLC", 200.0, date(2026, 7, 9), "Due Tomorrow", "Upcoming"),
-            CashFlowBill("Past Due LLC", 50.0, date(2026, 7, 6), "Past Due by 2 Days", "Upcoming"),
-            CashFlowBill("Review LLC", 25.0, date(2026, 7, 10), "Due in 2 Days", "Needs Review"),
-            CashFlowBill("Paid LLC", 75.0, date(2026, 7, 8), "Due Today", "Paid"),
+            CashFlowBill("Due Today LLC", 100.0, date(2026, 7, 8), "🟡 Due Today", "Upcoming"),
+            CashFlowBill("Due Tomorrow LLC", 200.0, date(2026, 7, 9), "🟡 Due Tomorrow", "Upcoming"),
+            CashFlowBill("Past Due LLC", 50.0, date(2026, 7, 6), "🔴 Past Due by 2 Days", "Upcoming"),
+            CashFlowBill("Review LLC", None, date(2026, 7, 10), "🟢 Due in 2 Days", "Needs Review", "⚠ Needs Review\n\n• Missing amount"),
+            CashFlowBill("Paid LLC", 75.0, date(2026, 7, 8), "🟡 Due Today", "Paid"),
         ]
 
-        alert = build_cash_flow_alert(bills, date(2026, 7, 8))
+        alert = build_morning_brief(bills, date(2026, 7, 8))
 
-        self.assertIn("Bills due this week total: $325.00", alert["text"])
-        self.assertIn("Due today: 1", alert["text"])
-        self.assertIn("Due tomorrow: 1", alert["text"])
-        self.assertIn("Past due: 1", alert["text"])
-        self.assertIn("Needs review: 1", alert["text"])
-        self.assertIn("Due Today LLC", alert["html"])
-        self.assertIn("Review LLC", alert["html"])
+        self.assertIn("💰 Cash Flow HQ Morning Brief", alert["text"])
+        self.assertIn("Bills Due Today: 1 ($100.00)", alert["text"])
+        self.assertIn("Bills Due Tomorrow: 1 ($200.00)", alert["text"])
+        self.assertIn("Bills Due This Week: 3 ($300.00)", alert["text"])
+        self.assertIn("Needs Review: 1", alert["text"])
+        self.assertIn("Past Due: 1", alert["text"])
+        self.assertLess(alert["text"].index("Past Due LLC"), alert["text"].index("Review LLC"))
+        self.assertIn("Missing amount", alert["text"])
+
+    def test_morning_brief_no_action_when_no_priorities(self) -> None:
+        alert = build_morning_brief([], date(2026, 7, 8))
+
+        self.assertIn("✅ No action needed today.", alert["text"])
 
     def test_alert_sends_direct_message_to_configured_user_only(self) -> None:
         notion = FakeNotion(existing_database=True)
@@ -776,18 +823,62 @@ class CashFlowHQTeamsAlertTests(unittest.TestCase):
                 vendor="D1AL",
                 amount=315.37,
                 due_date="2026-07-09",
-                due_status="Due Tomorrow",
+                due_status="🟡 Due Tomorrow",
                 status="Upcoming",
             )
         ]
         graph = FakeTeamsGraph()
+        state_path = Path("work/test-cash-flow-direct-send-state.json")
+        if state_path.exists():
+            state_path.unlink()
         service = CashFlowHQService(build_settings(), notion=notion)
 
-        CashFlowTeamsAlerts(build_settings(), service, graph).send_alerts(today=date(2026, 7, 8))
+        CashFlowTeamsAlerts(
+            build_settings(cash_flow_notification_state_path=state_path),
+            service,
+            graph,
+        ).send_morning_brief(today=date(2026, 7, 8))
 
         self.assertEqual(len(graph.direct_messages), 1)
         self.assertEqual(graph.direct_messages[0][0], "jaye@unitedaccountservices.com")
         self.assertIn("D1AL", graph.direct_messages[0][1])
+
+    def test_morning_brief_skips_duplicate_daily_summary(self) -> None:
+        state_path = Path("work/test-cash-flow-notification-state.json")
+        if state_path.exists():
+            state_path.unlink()
+        mark_sent(state_path, date(2026, 7, 8))
+
+        self.assertTrue(already_sent(state_path, date(2026, 7, 8)))
+        self.assertFalse(already_sent(state_path, date(2026, 7, 9)))
+
+    def test_manual_test_notification_ignores_duplicate_state_without_updating_it(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.query_results = [
+            cash_flow_page(
+                vendor="D1AL",
+                amount=315.37,
+                due_date="2026-07-09",
+                due_status="🟡 Due Tomorrow",
+                status="Upcoming",
+            )
+        ]
+        state_path = Path("work/test-cash-flow-manual-state.json")
+        if state_path.exists():
+            state_path.unlink()
+        mark_sent(state_path, date(2026, 7, 8))
+        graph = FakeTeamsGraph()
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        CashFlowTeamsAlerts(
+            build_settings(cash_flow_notification_state_path=state_path),
+            service,
+            graph,
+        ).send_morning_brief(today=date(2026, 7, 9), force=True, record_sent=False)
+
+        self.assertEqual(len(graph.direct_messages), 1)
+        self.assertTrue(already_sent(state_path, date(2026, 7, 8)))
+        self.assertFalse(already_sent(state_path, date(2026, 7, 9)))
 
 
 class CashFlowHQEmailScannerTests(unittest.TestCase):
@@ -968,6 +1059,8 @@ def build_settings(**overrides) -> SimpleNamespace:
         "teams_graph_client_id": "client",
         "teams_graph_client_secret": "secret",
         "teams_graph_token_cache_path": Path(".graph_teams_token_cache.bin"),
+        "cash_flow_notification_time": "08:00",
+        "cash_flow_notification_state_path": Path("work/test-cash-flow-notification-state.json"),
     }
     values.update(overrides)
     return SimpleNamespace(

@@ -40,12 +40,41 @@ DASHBOARD_VIEW_PROPERTIES = [
     "Vendor / Payee",
     "Category",
     "Payment Type",
+]
+TODAYS_PRIORITIES_VIEW_PROPERTIES = [
+    "Expense Name",
+    "Amount",
+    "Status",
+    DUE_STATUS_PROPERTY_NAME,
+    "Vendor / Payee",
+    "Category",
+]
+THIS_WEEK_VIEW_PROPERTIES = [
+    "Expense Name",
+    "Amount",
+    "Status",
+    DUE_STATUS_PROPERTY_NAME,
+    "Due Date",
+    "Vendor / Payee",
+]
+ALL_VIEW_PROPERTIES = [
+    "Expense Name",
+    "Amount",
+    "Status",
+    DUE_STATUS_PROPERTY_NAME,
+    "Due Date",
+    "Vendor / Payee",
+    "Category",
+    "Payment Type",
     "Frequency",
     "Source",
     "Email Link",
     "Notes",
+    "Month",
+    "Week",
+    "Payment Date",
 ]
-DASHBOARD_HIDDEN_PROPERTIES = {"Notes", "Month", "Week", "Payment Date"}
+DASHBOARD_HIDDEN_PROPERTIES = {"Email Link", "Source", "Frequency", "Month", "Week", "Payment Date", "Notes"}
 DUE_STATUS_FORMULA = (
     'if(empty(prop("Due Date")), "", '
     'if(dateBetween(prop("Due Date"), now(), "days") < 0, '
@@ -226,7 +255,16 @@ def due_status_label(due_date: date | None, today: date) -> str:
 def build_view_specs() -> list[ViewSpec]:
     return [
         ViewSpec("Dashboard"),
-        ViewSpec("This Week", date_empty_filter("Due Date", "this_week")),
+        ViewSpec("Today's Priorities", todays_priorities_filter()),
+        ViewSpec(
+            "This Week",
+            {
+                "and": [
+                    due_date_filter({"on_or_after": "today"}),
+                    due_date_filter({"on_or_before": "one_week_from_now"}),
+                ]
+            },
+        ),
         ViewSpec(
             "This Month",
             {
@@ -258,30 +296,63 @@ def select_filter(property_name: str, option_name: str) -> dict[str, Any]:
     return {"property": property_name, "select": {"equals": option_name}}
 
 
+def formula_string_filter(property_name: str, condition: dict[str, str]) -> dict[str, Any]:
+    return {"property": property_name, "formula": {"string": condition}}
+
+
+def todays_priorities_filter() -> dict[str, Any]:
+    return {
+        "or": [
+            select_filter("Status", "Needs Review"),
+            formula_string_filter(DUE_STATUS_PROPERTY_NAME, {"contains": "Today"}),
+            formula_string_filter(DUE_STATUS_PROPERTY_NAME, {"contains": "Past Due"}),
+        ]
+    }
+
+
 def build_view_payload(database_id: str, data_source_id: str, spec: ViewSpec) -> dict[str, Any]:
     configuration = {"type": "table", "wrap_cells": True}
-    if spec.name == "Dashboard":
-        visible_properties = [
-            {"property": property_name, "visible": property_name not in DASHBOARD_HIDDEN_PROPERTIES}
-            for property_name in DASHBOARD_VIEW_PROPERTIES
-        ]
-        hidden_properties = [
-            {"property": property_name, "visible": False}
-            for property_name in DASHBOARD_HIDDEN_PROPERTIES
-            if property_name not in DASHBOARD_VIEW_PROPERTIES
-        ]
-        configuration["properties"] = visible_properties + hidden_properties
+    visible_property_names = view_visible_properties(spec.name)
+    if visible_property_names:
+        configuration["properties"] = view_property_visibility(visible_property_names)
     payload: dict[str, Any] = {
         "database_id": database_id,
         "data_source_id": data_source_id,
         "name": spec.name,
         "type": "table",
-        "sorts": [{"property": "Due Date", "direction": "ascending"}],
+        "sorts": view_sorts(spec.name),
         "configuration": configuration,
     }
     if spec.filter:
         payload["filter"] = spec.filter
     return payload
+
+
+def view_visible_properties(view_name: str) -> list[str]:
+    if view_name == "Dashboard":
+        return DASHBOARD_VIEW_PROPERTIES
+    if view_name == "Today's Priorities":
+        return TODAYS_PRIORITIES_VIEW_PROPERTIES
+    if view_name == "This Week":
+        return THIS_WEEK_VIEW_PROPERTIES
+    return []
+
+
+def view_property_visibility(visible_property_names: list[str]) -> list[dict[str, Any]]:
+    hidden_property_names = [name for name in ALL_VIEW_PROPERTIES if name not in visible_property_names]
+    return (
+        [{"property": property_name, "visible": True} for property_name in visible_property_names]
+        + [{"property": property_name, "visible": False} for property_name in hidden_property_names]
+    )
+
+
+def view_sorts(view_name: str) -> list[dict[str, str]]:
+    if view_name == "Today's Priorities":
+        return [
+            {"property": "Due Date", "direction": "ascending"},
+            {"property": "Amount", "direction": "descending"},
+        ]
+    return [{"property": "Due Date", "direction": "ascending"}]
 
 
 def extract_data_source_id(database: dict[str, Any]) -> str:

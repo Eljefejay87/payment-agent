@@ -476,7 +476,7 @@ def number_value(property_value: dict[str, Any]) -> int | None:
 def format_business_notes(review_reasons: tuple[str, ...]) -> str:
     if not review_reasons:
         return "✓ Ready for Payment"
-    lines = ["Needs Review", ""]
+    lines = ["⚠ Needs Review", ""]
     lines.extend(f"• {display_review_reason(reason)}" for reason in review_reasons)
     return "\n".join(lines)[:1800]
 

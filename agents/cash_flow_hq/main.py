@@ -4,9 +4,11 @@ import argparse
 import json
 import logging
 import sys
+from datetime import date
 
 from shared.logging import configure_logging
 from shared.integrations.microsoft_graph import GraphClient
+from shared.scheduler import AgentScheduler
 
 from .alerts import CashFlowTeamsAlerts
 from .config import NOTION_SETUP_MESSAGE, load_cash_flow_settings, validate_cash_flow_settings
@@ -23,8 +25,12 @@ def main() -> int:
             "cash-flow-init",
             "cash-flow-preview",
             "cash-flow-list-notion-data-sources",
+            "cashflow-test-notification",
+            "cash-flow-test-notification",
             "cashflow-teams-alerts",
             "cash-flow-teams-alerts",
+            "cashflow-notifications",
+            "cash-flow-notifications",
             "cashflow-scan-email",
             "cash-flow-scan-email",
         ],
@@ -52,19 +58,39 @@ def main() -> int:
         print(json.dumps(service.list_data_source_metadata(), indent=2))
         return 0
 
-    if args.command in {"cashflow-teams-alerts", "cash-flow-teams-alerts"}:
+    if args.command in {
+        "cashflow-test-notification",
+        "cash-flow-test-notification",
+        "cashflow-teams-alerts",
+        "cash-flow-teams-alerts",
+    }:
         errors = validate_cash_flow_settings(settings, include_teams=True)
         if errors:
             log_config_errors(errors)
             return 2
-        graph = GraphClient(
-            tenant_id=settings.teams_graph_tenant_id,
-            client_id=settings.teams_graph_client_id,
-            client_secret=settings.teams_graph_client_secret,
-            delegated_token_cache_path=settings.teams_graph_token_cache_path,
+        CashFlowTeamsAlerts(settings, service, build_teams_graph(settings)).send_morning_brief(
+            dry_run=args.dry_run,
+            force=True,
+            record_sent=args.command not in {"cashflow-test-notification", "cash-flow-test-notification"},
         )
-        CashFlowTeamsAlerts(settings, service, graph).send_alerts(dry_run=args.dry_run)
         logging.info("Cash Flow HQ Teams alert command complete.")
+        return 0
+
+    if args.command in {"cashflow-notifications", "cash-flow-notifications"}:
+        errors = validate_cash_flow_settings(settings, include_teams=True)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        alerts = CashFlowTeamsAlerts(settings, service, build_teams_graph(settings))
+
+        def send_weekday_brief() -> None:
+            if date.today().weekday() < 5:
+                alerts.send_morning_brief()
+
+        scheduler = AgentScheduler()
+        scheduler.every_day_at(settings.cash_flow_notification_time, send_weekday_brief)
+        logging.info("Cash Flow HQ notifications scheduled weekdays at %s.", settings.cash_flow_notification_time)
+        scheduler.run_forever()
         return 0
 
     if args.command in {"cashflow-scan-email", "cash-flow-scan-email"}:
@@ -109,6 +135,15 @@ def log_config_errors(errors: list[str]) -> None:
         logging.error(NOTION_SETUP_MESSAGE)
     for error in errors:
         logging.error(error)
+
+
+def build_teams_graph(settings) -> GraphClient:
+    return GraphClient(
+        tenant_id=settings.teams_graph_tenant_id,
+        client_id=settings.teams_graph_client_id,
+        client_secret=settings.teams_graph_client_secret,
+        delegated_token_cache_path=settings.teams_graph_token_cache_path,
+    )
 
 
 if __name__ == "__main__":
