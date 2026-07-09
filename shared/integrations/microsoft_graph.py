@@ -12,6 +12,15 @@ GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 LOGGER = logging.getLogger(__name__)
 
 
+def chat_member_bind(user_id_or_email: str) -> dict[str, Any]:
+    escaped = user_id_or_email.replace("'", "''")
+    return {
+        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+        "roles": ["owner"],
+        "user@odata.bind": f"{GRAPH_ROOT}/users('{escaped}')",
+    }
+
+
 class GraphClient:
     def __init__(
         self,
@@ -222,6 +231,25 @@ class GraphClient:
             headers={"Content-Type": "application/json"},
         )
         LOGGER.info("Microsoft Graph chat message sent successfully")
+
+    def post_direct_chat_message(self, user_email: str, html_content: str) -> None:
+        scopes = ["Chat.ReadWrite", "ChatMessage.Send", "User.Read"]
+        me = self.delegated_request("GET", "/me?$select=id", scopes=scopes)
+        chat = self.delegated_request(
+            "POST",
+            "/chats",
+            scopes=scopes,
+            json={
+                "chatType": "oneOnOne",
+                "members": [
+                    chat_member_bind(me["id"]),
+                    chat_member_bind(user_email),
+                ],
+            },
+            headers={"Content-Type": "application/json"},
+        )
+        self.post_chat_message(chat["id"], html_content)
+        LOGGER.info("Microsoft Graph direct chat message sent successfully")
 
     def list_recent_chats(self) -> list[dict[str, Any]]:
         data = self.delegated_request(

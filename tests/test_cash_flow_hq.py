@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agents.cash_flow_hq.alerts import CashFlowBill, CashFlowTeamsAlerts, build_cash_flow_alert
 from agents.cash_flow_hq.config import load_cash_flow_settings, validate_cash_flow_settings
 from agents.cash_flow_hq.email_scan import CashFlowEmailScanner
 from agents.cash_flow_hq.graph_client import CashFlowGraphClient
@@ -17,6 +18,8 @@ from agents.cash_flow_hq.models import AttachmentMetadata, BillEmail, VendorRule
 from agents.cash_flow_hq.parser import extract_amount, extract_due_date, is_bill_related, message_from_graph, parse_bill_candidate
 from agents.cash_flow_hq.schema import (
     CATEGORY_OPTIONS,
+    DASHBOARD_HIDDEN_PROPERTIES,
+    DASHBOARD_VIEW_PROPERTIES,
     DUE_STATUS_PROPERTY_NAME,
     SOURCE_OPTIONS,
     STATUS_OPTIONS,
@@ -29,6 +32,7 @@ from agents.cash_flow_hq.schema import (
     due_status_label,
 )
 from agents.cash_flow_hq.service import CashFlowHQService
+from shared.integrations.microsoft_graph import chat_member_bind
 
 
 class CashFlowHQSchemaTests(unittest.TestCase):
@@ -50,10 +54,10 @@ class CashFlowHQSchemaTests(unittest.TestCase):
     def test_due_status_labels_are_human_friendly(self) -> None:
         today = date(2026, 7, 8)
 
-        self.assertEqual(due_status_label(today, today), "Due Today")
-        self.assertEqual(due_status_label(date(2026, 7, 9), today), "Due Tomorrow")
-        self.assertEqual(due_status_label(date(2026, 7, 11), today), "Due in 3 Days")
-        self.assertEqual(due_status_label(date(2026, 7, 6), today), "Past Due by 2 Days")
+        self.assertEqual(due_status_label(today, today), "🟡 Due Today")
+        self.assertEqual(due_status_label(date(2026, 7, 9), today), "🟡 Due Tomorrow")
+        self.assertEqual(due_status_label(date(2026, 7, 11), today), "🟢 Due in 3 Days")
+        self.assertEqual(due_status_label(date(2026, 7, 6), today), "🔴 Past Due by 2 Days")
         self.assertEqual(due_status_label(None, today), "")
 
     def test_database_payload_uses_current_notion_parent_and_initial_data_source_shape(self) -> None:
@@ -105,6 +109,18 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(payload["name"], "This Week")
         self.assertEqual(payload["filter"]["property"], "Due Date")
         self.assertEqual(payload["filter"]["date"], {"this_week": {}})
+
+    def test_dashboard_view_payload_orders_columns_and_hides_notes(self) -> None:
+        spec = build_view_specs()[0]
+        payload = build_view_payload("database-id", "source-id", spec)
+        properties = payload["configuration"]["properties"]
+
+        self.assertEqual([item["property"] for item in properties[: len(DASHBOARD_VIEW_PROPERTIES)]], DASHBOARD_VIEW_PROPERTIES)
+        self.assertEqual(properties[2]["property"], "Status")
+        self.assertEqual(properties[3]["property"], DUE_STATUS_PROPERTY_NAME)
+        for property_name in DASHBOARD_HIDDEN_PROPERTIES:
+            self.assertFalse(next(item for item in properties if item["property"] == property_name)["visible"])
+        self.assertEqual(DASHBOARD_HIDDEN_PROPERTIES, {"Notes", "Month", "Week", "Payment Date"})
 
     def test_month_view_uses_supported_notion_date_filter_conditions(self) -> None:
         spec = build_view_specs()[2]
@@ -174,6 +190,7 @@ class CashFlowHQConfigTests(unittest.TestCase):
 
         self.assertEqual(settings.database_name, "Cash Flow HQ")
         self.assertEqual(settings.notion_version, "2026-03-11")
+        self.assertEqual(settings.cash_flow_teams_user, "jaye@unitedaccountservices.com")
 
     def test_load_settings_reads_explicit_notion_data_source_ids(self) -> None:
         with patch.dict(
@@ -207,6 +224,22 @@ class CashFlowHQConfigTests(unittest.TestCase):
         self.assertIn("CASH_FLOW_HQ_MAILBOX_USER_ID or MAILBOX_USER_ID is required.", errors)
         self.assertIn("MS_GRAPH_TENANT_ID is required.", errors)
 
+    def test_validate_teams_requires_direct_message_settings(self) -> None:
+        settings = SimpleNamespace(
+            notion_api_key="secret",
+            notion_parent_page_id="page",
+            database_name="Cash Flow HQ",
+            cash_flow_teams_user="",
+            teams_graph_tenant_id="",
+            teams_graph_client_id="",
+            teams_graph_client_secret="",
+        )
+
+        errors = validate_cash_flow_settings(settings, include_teams=True)
+
+        self.assertIn("CASH_FLOW_HQ_TEAMS_USER is required.", errors)
+        self.assertIn("TEAMS_GRAPH_TENANT_ID or MS_GRAPH_TENANT_ID is required.", errors)
+
 
 class CashFlowHQServiceTests(unittest.TestCase):
     def test_ensure_foundation_creates_database_and_views_without_rows(self) -> None:
@@ -228,6 +261,22 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(notion.created_pages, 0)
         self.assertEqual(len(notion.created_vendor_rules), 2)
         self.assertIn(DUE_STATUS_PROPERTY_NAME, notion.data_source_properties)
+        dashboard_properties = notion.view_patch_payloads[0]["configuration"]["properties"]
+        self.assertEqual([item["property"] for item in dashboard_properties[:4]], ["Expense Name", "Amount", "Status", "Due Status"])
+        self.assertFalse(next(item for item in dashboard_properties if item["property"] == "Notes")["visible"])
+
+    def test_existing_dashboard_view_is_updated_without_creating_duplicate_views(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.existing_views = [{"id": "dashboard-view", "name": "Dashboard"}]
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        created = service.ensure_views("database-id", "source-id")
+
+        self.assertNotIn("Dashboard", created)
+        self.assertEqual(notion.patched_views, 1)
+        self.assertNotIn("Dashboard", [view["name"] for view in notion.views])
+        dashboard_properties = notion.view_patch_payloads[0]["configuration"]["properties"]
+        self.assertEqual([item["property"] for item in dashboard_properties[:4]], ["Expense Name", "Amount", "Status", "Due Status"])
 
     def test_manual_expense_payload_is_reusable_for_later_phases(self) -> None:
         settings = SimpleNamespace(
@@ -330,7 +379,7 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.review_reasons, ())
         self.assertEqual(updated.field_sources["due_date"], "vendor rules")
         self.assertNotIn("Missing due date", updated.notes)
-        self.assertEqual(updated.notes, "Imported from Outlook\n✓ Ready for payment")
+        self.assertEqual(updated.notes, "✓ Ready for Payment")
         self.assertIn("Category", service.create_bill_properties(updated))
         self.assertIn("Frequency", service.create_bill_properties(updated))
 
@@ -352,7 +401,7 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.status, "Upcoming")
         self.assertEqual(updated.frequency, "Monthly")
         self.assertNotIn("Missing due date", updated.notes)
-        self.assertEqual(updated.notes, "Imported from Outlook\n✓ Ready for payment")
+        self.assertEqual(updated.notes, "✓ Ready for Payment")
 
     def test_vendor_rule_display_name_replaces_sender_email(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
@@ -477,7 +526,7 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertNotIn("Due Date", properties)
         self.assertEqual(
             properties["Notes"]["rich_text"][0]["text"]["content"],
-            "Imported from Outlook\n\nNeeds Review:\n• Missing due date",
+            "Needs Review\n\n• Missing due date",
         )
 
     def test_vendor_rule_seed_creation_adds_initial_rules_once(self) -> None:
@@ -689,6 +738,57 @@ class CashFlowHQGraphClientTests(unittest.TestCase):
         self.assertIn("GET_ATTACHMENTS", graph.calls)
         self.assertIn("GET_ATTACHMENT_CONTENT", graph.calls)
 
+    def test_direct_chat_member_payload_binds_to_user(self) -> None:
+        payload = chat_member_bind("jaye@unitedaccountservices.com")
+
+        self.assertEqual(payload["@odata.type"], "#microsoft.graph.aadUserConversationMember")
+        self.assertEqual(payload["roles"], ["owner"])
+        self.assertEqual(
+            payload["user@odata.bind"],
+            "https://graph.microsoft.com/v1.0/users('jaye@unitedaccountservices.com')",
+        )
+
+
+class CashFlowHQTeamsAlertTests(unittest.TestCase):
+    def test_alert_contains_direct_trigger_counts_and_due_this_week_total(self) -> None:
+        bills = [
+            CashFlowBill("Due Today LLC", 100.0, date(2026, 7, 8), "Due Today", "Upcoming"),
+            CashFlowBill("Due Tomorrow LLC", 200.0, date(2026, 7, 9), "Due Tomorrow", "Upcoming"),
+            CashFlowBill("Past Due LLC", 50.0, date(2026, 7, 6), "Past Due by 2 Days", "Upcoming"),
+            CashFlowBill("Review LLC", 25.0, date(2026, 7, 10), "Due in 2 Days", "Needs Review"),
+            CashFlowBill("Paid LLC", 75.0, date(2026, 7, 8), "Due Today", "Paid"),
+        ]
+
+        alert = build_cash_flow_alert(bills, date(2026, 7, 8))
+
+        self.assertIn("Bills due this week total: $325.00", alert["text"])
+        self.assertIn("Due today: 1", alert["text"])
+        self.assertIn("Due tomorrow: 1", alert["text"])
+        self.assertIn("Past due: 1", alert["text"])
+        self.assertIn("Needs review: 1", alert["text"])
+        self.assertIn("Due Today LLC", alert["html"])
+        self.assertIn("Review LLC", alert["html"])
+
+    def test_alert_sends_direct_message_to_configured_user_only(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.query_results = [
+            cash_flow_page(
+                vendor="D1AL",
+                amount=315.37,
+                due_date="2026-07-09",
+                due_status="Due Tomorrow",
+                status="Upcoming",
+            )
+        ]
+        graph = FakeTeamsGraph()
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        CashFlowTeamsAlerts(build_settings(), service, graph).send_alerts(today=date(2026, 7, 8))
+
+        self.assertEqual(len(graph.direct_messages), 1)
+        self.assertEqual(graph.direct_messages[0][0], "jaye@unitedaccountservices.com")
+        self.assertIn("D1AL", graph.direct_messages[0][1])
+
 
 class CashFlowHQEmailScannerTests(unittest.TestCase):
     def test_dry_run_does_not_create_notion_pages(self) -> None:
@@ -723,6 +823,8 @@ class FakeNotion:
         self.created_vendor_rules: list[dict] = []
         self.patched_views = 0
         self.views: list[dict] = []
+        self.existing_views: list[dict] = []
+        self.view_patch_payloads: list[dict] = []
         self.query_results: list[dict] = []
         self.vendor_rule_pages: list[dict] = []
         self.data_source_properties: dict = {}
@@ -791,12 +893,21 @@ class FakeNotion:
         if method == "GET" and path == "/databases/vendor-database-id":
             return {"id": "vendor-database-id", "data_sources": [{"id": "vendor-source-id"}]}
         if method == "GET" and path == "/views?database_id=database-id":
+            if self.existing_views:
+                return {"results": [{"id": view["id"]} for view in self.existing_views]}
             return {"results": [{"id": "default-view"}]}
         if method == "GET" and path == "/views/default-view":
             return {"id": "default-view", "name": "Default view"}
+        if method == "GET" and path == "/views/dashboard-view":
+            return {"id": "dashboard-view", "name": "Dashboard"}
         if method == "PATCH" and path == "/views/default-view":
             self.patched_views += 1
+            self.view_patch_payloads.append(kwargs["json"])
             return {"id": "default-view", "name": kwargs["json"]["name"]}
+        if method == "PATCH" and path == "/views/dashboard-view":
+            self.patched_views += 1
+            self.view_patch_payloads.append(kwargs["json"])
+            return {"id": "dashboard-view", "name": kwargs["json"]["name"]}
         if method == "POST" and path == "/views":
             self.views.append(kwargs["json"])
             return {"id": f"view-{len(self.views)}", "name": kwargs["json"]["name"]}
@@ -852,11 +963,43 @@ def build_settings(**overrides) -> SimpleNamespace:
         "database_name": "Cash Flow HQ",
         "cash_flow_data_source_id": "",
         "vendor_rules_data_source_id": "",
+        "cash_flow_teams_user": "jaye@unitedaccountservices.com",
+        "teams_graph_tenant_id": "tenant",
+        "teams_graph_client_id": "client",
+        "teams_graph_client_secret": "secret",
+        "teams_graph_token_cache_path": Path(".graph_teams_token_cache.bin"),
     }
     values.update(overrides)
     return SimpleNamespace(
         **values,
     )
+
+
+def cash_flow_page(
+    vendor: str,
+    amount: float | None,
+    due_date: str | None,
+    due_status: str,
+    status: str,
+) -> dict:
+    properties = {
+        "Vendor / Payee": {"rich_text": [{"plain_text": vendor}]},
+        "Due Status": {"formula": {"type": "string", "string": due_status}},
+        "Status": {"select": {"name": status}},
+    }
+    if amount is not None:
+        properties["Amount"] = {"number": amount}
+    if due_date:
+        properties["Due Date"] = {"date": {"start": due_date}}
+    return {"properties": properties}
+
+
+class FakeTeamsGraph:
+    def __init__(self) -> None:
+        self.direct_messages: list[tuple[str, str]] = []
+
+    def post_direct_chat_message(self, user_email: str, html_content: str) -> None:
+        self.direct_messages.append((user_email, html_content))
 
 
 def build_email(

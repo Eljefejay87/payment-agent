@@ -31,13 +31,28 @@ PAYMENT_TYPE_OPTIONS = ["Auto Pay", "Manual"]
 FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual", "One-Time"]
 SOURCE_OPTIONS = ["Email", "Manual", "Payroll", "Jim Remit"]
 DUE_STATUS_PROPERTY_NAME = "Due Status"
+DASHBOARD_VIEW_PROPERTIES = [
+    "Expense Name",
+    "Amount",
+    "Status",
+    DUE_STATUS_PROPERTY_NAME,
+    "Due Date",
+    "Vendor / Payee",
+    "Category",
+    "Payment Type",
+    "Frequency",
+    "Source",
+    "Email Link",
+    "Notes",
+]
+DASHBOARD_HIDDEN_PROPERTIES = {"Notes", "Month", "Week", "Payment Date"}
 DUE_STATUS_FORMULA = (
     'if(empty(prop("Due Date")), "", '
     'if(dateBetween(prop("Due Date"), now(), "days") < 0, '
-    '"Past Due by " + format(abs(dateBetween(prop("Due Date"), now(), "days"))) + " Days", '
-    'if(dateBetween(prop("Due Date"), now(), "days") == 0, "Due Today", '
-    'if(dateBetween(prop("Due Date"), now(), "days") == 1, "Due Tomorrow", '
-    '"Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days"))))'
+    '"🔴 Past Due by " + format(abs(dateBetween(prop("Due Date"), now(), "days"))) + " Days", '
+    'if(dateBetween(prop("Due Date"), now(), "days") == 0, "🟡 Due Today", '
+    'if(dateBetween(prop("Due Date"), now(), "days") == 1, "🟡 Due Tomorrow", '
+    '"🟢 Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days"))))'
 )
 VENDOR_RULE_FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual"]
 VENDOR_RULE_CATEGORY_OPTIONS = [
@@ -200,12 +215,12 @@ def due_status_label(due_date: date | None, today: date) -> str:
         return ""
     days = (due_date - today).days
     if days < 0:
-        return f"Past Due by {abs(days)} Days"
+        return f"🔴 Past Due by {abs(days)} Days"
     if days == 0:
-        return "Due Today"
+        return "🟡 Due Today"
     if days == 1:
-        return "Due Tomorrow"
-    return f"Due in {days} Days"
+        return "🟡 Due Tomorrow"
+    return f"🟢 Due in {days} Days"
 
 
 def build_view_specs() -> list[ViewSpec]:
@@ -244,13 +259,25 @@ def select_filter(property_name: str, option_name: str) -> dict[str, Any]:
 
 
 def build_view_payload(database_id: str, data_source_id: str, spec: ViewSpec) -> dict[str, Any]:
+    configuration = {"type": "table", "wrap_cells": True}
+    if spec.name == "Dashboard":
+        visible_properties = [
+            {"property": property_name, "visible": property_name not in DASHBOARD_HIDDEN_PROPERTIES}
+            for property_name in DASHBOARD_VIEW_PROPERTIES
+        ]
+        hidden_properties = [
+            {"property": property_name, "visible": False}
+            for property_name in DASHBOARD_HIDDEN_PROPERTIES
+            if property_name not in DASHBOARD_VIEW_PROPERTIES
+        ]
+        configuration["properties"] = visible_properties + hidden_properties
     payload: dict[str, Any] = {
         "database_id": database_id,
         "data_source_id": data_source_id,
         "name": spec.name,
         "type": "table",
         "sorts": [{"property": "Due Date", "direction": "ascending"}],
-        "configuration": {"type": "table", "wrap_cells": True},
+        "configuration": configuration,
     }
     if spec.filter:
         payload["filter"] = spec.filter

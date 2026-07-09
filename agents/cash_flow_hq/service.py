@@ -156,14 +156,16 @@ class CashFlowHQService:
 
     def ensure_due_status_property(self, data_source_id: str) -> None:
         data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
-        if DUE_STATUS_PROPERTY_NAME in data_source.get("properties", {}):
+        existing = data_source.get("properties", {}).get(DUE_STATUS_PROPERTY_NAME)
+        desired = due_status_property()
+        if existing and existing.get("formula", {}).get("expression") == desired["formula"]["expression"]:
             return
         self.notion.request(
             "PATCH",
             f"/data_sources/{data_source_id}",
-            json={"properties": {DUE_STATUS_PROPERTY_NAME: due_status_property()}},
+            json={"properties": {DUE_STATUS_PROPERTY_NAME: desired}},
         )
-        LOGGER.info("Added Notion property: %s", DUE_STATUS_PROPERTY_NAME)
+        LOGGER.info("Updated Notion property: %s", DUE_STATUS_PROPERTY_NAME)
 
     def ensure_vendor_rules_foundation(self) -> dict[str, str]:
         foundation = self.get_existing_vendor_rules_foundation()
@@ -289,17 +291,16 @@ class CashFlowHQService:
         existing_names = {view.get("name") for view in existing if view.get("name")}
         created: list[str] = []
         for spec in build_view_specs():
+            payload = build_view_payload(database_id, data_source_id, spec)
+            existing_view = next((view for view in existing if view.get("name") == spec.name), None)
+            if spec.name == "Dashboard" and existing_view:
+                self.update_view(existing_view["id"], payload)
+                continue
             if spec.name in existing_names:
                 continue
-            payload = build_view_payload(database_id, data_source_id, spec)
             default_view = next((view for view in existing if view.get("name") == "Default view"), None)
             if spec.name == "Dashboard" and default_view:
-                update_payload = {
-                    key: value
-                    for key, value in payload.items()
-                    if key not in {"database_id", "data_source_id"}
-                }
-                self.notion.request("PATCH", f"/views/{default_view['id']}", json=update_payload)
+                self.update_view(default_view["id"], payload)
                 default_view["name"] = spec.name
                 existing_names.add(spec.name)
             else:
@@ -308,6 +309,21 @@ class CashFlowHQService:
             created.append(spec.name)
             LOGGER.info("Created Notion view: %s", spec.name)
         return created
+
+    def update_view(self, view_id: str, payload: dict[str, Any]) -> None:
+        update_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"database_id", "data_source_id"}
+        }
+        try:
+            self.notion.request("PATCH", f"/views/{view_id}", json=update_payload)
+        except RuntimeError as exc:
+            properties = update_payload.get("configuration", {}).pop("properties", None)
+            if not properties:
+                raise
+            LOGGER.warning("Notion view property visibility update was not accepted; retrying layout update without hidden properties. %s", exc)
+            self.notion.request("PATCH", f"/views/{view_id}", json=update_payload)
 
     def list_views(self, database_id: str) -> list[dict[str, Any]]:
         response = self.notion.request("GET", f"/views?database_id={database_id}")
@@ -459,8 +475,8 @@ def number_value(property_value: dict[str, Any]) -> int | None:
 
 def format_business_notes(review_reasons: tuple[str, ...]) -> str:
     if not review_reasons:
-        return "Imported from Outlook\n✓ Ready for payment"
-    lines = ["Imported from Outlook", "", "Needs Review:"]
+        return "✓ Ready for Payment"
+    lines = ["Needs Review", ""]
     lines.extend(f"• {display_review_reason(reason)}" for reason in review_reasons)
     return "\n".join(lines)[:1800]
 

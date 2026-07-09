@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from shared.config import load_environment
 
@@ -24,6 +25,11 @@ class CashFlowHQSettings:
     graph_tenant_id: str
     graph_client_id: str
     graph_client_secret: str
+    cash_flow_teams_user: str
+    teams_graph_tenant_id: str
+    teams_graph_client_id: str
+    teams_graph_client_secret: str
+    teams_graph_token_cache_path: Path
 
 
 def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
@@ -40,10 +46,19 @@ def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
         graph_tenant_id=os.getenv("MS_GRAPH_TENANT_ID", ""),
         graph_client_id=os.getenv("MS_GRAPH_CLIENT_ID", ""),
         graph_client_secret=os.getenv("MS_GRAPH_CLIENT_SECRET", ""),
+        cash_flow_teams_user=os.getenv("CASH_FLOW_HQ_TEAMS_USER", "jaye@unitedaccountservices.com"),
+        teams_graph_tenant_id=os.getenv("TEAMS_GRAPH_TENANT_ID") or os.getenv("MS_GRAPH_TENANT_ID", ""),
+        teams_graph_client_id=os.getenv("TEAMS_GRAPH_CLIENT_ID") or os.getenv("MS_GRAPH_CLIENT_ID", ""),
+        teams_graph_client_secret=os.getenv("TEAMS_GRAPH_CLIENT_SECRET") or os.getenv("MS_GRAPH_CLIENT_SECRET", ""),
+        teams_graph_token_cache_path=Path(os.getenv("TEAMS_GRAPH_TOKEN_CACHE_PATH", ".graph_teams_token_cache.bin")),
     )
 
 
-def validate_cash_flow_settings(settings: CashFlowHQSettings, include_graph: bool = False) -> list[str]:
+def validate_cash_flow_settings(
+    settings: CashFlowHQSettings,
+    include_graph: bool = False,
+    include_teams: bool = False,
+) -> list[str]:
     errors: list[str] = []
     if not settings.notion_api_key:
         errors.append("NOTION_API_KEY is required. Use the Notion integration or personal access token.")
@@ -60,4 +75,13 @@ def validate_cash_flow_settings(settings: CashFlowHQSettings, include_graph: boo
             errors.append("MS_GRAPH_CLIENT_ID is required.")
         if not settings.graph_client_secret:
             errors.append("MS_GRAPH_CLIENT_SECRET is required.")
+    if include_teams:
+        if not settings.cash_flow_teams_user:
+            errors.append("CASH_FLOW_HQ_TEAMS_USER is required.")
+        if not settings.teams_graph_tenant_id:
+            errors.append("TEAMS_GRAPH_TENANT_ID or MS_GRAPH_TENANT_ID is required.")
+        if not settings.teams_graph_client_id:
+            errors.append("TEAMS_GRAPH_CLIENT_ID or MS_GRAPH_CLIENT_ID is required.")
+        if not settings.teams_graph_client_secret:
+            errors.append("TEAMS_GRAPH_CLIENT_SECRET or MS_GRAPH_CLIENT_SECRET is required.")
     return errors

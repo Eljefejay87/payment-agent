@@ -304,8 +304,8 @@ def build_notes(
 
 def format_business_notes(review_reasons: tuple[str, ...]) -> str:
     if not review_reasons:
-        return "Imported from Outlook\n✓ Ready for payment"
-    lines = ["Imported from Outlook", "", "Needs Review:"]
+        return "✓ Ready for Payment"
+    lines = ["Needs Review", ""]
     lines.extend(f"• {display_review_reason(reason)}" for reason in review_reasons)
     return "\n".join(lines)[:1800]
 
