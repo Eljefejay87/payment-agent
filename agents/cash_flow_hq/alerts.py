@@ -62,11 +62,18 @@ class CashFlowTeamsAlerts:
         if dry_run:
             LOGGER.info("DRY RUN Cash Flow HQ morning brief to %s:\n%s", self.settings.cash_flow_teams_user, alert["text"])
         else:
-            self.graph.post_direct_chat_message(self.settings.cash_flow_teams_user, alert["html"])
+            self.send_private_teams_message(alert["html"])
             if record_sent:
                 mark_sent(self.settings.cash_flow_notification_state_path, today)
             LOGGER.info("Cash Flow HQ morning brief sent directly to %s", self.settings.cash_flow_teams_user)
         return alert
+
+    def send_private_teams_message(self, html_content: str) -> None:
+        chat_id = getattr(self.settings, "cash_flow_teams_chat_id", "")
+        if chat_id:
+            self.graph.post_chat_message(chat_id, html_content)
+            return
+        self.graph.post_direct_chat_message(self.settings.cash_flow_teams_user, html_content)
 
 
 def build_cash_flow_alert(bills: list[CashFlowBill], today: date) -> dict[str, Any]:

@@ -26,6 +26,7 @@ class CashFlowHQSettings:
     graph_client_id: str
     graph_client_secret: str
     cash_flow_teams_user: str
+    cash_flow_teams_chat_id: str
     teams_graph_tenant_id: str
     teams_graph_client_id: str
     teams_graph_client_secret: str
@@ -49,6 +50,7 @@ def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
         graph_client_id=os.getenv("MS_GRAPH_CLIENT_ID", ""),
         graph_client_secret=os.getenv("MS_GRAPH_CLIENT_SECRET", ""),
         cash_flow_teams_user=os.getenv("CASH_FLOW_HQ_TEAMS_USER", "jaye@unitedaccountservices.com"),
+        cash_flow_teams_chat_id=os.getenv("CASH_FLOW_HQ_TEAMS_CHAT_ID", ""),
         teams_graph_tenant_id=os.getenv("TEAMS_GRAPH_TENANT_ID") or os.getenv("MS_GRAPH_TENANT_ID", ""),
         teams_graph_client_id=os.getenv("TEAMS_GRAPH_CLIENT_ID") or os.getenv("MS_GRAPH_CLIENT_ID", ""),
         teams_graph_client_secret=os.getenv("TEAMS_GRAPH_CLIENT_SECRET") or os.getenv("MS_GRAPH_CLIENT_SECRET", ""),

@@ -234,7 +234,17 @@ class GraphClient:
 
     def post_direct_chat_message(self, user_email: str, html_content: str) -> None:
         scopes = ["Chat.ReadWrite", "ChatMessage.Send", "User.Read"]
-        me = self.delegated_request("GET", "/me?$select=id", scopes=scopes)
+        me = self.delegated_user_profile(scopes)
+        sender_addresses = {
+            (me.get("mail") or "").strip().lower(),
+            (me.get("userPrincipalName") or "").strip().lower(),
+        }
+        if user_email.strip().lower() in sender_addresses:
+            raise RuntimeError(
+                "Cash Flow HQ Teams direct message target matches the delegated Graph sender. "
+                "Microsoft Graph cannot create a one-on-one chat from a user to themselves. "
+                "Set CASH_FLOW_HQ_TEAMS_CHAT_ID to an existing private chat with the target user."
+            )
         chat = self.delegated_request(
             "POST",
             "/chats",
@@ -250,6 +260,13 @@ class GraphClient:
         )
         self.post_chat_message(chat["id"], html_content)
         LOGGER.info("Microsoft Graph direct chat message sent successfully")
+
+    def delegated_user_profile(self, scopes: list[str] | None = None) -> dict[str, Any]:
+        return self.delegated_request(
+            "GET",
+            "/me?$select=id,mail,userPrincipalName",
+            scopes=scopes or ["User.Read"],
+        )
 
     def list_recent_chats(self) -> list[dict[str, Any]]:
         data = self.delegated_request(

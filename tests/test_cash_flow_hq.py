@@ -34,7 +34,7 @@ from agents.cash_flow_hq.schema import (
     due_status_label,
 )
 from agents.cash_flow_hq.service import CashFlowHQService
-from shared.integrations.microsoft_graph import chat_member_bind
+from shared.integrations.microsoft_graph import GraphClient, chat_member_bind
 
 
 class CashFlowHQSchemaTests(unittest.TestCase):
@@ -843,6 +843,36 @@ class CashFlowHQTeamsAlertTests(unittest.TestCase):
         self.assertEqual(graph.direct_messages[0][0], "jaye@unitedaccountservices.com")
         self.assertIn("D1AL", graph.direct_messages[0][1])
 
+    def test_alert_uses_configured_private_chat_id_before_creating_direct_chat(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.query_results = [
+            cash_flow_page(
+                vendor="D1AL",
+                amount=315.37,
+                due_date="2026-07-09",
+                due_status="🟡 Due Tomorrow",
+                status="Upcoming",
+            )
+        ]
+        graph = FakeTeamsGraph()
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        CashFlowTeamsAlerts(
+            build_settings(cash_flow_teams_chat_id="private-chat-id"),
+            service,
+            graph,
+        ).send_morning_brief(today=date(2026, 7, 8), force=True, record_sent=False)
+
+        self.assertEqual(len(graph.chat_messages), 1)
+        self.assertEqual(graph.chat_messages[0][0], "private-chat-id")
+        self.assertEqual(graph.direct_messages, [])
+
+    def test_direct_graph_self_dm_has_clear_error(self) -> None:
+        graph = FakeSelfDirectGraph()
+
+        with self.assertRaisesRegex(RuntimeError, "cannot create a one-on-one chat from a user to themselves"):
+            graph.post_direct_chat_message("jaye@unitedaccountservices.com", "<p>Brief</p>")
+
     def test_morning_brief_skips_duplicate_daily_summary(self) -> None:
         state_path = Path("work/test-cash-flow-notification-state.json")
         if state_path.exists():
@@ -1055,6 +1085,7 @@ def build_settings(**overrides) -> SimpleNamespace:
         "cash_flow_data_source_id": "",
         "vendor_rules_data_source_id": "",
         "cash_flow_teams_user": "jaye@unitedaccountservices.com",
+        "cash_flow_teams_chat_id": "",
         "teams_graph_tenant_id": "tenant",
         "teams_graph_client_id": "client",
         "teams_graph_client_secret": "secret",
@@ -1090,9 +1121,27 @@ def cash_flow_page(
 class FakeTeamsGraph:
     def __init__(self) -> None:
         self.direct_messages: list[tuple[str, str]] = []
+        self.chat_messages: list[tuple[str, str]] = []
 
     def post_direct_chat_message(self, user_email: str, html_content: str) -> None:
         self.direct_messages.append((user_email, html_content))
+
+    def post_chat_message(self, chat_id: str, html_content: str) -> None:
+        self.chat_messages.append((chat_id, html_content))
+
+
+class FakeSelfDirectGraph:
+    def delegated_request(self, method: str, path: str, scopes: list[str], **kwargs):
+        if method == "GET" and path == "/me?$select=id,mail,userPrincipalName":
+            return {
+                "id": "me-id",
+                "mail": "jaye@unitedaccountservices.com",
+                "userPrincipalName": "jaye@unitedaccountservices.com",
+            }
+        raise AssertionError(f"Unexpected delegated request: {method} {path}")
+
+    post_direct_chat_message = GraphClient.post_direct_chat_message
+    delegated_user_profile = GraphClient.delegated_user_profile
 
 
 def build_email(
