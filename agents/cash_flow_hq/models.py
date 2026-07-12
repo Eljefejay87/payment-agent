@@ -68,3 +68,16 @@ class VendorRule:
     active: bool
     display_name: str | None = None
     notes: str = ""
+    service: str | None = None
+    invoice_day: int | None = None
+    pay_by_day: int | None = None
+    grace_period_days: int | None = None
+    auto_pay: bool | None = None
+    critical: bool | None = None
+    typical_amount: Decimal | None = None
+    billing_model: str | None = None
+    rate_per_user: Decimal | None = None
+    current_user_count: int | None = None
+    monthly_server_fee: Decimal | None = None
+    provider_group: str | None = None
+    page_id: str | None = None

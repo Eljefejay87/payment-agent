@@ -12,8 +12,14 @@ from .models import BillCandidate, BillEmail, VendorRule
 from .notion_client import NotionClient
 from .schema import (
     DUE_STATUS_PROPERTY_NAME,
+    ACTION_REQUIRED_PROPERTY_NAME,
+    ACTION_REQUIRED_FALLBACK_FORMULA,
+    PAYMENT_TYPE_OPTIONS,
     VENDOR_RULE_DATABASE_NAME,
     VENDOR_RULE_SEEDS,
+    action_required_formula_diagnostics,
+    build_action_required_diagnostic_formulas,
+    build_action_required_formula,
     build_database_payload,
     due_status_property,
     build_vendor_rules_database_payload,
@@ -78,6 +84,7 @@ class CashFlowHQService:
         database_id = foundation["database_id"]
         data_source_id = foundation["data_source_id"]
         self.ensure_due_status_property(data_source_id)
+        self.ensure_action_required_property(data_source_id)
         created_views = self.ensure_views(database_id, data_source_id)
         vendor_rules_foundation = self.ensure_vendor_rules_foundation()
         return {
@@ -167,6 +174,108 @@ class CashFlowHQService:
         )
         LOGGER.info("Updated Notion property: %s", DUE_STATUS_PROPERTY_NAME)
 
+    def ensure_action_required_property(self, data_source_id: str) -> None:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        existing = data_source.get("properties", {}).get(ACTION_REQUIRED_PROPERTY_NAME)
+        desired = {"formula": {"expression": build_action_required_formula(data_source.get("properties", {}))}}
+        if existing and existing.get("formula", {}).get("expression") == desired["formula"]["expression"]:
+            return
+        self.patch_action_required_formula(data_source_id, desired["formula"]["expression"])
+
+    def patch_action_required_formula(self, data_source_id: str, expression: str | None = None) -> str:
+        if expression is None:
+            data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+            primary = build_action_required_formula(data_source.get("properties", {}))
+        else:
+            primary = expression
+        try:
+            self.notion.request(
+                "PATCH",
+                f"/data_sources/{data_source_id}",
+                json={"properties": {ACTION_REQUIRED_PROPERTY_NAME: {"formula": {"expression": primary}}}},
+            )
+            LOGGER.info("Updated Notion property: %s", ACTION_REQUIRED_PROPERTY_NAME)
+            return primary
+        except RuntimeError as exc:
+            LOGGER.warning("Notion rejected full Action Required formula: %s", exc)
+            self.notion.request(
+                "PATCH",
+                f"/data_sources/{data_source_id}",
+                json={
+                    "properties": {
+                        ACTION_REQUIRED_PROPERTY_NAME: {
+                            "formula": {"expression": ACTION_REQUIRED_FALLBACK_FORMULA}
+                        }
+                    }
+                },
+            )
+            LOGGER.info("Updated Notion property with fallback formula: %s", ACTION_REQUIRED_PROPERTY_NAME)
+            return ACTION_REQUIRED_FALLBACK_FORMULA
+
+    def action_required_formula_debug(self, data_source_id: str) -> dict[str, Any]:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        return action_required_formula_diagnostics(data_source.get("properties", {}))
+
+    def action_required_formula_diagnostic_steps(self, data_source_id: str) -> list[tuple[str, str]]:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        return build_action_required_diagnostic_formulas(data_source.get("properties", {}))
+
+    def action_required_property_schema(self, data_source_id: str) -> dict[str, Any]:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        return data_source.get("properties", {}).get(ACTION_REQUIRED_PROPERTY_NAME, {})
+
+    def action_required_formula_patch_body(self, expression: str) -> dict[str, Any]:
+        return {
+            "properties": {
+                ACTION_REQUIRED_PROPERTY_NAME: {
+                    "formula": {"expression": expression}
+                }
+            }
+        }
+
+    def patch_action_required_formula_diagnostic_step(
+        self,
+        data_source_id: str,
+        expression: str,
+    ) -> Any:
+        return self.notion.request(
+            "PATCH",
+            f"/data_sources/{data_source_id}",
+            json=self.action_required_formula_patch_body(expression),
+        )
+
+    def diagnose_action_required_formula_patches(self, data_source_id: str) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for index, (label, expression) in enumerate(
+            self.action_required_formula_diagnostic_steps(data_source_id),
+            start=1,
+        ):
+            try:
+                response = self.patch_action_required_formula_diagnostic_step(data_source_id, expression)
+            except RuntimeError as exc:
+                results.append(
+                    {
+                        "step": index,
+                        "label": label,
+                        "status": "FAIL",
+                        "formula": expression,
+                        "patch_body": self.action_required_formula_patch_body(expression),
+                        "response": str(exc),
+                    }
+                )
+                continue
+            results.append(
+                {
+                    "step": index,
+                    "label": label,
+                    "status": "PASS",
+                    "formula": expression,
+                    "patch_body": self.action_required_formula_patch_body(expression),
+                    "response": response,
+                }
+            )
+        return results
+
     def ensure_vendor_rules_foundation(self) -> dict[str, str]:
         foundation = self.get_existing_vendor_rules_foundation()
         if foundation is None:
@@ -177,8 +286,40 @@ class CashFlowHQService:
             )
             foundation = self.foundation_from_database(database)
             LOGGER.info("Created Notion database: %s", VENDOR_RULE_DATABASE_NAME)
+        self.ensure_vendor_rule_properties(foundation["data_source_id"])
         self.ensure_vendor_rule_seeds(foundation["data_source_id"])
         return foundation
+
+    def ensure_vendor_rule_properties(self, data_source_id: str) -> None:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        existing = data_source.get("properties", {})
+        desired = build_vendor_rules_database_payload(self.settings.notion_parent_page_id)["initial_data_source"]["properties"]
+        missing = {name: prop for name, prop in desired.items() if name not in existing}
+        if missing:
+            self.notion.request("PATCH", f"/data_sources/{data_source_id}", json={"properties": missing})
+            LOGGER.info("Updated Vendor Rules properties: %s", ", ".join(sorted(missing)))
+        foundation = self.foundation_from_data_source(data_source)
+        self.ensure_vendor_rules_view(foundation["database_id"], data_source_id)
+
+    def ensure_vendor_rules_view(self, database_id: str, data_source_id: str) -> None:
+        view_name = "Recurring Vendors"
+        existing = self.list_views(database_id)
+        if any(view.get("name") == view_name for view in existing):
+            return
+        self.notion.request(
+            "POST",
+            "/views",
+            json={
+                "database_id": database_id,
+                "data_source_id": data_source_id,
+                "name": view_name,
+                "type": "table",
+                "filter": {"property": "Active", "checkbox": {"equals": True}},
+                "sorts": [{"property": "Vendor Name", "direction": "ascending"}],
+                "configuration": {"type": "table", "wrap_cells": True},
+            },
+        )
+        LOGGER.info("Created Notion view: %s", view_name)
 
     def get_existing_vendor_rules_foundation(self) -> dict[str, str] | None:
         data_source_id = getattr(self.settings, "vendor_rules_data_source_id", "")
@@ -188,14 +329,23 @@ class CashFlowHQService:
 
     def ensure_vendor_rule_seeds(self, data_source_id: str) -> None:
         existing = {
-            rule.match_text.strip().lower()
+            rule.match_text.strip().lower(): rule
             for rule in self.list_vendor_rules(data_source_id, active_only=False)
         }
         for seed in VENDOR_RULE_SEEDS:
-            if seed["match_text"].strip().lower() in existing:
+            match_key = seed["match_text"].strip().lower()
+            if match_key in existing:
+                self.update_vendor_rule(existing[match_key], VendorRule(**seed))
                 continue
             self.create_vendor_rule(data_source_id, VendorRule(**seed))
             LOGGER.info("Seeded Vendor Rule: %s", seed["vendor_name"])
+
+    def update_vendor_rule(self, existing: VendorRule, rule: VendorRule) -> None:
+        page_id = getattr(existing, "page_id", "")
+        if not page_id:
+            return
+        self.notion.request("PATCH", f"/pages/{page_id}", json={"properties": self.vendor_rule_properties(rule)})
+        LOGGER.info("Updated Vendor Rule: %s", rule.vendor_name)
 
     def create_vendor_rule(self, data_source_id: str, rule: VendorRule) -> dict[str, Any]:
         return self.notion.request(
@@ -224,6 +374,30 @@ class CashFlowHQService:
             properties["Due Day"] = {"number": rule.due_day}
         if rule.payment_type:
             properties["Payment Type"] = {"select": {"name": rule.payment_type}}
+        if rule.service:
+            properties["Service"] = rich_text_property(rule.service)
+        if rule.invoice_day is not None:
+            properties["Invoice Day"] = {"number": rule.invoice_day}
+        if rule.pay_by_day is not None:
+            properties["Pay By Day"] = {"number": rule.pay_by_day}
+        if rule.grace_period_days is not None:
+            properties["Grace Period Days"] = {"number": rule.grace_period_days}
+        if rule.auto_pay is not None:
+            properties["AutoPay"] = {"checkbox": rule.auto_pay}
+        if rule.critical is not None:
+            properties["Critical"] = {"checkbox": rule.critical}
+        if rule.typical_amount is not None:
+            properties["Typical Amount"] = {"number": float(rule.typical_amount)}
+        if rule.billing_model:
+            properties["Billing Model"] = rich_text_property(rule.billing_model)
+        if rule.rate_per_user is not None:
+            properties["Rate Per User"] = {"number": float(rule.rate_per_user)}
+        if rule.current_user_count is not None:
+            properties["Current User Count"] = {"number": rule.current_user_count}
+        if rule.monthly_server_fee is not None:
+            properties["Monthly Server Fee"] = {"number": float(rule.monthly_server_fee)}
+        if rule.provider_group:
+            properties["Provider Group"] = rich_text_property(rule.provider_group)
         return properties
 
     def list_vendor_rules(self, data_source_id: str, active_only: bool = True) -> list[VendorRule]:
@@ -258,17 +432,23 @@ class CashFlowHQService:
             updates["frequency"] = rule.frequency
             field_sources["frequency"] = "vendor rules"
             LOGGER.info("Filled Frequency from Vendor Rules")
-        if not candidate.payment_type and rule.payment_type:
+        if not candidate.payment_type and rule.payment_type in PAYMENT_TYPE_OPTIONS:
             updates["payment_type"] = rule.payment_type
             field_sources["payment_type"] = "vendor rules"
             LOGGER.info("Filled Payment Type from Vendor Rules")
-        if candidate.due_date is None and rule.due_day:
-            generated = due_date_from_rule(rule.due_day, message)
+        payment_day = rule.pay_by_day or rule.due_day
+        if candidate.due_date is None and payment_day:
+            generated = due_date_from_rule(payment_day, message)
             if generated:
                 updates["due_date"] = generated
                 field_sources["due_date"] = "vendor rules"
                 review_reasons = tuple(reason for reason in review_reasons if reason != "missing due date")
                 LOGGER.info("Filled Due Date from Vendor Rules")
+        review_reasons = add_expected_amount_reason(
+            candidate.amount,
+            expected_amount_for_rule(rule),
+            review_reasons,
+        )
         status = "Upcoming" if candidate.amount is not None and (updates.get("due_date") or candidate.due_date) and not review_reasons else "Needs Review"
         if status != candidate.status:
             updates["status"] = status
@@ -458,6 +638,19 @@ def vendor_rule_from_page(page: dict[str, Any]) -> VendorRule:
         default_status=select_name(properties.get("Default Status", {})) or "Upcoming",
         active=bool(properties.get("Active", {}).get("checkbox", False)),
         notes=plain_rich_text(properties.get("Notes", {})),
+        service=plain_rich_text(properties.get("Service", {})) or None,
+        invoice_day=number_value(properties.get("Invoice Day", {})),
+        pay_by_day=number_value(properties.get("Pay By Day", {})),
+        grace_period_days=number_value(properties.get("Grace Period Days", {})),
+        auto_pay=checkbox_value(properties.get("AutoPay", {})),
+        critical=checkbox_value(properties.get("Critical", {})),
+        typical_amount=decimal_number_value(properties.get("Typical Amount", {})),
+        billing_model=plain_rich_text(properties.get("Billing Model", {})) or None,
+        rate_per_user=decimal_number_value(properties.get("Rate Per User", {})),
+        current_user_count=number_value(properties.get("Current User Count", {})),
+        monthly_server_fee=decimal_number_value(properties.get("Monthly Server Fee", {})),
+        provider_group=plain_rich_text(properties.get("Provider Group", {})) or None,
+        page_id=page.get("id"),
     )
 
 
@@ -471,6 +664,19 @@ def number_value(property_value: dict[str, Any]) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def decimal_number_value(property_value: dict[str, Any]) -> Decimal | None:
+    value = property_value.get("number")
+    if value is None:
+        return None
+    return Decimal(str(value))
+
+
+def checkbox_value(property_value: dict[str, Any]) -> bool | None:
+    if "checkbox" not in property_value:
+        return None
+    return bool(property_value.get("checkbox"))
 
 
 def format_business_notes(review_reasons: tuple[str, ...]) -> str:
@@ -487,6 +693,30 @@ def display_review_reason(reason: str) -> str:
     if reason == "missing amount":
         return "Missing amount"
     return reason
+
+
+def expected_amount_for_rule(rule: VendorRule) -> Decimal | None:
+    if rule.current_user_count is not None and rule.rate_per_user is not None and rule.monthly_server_fee is not None:
+        return Decimal(rule.current_user_count) * Decimal(str(rule.rate_per_user)) + Decimal(str(rule.monthly_server_fee))
+    if rule.typical_amount is not None:
+        return Decimal(str(rule.typical_amount))
+    return None
+
+
+def add_expected_amount_reason(
+    actual: Decimal | None,
+    expected: Decimal | None,
+    review_reasons: tuple[str, ...],
+) -> tuple[str, ...]:
+    if actual is None or expected is None:
+        return review_reasons
+    delta = actual - expected
+    if abs(delta) < Decimal("0.01"):
+        return review_reasons
+    reason = "Higher than expected" if delta > 0 else "Lower than expected"
+    if reason in review_reasons:
+        return review_reasons
+    return review_reasons + (reason,)
 
 
 def match_vendor_rule(candidate: BillCandidate, message: BillEmail, rules: list[VendorRule]) -> VendorRule | None:

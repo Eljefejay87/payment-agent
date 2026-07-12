@@ -25,6 +25,12 @@ def main() -> int:
             "cash-flow-init",
             "cash-flow-preview",
             "cash-flow-list-notion-data-sources",
+            "cash-flow-debug-action-required",
+            "cashflow-debug-action-required",
+            "cash-flow-diagnose-action-required",
+            "cashflow-diagnose-action-required",
+            "cash-flow-patch-action-required",
+            "cashflow-patch-action-required",
             "cashflow-test-notification",
             "cash-flow-test-notification",
             "cashflow-teams-alerts",
@@ -56,6 +62,93 @@ def main() -> int:
             logging.error("NOTION_API_KEY is required.")
             return 2
         print(json.dumps(service.list_data_source_metadata(), indent=2))
+        return 0
+
+    if args.command in {"cash-flow-debug-action-required", "cashflow-debug-action-required"}:
+        errors = validate_cash_flow_settings(settings)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        foundation = service.get_existing_foundation()
+        diagnostics = service.action_required_formula_debug(foundation["data_source_id"])
+        for property_name, property_type in diagnostics["property_types"].items():
+            print(f"{property_name} -> {property_type}")
+        print()
+        print("Safety Report")
+        for operation, property_names in diagnostics["safety_report"].items():
+            safe_properties = ", ".join(property_names) if property_names else "None"
+            print(f"{operation}: {safe_properties}")
+        print()
+        print("Formula")
+        print(diagnostics["full_formula"])
+        return 0
+
+    if args.command in {"cash-flow-diagnose-action-required", "cashflow-diagnose-action-required"}:
+        errors = validate_cash_flow_settings(settings)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        foundation = service.get_existing_foundation()
+        print("Notion-Version:")
+        print(settings.notion_version)
+        print()
+        print("Existing Action Required property schema:")
+        print(json.dumps(service.action_required_property_schema(foundation["data_source_id"]), indent=2, default=str))
+        print()
+        results = []
+        for step, (label, expression) in enumerate(
+            service.action_required_formula_diagnostic_steps(foundation["data_source_id"]),
+            start=1,
+        ):
+            print(f"Step {step}: PATCHING - {label}")
+            print("Formula:")
+            print(expression)
+            patch_body = service.action_required_formula_patch_body(expression)
+            print("JSON PATCH body:")
+            print(json.dumps(patch_body, indent=2, default=str))
+            try:
+                response = service.patch_action_required_formula_diagnostic_step(
+                    foundation["data_source_id"],
+                    expression,
+                )
+            except RuntimeError as exc:
+                result = {
+                    "step": step,
+                    "label": label,
+                    "status": "FAIL",
+                    "formula": expression,
+                    "patch_body": patch_body,
+                    "response": str(exc),
+                }
+                results.append(result)
+                print(f"Step {step}: FAIL - {label}")
+                print("Notion response:")
+                print(json.dumps(result["response"], indent=2, default=str))
+                print()
+                continue
+            result = {
+                "step": step,
+                "label": label,
+                "status": "PASS",
+                "formula": expression,
+                "patch_body": patch_body,
+                "response": response,
+            }
+            results.append(result)
+            print(f"Step {step}: PASS - {label}")
+            print("Notion response:")
+            print(json.dumps(response, indent=2, default=str))
+            print()
+        return 1 if any(result["status"] == "FAIL" for result in results) else 0
+
+    if args.command in {"cash-flow-patch-action-required", "cashflow-patch-action-required"}:
+        errors = validate_cash_flow_settings(settings)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        foundation = service.get_existing_foundation()
+        expression = service.patch_action_required_formula(foundation["data_source_id"])
+        logging.info("Cash Flow HQ Action Required formula patched. Formula=%s", expression)
         return 0
 
     if args.command in {

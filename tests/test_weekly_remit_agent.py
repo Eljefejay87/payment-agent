@@ -3,9 +3,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
+from agents.icr_remit_agent.database import ICRRemitDatabase
+from agents.icr_remit_agent.parser import parse_icr_remit_file
+from agents.icr_remit_agent.service import ICRRemitImportService
 from agents.weekly_remit_agent.database import RemitDatabase
 from agents.weekly_remit_agent.file_detector import RemitFileValidationError, find_required_remit_files
 from agents.weekly_remit_agent.models import RemitBatch, RemitFiles
@@ -122,6 +127,64 @@ class WeeklyRemitServiceTests(unittest.TestCase):
             self.assertTrue((base / "duplicates" / "2026-06-29" / "United Liq week.xlsx").exists())
 
 
+class ICRRemitImportTests(unittest.TestCase):
+    def test_icr_xlsx_column_detection_and_sums(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "icr-remit.xlsx"
+            write_sample_xlsx(path)
+
+            result = parse_icr_remit_file(path, today=datetime.fromisoformat("2026-07-08T12:00:00").date())
+
+            self.assertEqual(result.due_to_agency, Decimal("75.50"))
+            self.assertEqual(result.due_to_client, Decimal("350.25"))
+            self.assertEqual(result.total_collected, Decimal("425.75"))
+            self.assertEqual(result.remit_week.isoformat(), "2026-07-06")
+
+    def test_icr_dry_run_creates_no_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr.csv"
+            csv_path.write_text("Due to Agency,Due to Client\n10.00,20.00\n")
+            service = build_icr_service(base)
+
+            result = service.import_file(csv_path, dry_run=True)
+
+            self.assertEqual(result.due_to_client, Decimal("20.00"))
+            self.assertFalse(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
+            self.assertEqual(service.cash_flow.created_pages, 0)
+            self.assertEqual(service.graph.drafts, [])
+
+    def test_icr_live_import_tracks_creates_cash_flow_obligation_and_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr.csv"
+            csv_path.write_text("Due to Agency,Due to Client\n10.00,20.00\n")
+            service = build_icr_service(base)
+
+            result = service.import_file(csv_path, dry_run=False)
+
+            self.assertTrue(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
+            self.assertEqual(service.cash_flow.created_pages, 1)
+            payload = service.cash_flow.last_page_payload["properties"]
+            self.assertEqual(payload["Vendor / Payee"]["rich_text"][0]["text"]["content"], "ICR")
+            self.assertEqual(payload["Category"]["select"]["name"], "Broker Remit")
+            self.assertEqual(payload["Amount"]["number"], 20.0)
+            self.assertEqual(len(service.graph.drafts), 1)
+            self.assertIn("Weekly ICR Remit", service.graph.drafts[0]["subject"])
+
+    def test_icr_duplicate_prevention(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr.csv"
+            csv_path.write_text("Due to Agency,Due to Client\n10.00,20.00\n")
+            service = build_icr_service(base)
+
+            service.import_file(csv_path, dry_run=False)
+
+            with self.assertRaisesRegex(RuntimeError, "Duplicate ICR remit import"):
+                service.import_file(csv_path, dry_run=False)
+
+
 def build_settings(base: Path) -> SimpleNamespace:
     return SimpleNamespace(
         dry_run=False,
@@ -181,3 +244,79 @@ class FakeTeams:
 class TestableWeeklyRemitAgent(WeeklyRemitAgent):
     def _now(self) -> datetime:
         return datetime.fromisoformat("2026-06-29T12:00:00-04:00")
+
+
+def build_icr_service(base: Path) -> ICRRemitImportService:
+    settings = build_settings(base)
+    settings.dry_run = False
+    settings.broker_email = "jim@example.com"
+    cash_settings = SimpleNamespace(
+        notion_api_key="secret",
+        notion_version="2026-03-11",
+        notion_parent_page_id="page-id",
+        database_name="Cash Flow HQ",
+        cash_flow_data_source_id="source-id",
+        vendor_rules_data_source_id="vendor-source-id",
+    )
+    service = ICRRemitImportService.__new__(ICRRemitImportService)
+    service.remit_settings = settings
+    service.cash_flow_settings = cash_settings
+    service.db = ICRRemitDatabase(settings.database_path)
+    service.cash_flow = FakeCashFlow()
+    service.graph = FakeDraftGraph()
+    return service
+
+
+class FakeCashFlow:
+    def __init__(self) -> None:
+        self.created_pages = 0
+        self.last_page_payload = {}
+        self.notion = self
+
+    def ensure_foundation(self) -> dict:
+        return {"data_source_id": "cash-source-id"}
+
+    def create_manual_expense_payload(self, **kwargs) -> dict:
+        return {
+            "Expense Name": {"title": [{"type": "text", "text": {"content": kwargs["expense_name"]}}]},
+            "Vendor / Payee": {"rich_text": [{"type": "text", "text": {"content": kwargs["vendor_payee"]}}]},
+            "Category": {"select": {"name": kwargs["category"]}},
+            "Amount": {"number": kwargs["amount"]},
+            "Due Date": {"date": {"start": kwargs["due_date"]}},
+            "Status": {"select": {"name": "Upcoming"}},
+            "Payment Type": {"select": {"name": "Manual"}},
+            "Source": {"select": {"name": kwargs["source"]}},
+        }
+
+    def request(self, method: str, path: str, **kwargs):
+        if method == "POST" and path == "/pages":
+            self.created_pages += 1
+            self.last_page_payload = kwargs["json"]
+            return {"id": "page-id"}
+        raise AssertionError(f"Unexpected request: {method} {path}")
+
+
+class FakeDraftGraph:
+    def __init__(self) -> None:
+        self.drafts: list[dict] = []
+
+    def create_user_mail_draft(self, **kwargs):
+        self.drafts.append(kwargs)
+        return {"id": "draft-id"}
+
+
+def write_sample_xlsx(path: Path) -> None:
+    with ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "")
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Account</t></is></c><c r="B1" t="inlineStr"><is><t>Due to Agency</t></is></c><c r="C1" t="inlineStr"><is><t>Due to Client</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>A</t></is></c><c r="B2"><v>50.25</v></c><c r="C2"><v>300.25</v></c></row>
+    <row r="3"><c r="A3" t="inlineStr"><is><t>B</t></is></c><c r="B3"><v>25.25</v></c><c r="C3"><v>50.00</v></c></row>
+  </sheetData>
+</worksheet>
+""",
+        )

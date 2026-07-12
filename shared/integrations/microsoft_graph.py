@@ -323,6 +323,31 @@ class GraphClient:
         )
         LOGGER.info("Microsoft Graph email sent successfully")
 
+    def create_user_mail_draft(
+        self,
+        mailbox_user_id: str,
+        to_recipients: list[str],
+        subject: str,
+        html_content: str,
+        attachments: list[Path] | None = None,
+    ) -> dict[str, Any]:
+        user = quote(mailbox_user_id)
+        message: dict[str, Any] = {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": html_content},
+            "toRecipients": self._email_recipients(to_recipients),
+        }
+        if attachments:
+            message["attachments"] = [self._file_attachment(path) for path in attachments]
+        draft = self.request(
+            "POST",
+            f"/users/{user}/messages",
+            json=message,
+            headers={"Content-Type": "application/json"},
+        )
+        LOGGER.info("Microsoft Graph email draft created successfully")
+        return draft
+
     def _email_recipients(self, addresses: list[str]) -> list[dict[str, Any]]:
         return [
             {"emailAddress": {"address": address.strip()}}

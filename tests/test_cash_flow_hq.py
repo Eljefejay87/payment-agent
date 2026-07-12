@@ -5,6 +5,7 @@ import sys
 import unittest
 from base64 import b64encode
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,8 @@ from agents.cash_flow_hq.graph_client import CashFlowGraphClient
 from agents.cash_flow_hq.models import AttachmentMetadata, BillEmail, VendorRule
 from agents.cash_flow_hq.parser import extract_amount, extract_due_date, is_bill_related, message_from_graph, parse_bill_candidate
 from agents.cash_flow_hq.schema import (
+    ACTION_REQUIRED_PROPERTY_NAME,
+    ACTION_REQUIRED_FALLBACK_FORMULA,
     CATEGORY_OPTIONS,
     DASHBOARD_HIDDEN_PROPERTIES,
     DASHBOARD_VIEW_PROPERTIES,
@@ -27,6 +30,9 @@ from agents.cash_flow_hq.schema import (
     TODAYS_PRIORITIES_VIEW_PROPERTIES,
     VENDOR_RULE_DATABASE_NAME,
     VENDOR_RULE_SEEDS,
+    action_required_formula_diagnostics,
+    build_action_required_diagnostic_formulas,
+    build_action_required_formula,
     build_database_payload,
     build_vendor_rules_database_payload,
     build_view_payload,
@@ -47,6 +53,23 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(properties["Amount"], {"number": {"format": "dollar"}})
         self.assertEqual(properties["Due Date"], {"date": {}})
         self.assertIn('prop("Due Date")', properties[DUE_STATUS_PROPERTY_NAME]["formula"]["expression"])
+        action_formula = properties[ACTION_REQUIRED_PROPERTY_NAME]["formula"]["expression"]
+        self.assertIn('prop("Payment Type")', action_formula)
+        self.assertIn('"Needs Review"', action_formula)
+        self.assertIn('"Past Due"', action_formula)
+        self.assertIn('"Pay Now"', action_formula)
+        self.assertIn('"Upcoming AutoPay"', action_formula)
+        self.assertIn('"OK"', action_formula)
+        self.assertTrue(action_formula.startswith("if("))
+        self.assertNotIn("ifs(", action_formula)
+        self.assertNotIn("not(", action_formula)
+        self.assertIn("dateBetween", action_formula)
+        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', action_formula)
+        self.assertNotIn('dateBetween(prop("Due Date"), now(), "days")', action_formula)
+        self.assertIn('empty(prop("Vendor / Payee"))', action_formula)
+        self.assertIn('empty(prop("Category"))', action_formula)
+        self.assertNotIn('or(empty(prop("Vendor / Payee"))', action_formula)
+        self.assertIn('format(prop("Payment Type")) != "Auto Pay"', action_formula)
         self.assertEqual(properties["Payment Date"], {"date": {}})
         self.assertEqual(properties["Email Link"], {"url": {}})
         self.assertEqual(properties["Notes"], {"rich_text": {}})
@@ -82,6 +105,90 @@ class CashFlowHQSchemaTests(unittest.TestCase):
             {"Upcoming": "green", "Needs Review": "yellow", "Past Due": "red", "Paid": "blue"},
         )
         self.assertEqual([item["name"] for item in properties["Source"]["select"]["options"]], SOURCE_OPTIONS)
+
+    def test_action_required_fallback_formula_is_known_accepted_version(self) -> None:
+        self.assertIn('"Yes"', ACTION_REQUIRED_FALLBACK_FORMULA)
+        self.assertIn('"No"', ACTION_REQUIRED_FALLBACK_FORMULA)
+        self.assertIn('format(prop("Status")) == "Needs Review"', ACTION_REQUIRED_FALLBACK_FORMULA)
+        self.assertIn('format(prop("Status")) == "Past Due"', ACTION_REQUIRED_FALLBACK_FORMULA)
+
+    def test_action_required_formula_uses_nested_if_and_date_between(self) -> None:
+        formula = build_action_required_formula(
+            {
+                "AutoPay": {"type": "checkbox", "checkbox": {}},
+                "Grace Period Days": {"type": "number", "number": {"format": "number"}},
+            }
+        )
+
+        self.assertIn('prop("AutoPay")', formula)
+        self.assertIn('prop("AutoPay") == false', formula)
+        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days") < 0', formula)
+        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days") >= 0', formula)
+        self.assertNotIn('dateBetween(prop("Due Date"), now(), "days")', formula)
+        self.assertTrue(formula.startswith("if("))
+        self.assertNotIn("ifs(", formula)
+        self.assertNotIn("not(", formula)
+        self.assertNotIn('prop("Due Date") < now()', formula)
+        self.assertNotIn('prop("Due Date") >= now()', formula)
+        self.assertNotIn('prop("Grace Period Days")', formula)
+        self.assertIn('empty(prop("Category"))', formula)
+        self.assertIn('empty(prop("Vendor / Payee"))', formula)
+        self.assertNotIn('or(empty(prop("Vendor / Payee"))', formula)
+        self.assertNotIn('format(prop("Category")) == ""', formula)
+        self.assertNotIn('format(prop("Vendor / Payee")) == ""', formula)
+
+    def test_action_required_formula_avoids_rollup_relation_payment_window_fields(self) -> None:
+        formula = build_action_required_formula(
+            {
+                "AutoPay": {"type": "rollup", "rollup": {}},
+                "Grace Period Days": {"type": "rollup", "rollup": {}},
+                "Pay By Day": {"type": "rollup", "rollup": {}},
+                "Invoice Day": {"type": "relation", "relation": {}},
+            }
+        )
+
+        self.assertIn('format(prop("Payment Type")) == "Auto Pay"', formula)
+        self.assertIn('format(prop("Payment Type")) != "Auto Pay"', formula)
+        self.assertIn("dateBetween", formula)
+        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', formula)
+        self.assertNotIn('dateBetween(prop("Due Date"), now(), "days")', formula)
+        self.assertNotIn("ifs(", formula)
+        self.assertNotIn("not(", formula)
+        self.assertNotIn('prop("Due Date") < now()', formula)
+        self.assertNotIn('prop("Due Date") >= now()', formula)
+        self.assertNotIn('prop("AutoPay")', formula)
+        self.assertNotIn('prop("Grace Period Days")', formula)
+        self.assertNotIn('prop("Pay By Day")', formula)
+        self.assertNotIn('prop("Invoice Day")', formula)
+
+    def test_action_required_diagnostics_report_formula_and_schema_types(self) -> None:
+        diagnostics = action_required_formula_diagnostics(
+            {
+                "Vendor / Payee": {"type": "rich_text", "rich_text": {}},
+                "Status": {"type": "select", "select": {}},
+                "Amount": {"type": "number", "number": {"format": "dollar"}},
+                "Due Date": {"type": "date", "date": {}},
+                "Category": {"type": "select", "select": {}},
+                "Payment Type": {"type": "select", "select": {}},
+            }
+        )
+
+        self.assertEqual(
+            diagnostics["property_types"],
+            {
+                "Vendor / Payee": "rich_text",
+                "Status": "select",
+                "Amount": "number",
+                "Due Date": "date",
+                "Category": "select",
+                "Payment Type": "select",
+            },
+        )
+        self.assertIn('"Pay Now"', diagnostics["full_formula"])
+        self.assertIn("Due Date", diagnostics["safety_report"]["dateBetween()"])
+        self.assertIn("Amount", diagnostics["safety_report"]["direct comparison"])
+        self.assertIn("Category", diagnostics["safety_report"]["format()"])
+        self.assertIn("Due Date is a date", diagnostics["notes"][0])
 
     def test_view_specs_include_requested_views(self) -> None:
         names = [spec.name for spec in build_view_specs()]
@@ -186,6 +293,10 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(properties["Match Text"], {"rich_text": {}})
         self.assertEqual(properties["Display Name"], {"rich_text": {}})
         self.assertEqual(properties["Due Day"], {"number": {"format": "number"}})
+        self.assertEqual(properties["Pay By Day"], {"number": {"format": "number"}})
+        self.assertEqual(properties["Typical Amount"], {"number": {"format": "dollar"}})
+        self.assertEqual(properties["AutoPay"], {"checkbox": {}})
+        self.assertEqual(properties["Critical"], {"checkbox": {}})
         self.assertEqual(properties["Active"], {"checkbox": {}})
         self.assertEqual(
             [item["name"] for item in properties["Category"]["select"]["options"]],
@@ -204,6 +315,9 @@ class CashFlowHQSchemaTests(unittest.TestCase):
                 "Travel",
                 "Collections",
                 "Telecommunications",
+                "Telecommunications / Dialer",
+                "Utilities / Internet",
+                "Office Supplies / Utilities",
             ],
         )
         self.assertEqual(
@@ -226,7 +340,7 @@ class CashFlowHQConfigTests(unittest.TestCase):
 
     def test_load_settings_uses_cash_flow_defaults(self) -> None:
         with patch.dict(os.environ, {"NOTION_API_KEY": "secret", "CASH_FLOW_HQ_PARENT_PAGE_ID": "page"}, clear=True):
-            settings = load_cash_flow_settings()
+            settings = load_cash_flow_settings("/tmp/no-cash-flow-test.env")
 
         self.assertEqual(settings.database_name, "Cash Flow HQ")
         self.assertEqual(settings.notion_version, "2026-03-11")
@@ -298,10 +412,11 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertTrue(result["database_created"])
         self.assertEqual(len(result["views_created"]), 11)
         self.assertEqual(notion.patched_views, 1)
-        self.assertEqual(len(notion.views), 10)
+        self.assertEqual(len(notion.views), 11)
         self.assertEqual(notion.created_pages, 0)
-        self.assertEqual(len(notion.created_vendor_rules), 2)
+        self.assertEqual(len(notion.created_vendor_rules), len(VENDOR_RULE_SEEDS))
         self.assertIn(DUE_STATUS_PROPERTY_NAME, notion.data_source_properties)
+        self.assertIn(ACTION_REQUIRED_PROPERTY_NAME, notion.data_source_properties)
         dashboard_properties = notion.view_patch_payloads[0]["configuration"]["properties"]
         self.assertEqual([item["property"] for item in dashboard_properties[:4]], ["Expense Name", "Amount", "Status", "Due Status"])
         self.assertFalse(next(item for item in dashboard_properties if item["property"] == "Notes")["visible"])
@@ -318,6 +433,124 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertNotIn("Dashboard", [view["name"] for view in notion.views])
         dashboard_properties = notion.view_patch_payloads[0]["configuration"]["properties"]
         self.assertEqual([item["property"] for item in dashboard_properties[:4]], ["Expense Name", "Amount", "Status", "Due Status"])
+
+    def test_patch_action_required_formula_updates_only_formula_property(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        expression = service.patch_action_required_formula("source-id", "if(true, \"OK\", \"OK\")")
+
+        self.assertEqual(expression, "if(true, \"OK\", \"OK\")")
+        self.assertEqual(notion.patch_payloads[-1]["properties"]["Action Required"]["formula"]["expression"], expression)
+        self.assertEqual(notion.created_pages, 0)
+        self.assertEqual(notion.views, [])
+
+    def test_patch_action_required_formula_builds_from_current_schema(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.data_source_properties = {
+            "AutoPay": {"type": "checkbox", "checkbox": {}},
+            "Grace Period Days": {"type": "number", "number": {"format": "number"}},
+        }
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        expression = service.patch_action_required_formula("source-id")
+
+        self.assertIn('prop("AutoPay")', expression)
+        self.assertIn('prop("AutoPay") == false', expression)
+        self.assertIn("dateBetween", expression)
+        self.assertNotIn("ifs(", expression)
+        self.assertNotIn("not(", expression)
+        self.assertNotIn('prop("Due Date") < now()', expression)
+        self.assertNotIn('prop("Due Date") >= now()', expression)
+        self.assertNotIn('prop("Grace Period Days")', expression)
+        self.assertEqual(notion.patch_payloads[-1]["properties"]["Action Required"]["formula"]["expression"], expression)
+
+    def test_action_required_formula_debug_prints_exact_formula_and_property_types(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.data_source_properties = {
+            "Vendor / Payee": {"type": "rich_text", "rich_text": {}},
+            "Status": {"type": "select", "select": {}},
+            "Amount": {"type": "number", "number": {"format": "dollar"}},
+            "Due Date": {"type": "date", "date": {}},
+            "Category": {"type": "select", "select": {}},
+            "Payment Type": {"type": "select", "select": {}},
+        }
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        diagnostics = service.action_required_formula_debug("source-id")
+
+        self.assertEqual(diagnostics["property_types"]["Vendor / Payee"], "rich_text")
+        self.assertEqual(diagnostics["property_types"]["Status"], "select")
+        self.assertEqual(diagnostics["property_types"]["Amount"], "number")
+        self.assertEqual(diagnostics["property_types"]["Due Date"], "date")
+        self.assertEqual(diagnostics["property_types"]["Category"], "select")
+        self.assertEqual(diagnostics["property_types"]["Payment Type"], "select")
+        self.assertIn("Due Date", diagnostics["safety_report"]["dateBetween()"])
+        self.assertIn('"Upcoming AutoPay"', diagnostics["full_formula"])
+        self.assertIn("dateBetween", diagnostics["full_formula"])
+        self.assertNotIn("ifs(", diagnostics["full_formula"])
+        self.assertNotIn("not(", diagnostics["full_formula"])
+        self.assertIn('empty(prop("Vendor / Payee"))', diagnostics["full_formula"])
+        self.assertIn('empty(prop("Category"))', diagnostics["full_formula"])
+        self.assertNotIn('or(empty(prop("Vendor / Payee"))', diagnostics["full_formula"])
+        self.assertNotIn('prop("Due Date") < now()', diagnostics["full_formula"])
+        self.assertNotIn('prop("Due Date") >= now()', diagnostics["full_formula"])
+        self.assertEqual(diagnostics["full_formula"], build_action_required_formula(notion.data_source_properties))
+
+    def test_patch_action_required_formula_falls_back_when_full_formula_is_rejected(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        notion.reject_action_required_once = True
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        expression = service.patch_action_required_formula("source-id", "rejected formula")
+
+        self.assertEqual(expression, ACTION_REQUIRED_FALLBACK_FORMULA)
+        self.assertEqual(notion.patch_payloads[-1]["properties"]["Action Required"]["formula"]["expression"], ACTION_REQUIRED_FALLBACK_FORMULA)
+
+    def test_diagnose_action_required_formula_records_all_steps_after_failure(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        diagnostic_formulas = build_action_required_diagnostic_formulas()
+        notion.reject_action_required_expression = diagnostic_formulas[3][1]
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        results = service.diagnose_action_required_formula_patches("source-id")
+
+        self.assertEqual([result["status"] for result in results], ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS"])
+        self.assertEqual(results[3]["formula"], diagnostic_formulas[3][1])
+        self.assertIn("Notion PATCH rejected formula", results[3]["response"])
+        self.assertEqual(results[3]["patch_body"]["properties"][ACTION_REQUIRED_PROPERTY_NAME]["formula"]["expression"], diagnostic_formulas[3][1])
+        self.assertEqual(len(notion.patch_payloads), len(diagnostic_formulas))
+        self.assertEqual(notion.created_pages, 0)
+        self.assertEqual(notion.views, [])
+
+    def test_diagnostic_formulas_isolate_date_between(self) -> None:
+        formulas = build_action_required_diagnostic_formulas()
+        self.assertEqual(
+            [formula for _, formula in formulas],
+            [
+                "now()",
+                'prop("Due Date")',
+                'formatDate(prop("Due Date"), "YYYY-MM-DD")',
+                'dateBetween(now(), now(), "days")',
+                'dateBetween(prop("Due Date"), prop("Due Date"), "days")',
+                'dateBetween(now(), prop("Due Date"), "days")',
+            ],
+        )
+        self.assertTrue(all("ifs(" not in formula for _, formula in formulas))
+
+    def test_diagnose_action_required_formula_patches_all_steps_when_accepted(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        results = service.diagnose_action_required_formula_patches("source-id")
+        diagnostic_formulas = build_action_required_diagnostic_formulas()
+
+        self.assertTrue(all(result["status"] == "PASS" for result in results))
+        self.assertEqual(len(results), len(diagnostic_formulas))
+        self.assertEqual(
+            notion.patch_payloads[-1]["properties"][ACTION_REQUIRED_PROPERTY_NAME]["formula"]["expression"],
+            diagnostic_formulas[-1][1],
+        )
 
     def test_manual_expense_payload_is_reusable_for_later_phases(self) -> None:
         settings = SimpleNamespace(
@@ -408,14 +641,14 @@ class CashFlowHQServiceTests(unittest.TestCase):
             body="Amount Due: $315.37.",
         )
         candidate = parse_bill_candidate(email)
-        rule = VendorRule("D1AL", "D1AL", "Software", "Monthly", 5, "Manual", "Upcoming", True)
+        rule = VendorRule("D1AL", "D1AL", "Telecommunications / Dialer", "Monthly", 1, "Auto Pay", "Upcoming", True)
 
         updated = service.apply_vendor_rules(candidate, email, [rule])
 
-        self.assertEqual(updated.category, "Software")
+        self.assertEqual(updated.category, "Telecommunications / Dialer")
         self.assertEqual(updated.frequency, "Monthly")
-        self.assertEqual(updated.payment_type, "Manual")
-        self.assertEqual(updated.due_date.isoformat(), "2026-07-05")
+        self.assertEqual(updated.payment_type, "Auto Pay")
+        self.assertEqual(updated.due_date.isoformat(), "2026-07-01")
         self.assertEqual(updated.status, "Upcoming")
         self.assertEqual(updated.review_reasons, ())
         self.assertEqual(updated.field_sources["due_date"], "vendor rules")
@@ -433,12 +666,12 @@ class CashFlowHQServiceTests(unittest.TestCase):
             body="Pope and Land statement. Amount Due: $3,958.07.",
         )
         candidate = parse_bill_candidate(email)
-        rule = VendorRule("Pope and Land", "Pope and Land", "Rent", "Monthly", 1, "Manual", "Upcoming", True)
+        rule = VendorRule("Pope and Land", "Pope and Land", "Rent", "Monthly", 1, "Manual", "Upcoming", True, pay_by_day=5)
 
         updated = service.apply_vendor_rules(candidate, email, [rule])
 
         self.assertEqual(updated.category, "Rent")
-        self.assertEqual(updated.due_date.isoformat(), "2026-07-01")
+        self.assertEqual(updated.due_date.isoformat(), "2026-07-05")
         self.assertEqual(updated.status, "Upcoming")
         self.assertEqual(updated.frequency, "Monthly")
         self.assertNotIn("Missing due date", updated.notes)
@@ -530,6 +763,54 @@ class CashFlowHQServiceTests(unittest.TestCase):
         updated = service.apply_vendor_rules(candidate, email, [rule])
 
         self.assertEqual(updated.due_date.isoformat(), "2026-06-05")
+
+    def test_scollect_expected_amount_calculates_from_users_and_server_fee(self) -> None:
+        service = CashFlowHQService(build_settings(), notion=FakeNotion())
+        email = build_email(
+            sender_name="SCollect",
+            subject="SCollect Monthly Invoice",
+            body="Amount Due: $600.00.",
+        )
+        candidate = parse_bill_candidate(email)
+        rule = VendorRule(
+            "SCollect",
+            "SCollect",
+            "Software",
+            "Monthly",
+            5,
+            "Manual",
+            "Upcoming",
+            True,
+            rate_per_user=Decimal("50.00"),
+            current_user_count=10,
+            monthly_server_fee=Decimal("100.00"),
+        )
+
+        updated = service.apply_vendor_rules(candidate, email, [rule])
+
+        self.assertEqual(updated.status, "Upcoming")
+        self.assertEqual(updated.notes, "✓ Ready for Payment")
+
+    def test_expected_amount_variance_flags_note_without_blocking_import(self) -> None:
+        service = CashFlowHQService(build_settings(), notion=FakeNotion())
+        email = build_email(sender_name="D1AL", subject="D1AL invoice", body="Amount Due: $330.00.")
+        candidate = parse_bill_candidate(email)
+        rule = VendorRule(
+            "D1AL",
+            "D1AL",
+            "Telecommunications / Dialer",
+            "Monthly",
+            1,
+            "Auto Pay",
+            "Upcoming",
+            True,
+            typical_amount=Decimal("315.37"),
+        )
+
+        updated = service.apply_vendor_rules(candidate, email, [rule])
+
+        self.assertEqual(updated.status, "Needs Review")
+        self.assertIn("Higher than expected", updated.notes)
 
     def test_vendor_rule_does_not_overwrite_extracted_values(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
@@ -949,6 +1230,11 @@ class FakeNotion:
         self.query_results: list[dict] = []
         self.vendor_rule_pages: list[dict] = []
         self.data_source_properties: dict = {}
+        self.vendor_rule_properties: dict = {}
+        self.updated_vendor_rules: list[dict] = []
+        self.patch_payloads: list[dict] = []
+        self.reject_action_required_once = False
+        self.reject_action_required_expression: str | None = None
         self.search_payload: dict | None = None
         self.vendor_rules_search_count = 0
 
@@ -988,12 +1274,19 @@ class FakeNotion:
             title = kwargs["json"]["title"][0]["text"]["content"]
             if title == VENDOR_RULE_DATABASE_NAME:
                 self.existing_vendor_rules = True
+                self.vendor_rule_properties = kwargs["json"]["initial_data_source"]["properties"]
                 return {"id": "vendor-database-id", "data_sources": [{"id": "vendor-source-id"}]}
             self.existing_database = True
             self.data_source_properties = kwargs["json"]["initial_data_source"]["properties"]
             return {"id": "database-id", "data_sources": [{"id": "source-id"}]}
         if method == "GET" and path == "/data_sources/source-id":
             return {"id": "source-id", "properties": self.data_source_properties}
+        if method == "GET" and path == "/data_sources/vendor-source-id":
+            return {
+                "id": "vendor-source-id",
+                "parent": {"type": "database_id", "database_id": "vendor-database-id"},
+                "properties": self.vendor_rule_properties,
+            }
         if method == "GET" and path == "/data_sources/cash-source-id":
             return {
                 "id": "cash-source-id",
@@ -1007,8 +1300,24 @@ class FakeNotion:
                 "properties": {},
             }
         if method == "PATCH" and path == "/data_sources/source-id":
+            self.patch_payloads.append(kwargs["json"])
+            if self.reject_action_required_once and ACTION_REQUIRED_PROPERTY_NAME in kwargs["json"].get("properties", {}):
+                self.reject_action_required_once = False
+                raise RuntimeError("Notion PATCH rejected formula: Type error with formula")
+            expression = (
+                kwargs["json"]
+                .get("properties", {})
+                .get(ACTION_REQUIRED_PROPERTY_NAME, {})
+                .get("formula", {})
+                .get("expression")
+            )
+            if expression and expression == self.reject_action_required_expression:
+                raise RuntimeError("Notion PATCH rejected formula: Type error with formula")
             self.data_source_properties.update(kwargs["json"]["properties"])
             return {"id": "source-id", "properties": self.data_source_properties}
+        if method == "PATCH" and path == "/data_sources/vendor-source-id":
+            self.vendor_rule_properties.update(kwargs["json"]["properties"])
+            return {"id": "vendor-source-id", "properties": self.vendor_rule_properties}
         if method == "GET" and path == "/databases/database-id":
             return {"id": "database-id", "data_sources": [{"id": "source-id"}]}
         if method == "GET" and path == "/databases/vendor-database-id":
@@ -1017,6 +1326,8 @@ class FakeNotion:
             if self.existing_views:
                 return {"results": [{"id": view["id"]} for view in self.existing_views]}
             return {"results": [{"id": "default-view"}]}
+        if method == "GET" and path == "/views?database_id=vendor-database-id":
+            return {"results": []}
         if method == "GET" and path == "/views/default-view":
             return {"id": "default-view", "name": "Default view"}
         if method == "GET" and path == "/views/dashboard-view":
@@ -1040,6 +1351,9 @@ class FakeNotion:
             else:
                 self.created_pages += 1
             return {"id": "page-id"}
+        if method == "PATCH" and path.startswith("/pages/"):
+            self.updated_vendor_rules.append(kwargs["json"])
+            return {"id": path.rsplit("/", 1)[-1]}
         raise AssertionError(f"Unexpected Notion call: {method} {path}")
 
 
@@ -1073,7 +1387,7 @@ def vendor_rule_page_from_properties(properties: dict) -> dict:
             }
         else:
             readable[name] = value
-    return {"properties": readable}
+    return {"id": properties.get("_page_id", f"vendor-page-{id(properties)}"), "properties": readable}
 
 
 def build_settings(**overrides) -> SimpleNamespace:

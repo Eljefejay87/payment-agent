@@ -88,6 +88,8 @@ class OperationsScreenshotClassifier:
             return True
         if "portfolio_table" in matched_set and "run_during_time" in matched_set:
             return True
+        if {"collections", "run_during_time", "whiteboard"} <= matched_set:
+            return True
         overview_terms = sum(
             1
             for term in ("accounts", "attempts", "rpc", "contact rate", "close rate")

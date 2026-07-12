@@ -12,10 +12,21 @@ CATEGORY_OPTIONS = [
     "Broker Remit",
     "Software",
     "Utilities",
+    "Utilities / Internet",
+    "Telecommunications",
+    "Telecommunications / Dialer",
     "Insurance",
     "Debt Purchase",
     "Loan Payment",
     "Office Expense",
+    "Office Supplies",
+    "Office Supplies / Utilities",
+    "Marketing",
+    "Professional Services",
+    "Banking",
+    "Licensing",
+    "Travel",
+    "Collections",
     "Taxes",
     "Miscellaneous",
 ]
@@ -28,14 +39,17 @@ STATUS_OPTION_COLORS = {
     "Paid": "blue",
 }
 PAYMENT_TYPE_OPTIONS = ["Auto Pay", "Manual"]
+VENDOR_RULE_PAYMENT_TYPE_OPTIONS = ["Auto Pay", "Manual", "Card / Unknown", "TBD"]
 FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual", "One-Time"]
 SOURCE_OPTIONS = ["Email", "Manual", "Payroll", "Jim Remit"]
 DUE_STATUS_PROPERTY_NAME = "Due Status"
+ACTION_REQUIRED_PROPERTY_NAME = "Action Required"
 DASHBOARD_VIEW_PROPERTIES = [
     "Expense Name",
     "Amount",
     "Status",
     DUE_STATUS_PROPERTY_NAME,
+    ACTION_REQUIRED_PROPERTY_NAME,
     "Due Date",
     "Vendor / Payee",
     "Category",
@@ -54,6 +68,7 @@ THIS_WEEK_VIEW_PROPERTIES = [
     "Amount",
     "Status",
     DUE_STATUS_PROPERTY_NAME,
+    ACTION_REQUIRED_PROPERTY_NAME,
     "Due Date",
     "Vendor / Payee",
 ]
@@ -63,6 +78,7 @@ ALL_VIEW_PROPERTIES = [
     "Status",
     DUE_STATUS_PROPERTY_NAME,
     "Due Date",
+    ACTION_REQUIRED_PROPERTY_NAME,
     "Vendor / Payee",
     "Category",
     "Payment Type",
@@ -83,6 +99,34 @@ DUE_STATUS_FORMULA = (
     'if(dateBetween(prop("Due Date"), now(), "days") == 1, "🟡 Due Tomorrow", '
     '"🟢 Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days"))))'
 )
+ACTION_REQUIRED_FORMULA = (
+    'if(empty(prop("Vendor / Payee")), '
+    '"Needs Review", '
+    'if(empty(prop("Amount")), '
+    '"Needs Review", '
+    'if(empty(prop("Due Date")), '
+    '"Needs Review", '
+    'if(empty(prop("Category")), '
+    '"Needs Review", '
+    'if(and(format(prop("Status")) != "Paid", dateBetween(dateStart(prop("Due Date")), now(), "days") < 0), '
+    '"Past Due", '
+    'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) != "Auto Pay", dateBetween(dateStart(prop("Due Date")), now(), "days") >= 0), '
+    '"Pay Now", '
+    'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) == "Auto Pay", dateBetween(dateStart(prop("Due Date")), now(), "days") >= 0), '
+    '"Upcoming AutoPay", '
+    '"OK")))))))'
+)
+ACTION_REQUIRED_FALLBACK_FORMULA = (
+    'if(or(format(prop("Status")) == "Needs Review", format(prop("Status")) == "Past Due"), "Yes", "No")'
+)
+ACTION_REQUIRED_DIAGNOSTIC_PROPERTIES = [
+    "Vendor / Payee",
+    "Status",
+    "Amount",
+    "Due Date",
+    "Category",
+    "Payment Type",
+]
 VENDOR_RULE_FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual"]
 VENDOR_RULE_CATEGORY_OPTIONS = [
     "Rent",
@@ -99,6 +143,9 @@ VENDOR_RULE_CATEGORY_OPTIONS = [
     "Travel",
     "Collections",
     "Telecommunications",
+    "Telecommunications / Dialer",
+    "Utilities / Internet",
+    "Office Supplies / Utilities",
 ]
 VENDOR_RULE_DEFAULT_STATUS_OPTIONS = ["Upcoming"]
 VENDOR_RULE_DATABASE_NAME = "Vendor Rules"
@@ -107,25 +154,162 @@ VENDOR_RULE_SEEDS = [
         "vendor_name": "D1AL",
         "match_text": "D1AL",
         "display_name": "D1AL",
-        "category": "Software",
+        "service": "Voice Dialer",
+        "category": "Telecommunications / Dialer",
         "frequency": "Monthly",
-        "due_day": 5,
-        "payment_type": "Manual",
+        "due_day": 1,
+        "invoice_day": 1,
+        "pay_by_day": 1,
+        "auto_pay": True,
+        "payment_type": "Auto Pay",
         "default_status": "Upcoming",
         "active": True,
-        "notes": "Seeded Phase 2.7 rule.",
+        "critical": True,
+        "typical_amount": 315.37,
+        "notes": "Recurring vendor v1.1.",
     },
     {
         "vendor_name": "Pope and Land",
         "match_text": "Pope and Land",
         "display_name": "Pope & Land",
+        "service": "Office Rent",
         "category": "Rent",
         "frequency": "Monthly",
         "due_day": 1,
+        "invoice_day": 1,
+        "pay_by_day": 5,
+        "grace_period_days": 4,
+        "auto_pay": False,
         "payment_type": "Manual",
         "default_status": "Upcoming",
         "active": True,
-        "notes": "Seeded Phase 2.7 rule.",
+        "critical": True,
+        "typical_amount": 3958.07,
+        "notes": "Recurring vendor v1.1.",
+    },
+    {
+        "vendor_name": "Vaspian",
+        "match_text": "Vaspian",
+        "display_name": "Vaspian",
+        "service": "SMS/Text Messaging",
+        "category": "Telecommunications",
+        "frequency": "Monthly",
+        "due_day": 1,
+        "invoice_day": 1,
+        "pay_by_day": 1,
+        "auto_pay": True,
+        "payment_type": "Auto Pay",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": True,
+        "typical_amount": 550.00,
+        "notes": "Recurring vendor v1.1.",
+    },
+    {
+        "vendor_name": "SCollect",
+        "match_text": "SCollect",
+        "display_name": "SCollect",
+        "service": "Collection Software",
+        "category": "Software",
+        "frequency": "Monthly",
+        "due_day": 5,
+        "invoice_day": 5,
+        "pay_by_day": 5,
+        "auto_pay": False,
+        "payment_type": "Manual",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": True,
+        "billing_model": "Per User + Server Fee",
+        "rate_per_user": 50.00,
+        "current_user_count": 10,
+        "monthly_server_fee": 100.00,
+        "typical_amount": 600.00,
+        "notes": "Calculation: (10 users x $50) + $100 server fee = $600.",
+    },
+    {
+        "vendor_name": "Comcast Business",
+        "match_text": "Comcast",
+        "display_name": "Comcast Business",
+        "service": "Internet",
+        "category": "Utilities / Internet",
+        "frequency": "Monthly",
+        "due_day": 10,
+        "invoice_day": 10,
+        "pay_by_day": 10,
+        "auto_pay": False,
+        "payment_type": "Manual",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": True,
+        "typical_amount": 298.00,
+        "notes": "Recurring vendor v1.1.",
+    },
+    {
+        "vendor_name": "Concepts2Code",
+        "match_text": "Concepts2Code",
+        "display_name": "Concepts2Code",
+        "service": "Software Development",
+        "category": "Professional Services",
+        "frequency": "Monthly",
+        "due_day": 1,
+        "invoice_day": 1,
+        "pay_by_day": 1,
+        "auto_pay": True,
+        "payment_type": "Auto Pay",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": False,
+        "typical_amount": 799.00,
+        "notes": "Recurring vendor v1.1.",
+    },
+    {
+        "vendor_name": "Blue Real Spring Water",
+        "match_text": "Blue Real",
+        "display_name": "Blue Real Spring Water",
+        "service": "Office Water Service",
+        "category": "Office Supplies / Utilities",
+        "frequency": "Monthly",
+        "due_day": None,
+        "auto_pay": None,
+        "payment_type": "Card / Unknown",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": False,
+        "typical_amount": 49.00,
+        "notes": "Invoice day/pay by day TBD.",
+    },
+    {
+        "vendor_name": "Coterie",
+        "match_text": "Coterie",
+        "display_name": "Coterie",
+        "service": "E&O Insurance",
+        "category": "Insurance",
+        "frequency": "Monthly",
+        "due_day": None,
+        "payment_type": "TBD",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": True,
+        "provider_group": "InsureOne",
+        "typical_amount": 229.00,
+        "notes": "Due date/autopay/payment type TBD.",
+    },
+    {
+        "vendor_name": "Hiscox",
+        "match_text": "Hiscox",
+        "display_name": "Hiscox",
+        "service": "Cyber Insurance",
+        "category": "Insurance",
+        "frequency": "Monthly",
+        "due_day": None,
+        "payment_type": "TBD",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": True,
+        "provider_group": "InsureOne",
+        "typical_amount": 147.00,
+        "notes": "Due date/autopay/payment type TBD.",
     },
 ]
 
@@ -185,6 +369,7 @@ def build_properties() -> dict[str, Any]:
         "Amount": {"number": {"format": "dollar"}},
         "Due Date": {"date": {}},
         DUE_STATUS_PROPERTY_NAME: due_status_property(),
+        ACTION_REQUIRED_PROPERTY_NAME: action_required_property(),
         "Payment Date": {"date": {}},
         "Status": status_select_property(),
         "Payment Type": select_property(PAYMENT_TYPE_OPTIONS),
@@ -213,9 +398,21 @@ def build_vendor_rule_properties() -> dict[str, Any]:
         "Category": select_property(VENDOR_RULE_CATEGORY_OPTIONS),
         "Frequency": select_property(VENDOR_RULE_FREQUENCY_OPTIONS),
         "Due Day": {"number": {"format": "number"}},
-        "Payment Type": select_property(PAYMENT_TYPE_OPTIONS),
+        "Payment Type": select_property(VENDOR_RULE_PAYMENT_TYPE_OPTIONS),
         "Default Status": select_property(VENDOR_RULE_DEFAULT_STATUS_OPTIONS),
         "Active": {"checkbox": {}},
+        "Service": {"rich_text": {}},
+        "Invoice Day": {"number": {"format": "number"}},
+        "Pay By Day": {"number": {"format": "number"}},
+        "Grace Period Days": {"number": {"format": "number"}},
+        "AutoPay": {"checkbox": {}},
+        "Critical": {"checkbox": {}},
+        "Typical Amount": {"number": {"format": "dollar"}},
+        "Billing Model": {"rich_text": {}},
+        "Rate Per User": {"number": {"format": "dollar"}},
+        "Current User Count": {"number": {"format": "number"}},
+        "Monthly Server Fee": {"number": {"format": "dollar"}},
+        "Provider Group": {"rich_text": {}},
         "Notes": {"rich_text": {}},
     }
 
@@ -237,6 +434,103 @@ def status_select_property() -> dict[str, Any]:
 
 def due_status_property() -> dict[str, Any]:
     return {"formula": {"expression": DUE_STATUS_FORMULA}}
+
+
+def action_required_property() -> dict[str, Any]:
+    return {"formula": {"expression": build_action_required_formula()}}
+
+
+def build_action_required_formula(properties: dict[str, Any] | None = None) -> str:
+    properties = properties or {}
+    open_bill = 'format(prop("Status")) != "Paid"'
+    due_days = 'dateBetween(dateStart(prop("Due Date")), now(), "days")'
+    auto_pay_condition = 'format(prop("Payment Type")) == "Auto Pay"'
+    manual_payment_condition = 'format(prop("Payment Type")) != "Auto Pay"'
+    if property_type(properties, "AutoPay") == "checkbox":
+        auto_pay_condition = 'prop("AutoPay")'
+        manual_payment_condition = 'prop("AutoPay") == false'
+
+    return (
+        'if(empty(prop("Vendor / Payee")), '
+        '"Needs Review", '
+        'if(empty(prop("Amount")), '
+        '"Needs Review", '
+        'if(empty(prop("Due Date")), '
+        '"Needs Review", '
+        'if(empty(prop("Category")), '
+        '"Needs Review", '
+        f"if(and({open_bill}, {due_days} < 0), "
+        '"Past Due", '
+        f"if(and({open_bill}, {manual_payment_condition}, {due_days} >= 0), "
+        '"Pay Now", '
+        f"if(and({open_bill}, {auto_pay_condition}, {due_days} >= 0), "
+        '"Upcoming AutoPay", '
+        '"OK")))))))'
+    )
+
+
+def build_action_required_diagnostic_formulas(
+    properties: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    return [
+        ("now only", "now()"),
+        ("due date property only", 'prop("Due Date")'),
+        ("format due date", 'formatDate(prop("Due Date"), "YYYY-MM-DD")'),
+        ("dateBetween now now", 'dateBetween(now(), now(), "days")'),
+        ("dateBetween due date due date", 'dateBetween(prop("Due Date"), prop("Due Date"), "days")'),
+        ("dateBetween now due date", 'dateBetween(now(), prop("Due Date"), "days")'),
+    ]
+
+
+def property_type(properties: dict[str, Any], property_name: str) -> str:
+    property_payload = properties.get(property_name) or {}
+    if "type" in property_payload:
+        return str(property_payload.get("type") or "")
+    for key in property_payload:
+        if key not in {"id", "name", "description"}:
+            return key
+    return "missing"
+
+
+def action_required_formula_diagnostics(properties: dict[str, Any]) -> dict[str, Any]:
+    checked = {name: property_type(properties, name) for name in ACTION_REQUIRED_DIAGNOSTIC_PROPERTIES}
+    return {
+        "property_types": checked,
+        "safety_report": action_required_property_safety_report(checked),
+        "full_formula": build_action_required_formula(properties),
+        "fallback_formula": ACTION_REQUIRED_FALLBACK_FORMULA,
+        "notes": action_required_formula_notes(checked),
+    }
+
+
+def action_required_formula_notes(property_types: dict[str, str]) -> list[str]:
+    notes: list[str] = []
+    if property_types.get("Due Date") == "date":
+        notes.append("Due Date is a date and is the only property used with dateBetween.")
+    else:
+        notes.append("Due Date is not a plain date; dateBetween may be rejected.")
+    return notes
+
+
+def action_required_property_safety_report(property_types: dict[str, str]) -> dict[str, list[str]]:
+    return {
+        "format()": [
+            name for name, prop_type in property_types.items()
+            if prop_type in {"title", "rich_text", "select", "status", "number", "date", "checkbox", "formula", "rollup"}
+        ],
+        "empty()": [
+            name for name, prop_type in property_types.items()
+            if prop_type in {"title", "rich_text", "number", "date", "select", "status", "formula", "rollup"}
+        ],
+        "direct comparison": [
+            name for name, prop_type in property_types.items()
+            if prop_type in {"number", "checkbox"}
+        ],
+        "dateBetween()": [
+            name for name, prop_type in property_types.items()
+            if prop_type == "date"
+        ],
+    }
 
 
 def due_status_label(due_date: date | None, today: date) -> str:

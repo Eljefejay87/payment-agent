@@ -240,6 +240,17 @@ class OperationsServiceTests(unittest.TestCase):
         self.assertTrue(result.is_operations_dashboard)
         self.assertIn("portfolio_table", result.matched_indicators)
 
+    def test_scollect_whiteboard_run_during_time_screenshot_is_accepted(self) -> None:
+        classifier = OperationsScreenshotClassifier("fake-tesseract")
+
+        result = classifier.classify_text(
+            "Run During Time Posted Pending Total Run Rate Collections in Range Whiteboard "
+            "Current Month Future Cash Fee Count"
+        )
+
+        self.assertTrue(result.is_operations_dashboard)
+        self.assertIn("whiteboard", result.matched_indicators)
+
     def test_local_image_is_processed_once_by_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
