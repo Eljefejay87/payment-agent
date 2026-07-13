@@ -33,8 +33,10 @@ class ICRRemitImportService:
             client_secret=remit_settings.graph_client_secret,
         )
 
-    def import_file(self, file_path: Path, dry_run: bool = False) -> ICRRemitResult:
+    def import_file(self, file_path: Path, liquidation_file: Path, dry_run: bool = False) -> ICRRemitResult:
         result = parse_icr_remit_file(file_path, self.remit_settings.broker_name, "Jim")
+        if not liquidation_file.is_file():
+            raise ValueError(f"ICR liquidation report was not found: {liquidation_file}")
         self.db.initialize()
         if self.db.import_exists(result.broker, result.remit_week.isoformat(), result.file_path.name):
             raise RuntimeError(f"Duplicate ICR remit import for {result.file_path.name} week {result.remit_week}.")
@@ -59,22 +61,21 @@ class ICRRemitImportService:
         payload["Notes"] = {"rich_text": [{"type": "text", "text": {"content": "Weekly ICR remit owed to Jim"}}]}
         self.cash_flow.notion.request("POST", "/pages", json={"parent": {"data_source_id": data_source_id}, "properties": payload})
         self.db.save_import(result)
-        self.create_email_draft(result)
+        self.create_email_draft(result, liquidation_file)
         LOGGER.info("ICR remit import complete for %s", result.file_path.name)
         return result
 
-    def create_email_draft(self, result: ICRRemitResult) -> dict:
+    def create_email_draft(self, result: ICRRemitResult, liquidation_file: Path) -> dict:
         if not self.remit_settings.broker_email:
             raise RuntimeError("REMIT_BROKER_EMAIL is required to create the ICR draft.")
         subject = f"Weekly ICR Remit - {result.week_ending.isoformat()}"
         body = (
             "<p>Hi Jim,</p>"
-            "<p>Weekly ICR remit summary:</p>"
-            "<ul>"
-            f"<li>Due to Agency: ${result.due_to_agency:,.2f}</li>"
-            f"<li>Due to Client: ${result.due_to_client:,.2f}</li>"
-            f"<li>Total Collected: ${result.total_collected:,.2f}</li>"
-            "</ul>"
+            "<p>Attached are United Capital Management's weekly ICR remit report and "
+            f"liquidation report for the week of {result.remit_week.isoformat()}.</p>"
+            "<p><strong>Attached files:</strong></p>"
+            f"<p>{result.file_path.name}<br>{liquidation_file.name}</p>"
+            "<p>Please let us know if you need anything else.</p>"
             "<p>Thank you,<br>United Capital Management</p>"
         )
         return self.graph.create_user_mail_draft(
@@ -82,5 +83,5 @@ class ICRRemitImportService:
             to_recipients=[self.remit_settings.broker_email],
             subject=subject,
             html_content=body,
-            attachments=[result.file_path],
+            attachments=[result.file_path, liquidation_file],
         )

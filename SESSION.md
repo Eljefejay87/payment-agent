@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 5 focused ICR import tests, all 15 dashboard tests, and all 138 repository tests pass after the live import.
+Automated verification is passing: all 6 focused ICR import tests and all 139 repository tests pass after the corrected live import.
 
 ## Completed Work
 
@@ -89,17 +89,20 @@ Automated verification is passing: all 5 focused ICR import tests, all 15 dashbo
 - Re-ran `.venv/bin/python main.py icr-remit-import --file 'remits/sent/ICR/2026-07-06/United Remit 7-6-26.xlsx' --dry-run`; it reproduced the expected totals and created no Notion page, import-history row, or Outlook item.
 - The first live command attempt stopped before creating the intended production artifacts because the importer invoked Cash Flow HQ view provisioning and Notion rejected a view payload. Post-failure checks confirmed zero matching Notion pages, import-history rows, and Outlook items.
 - Fixed the scoped import-path defect so an ICR import uses the configured Cash Flow HQ data source directly and does not run unrelated schema/view provisioning.
-- Ran `.venv/bin/python main.py icr-remit-import --file 'remits/sent/ICR/2026-07-06/United Remit 7-6-26.xlsx'` successfully. Verification found exactly one Cash Flow HQ obligation for `$2,426.72`, exactly one matching import-history row with all three source totals, and exactly one matching Outlook draft with the source workbook attached. No matching non-draft item or duplicate was found, and no email was sent.
+- The archived `United Remit 7-6-26.xlsx` was initially imported in error. Its uniquely matched Cash Flow HQ page, import-history row, and unsent Outlook draft were removed after confirming the current files had been loaded; no broker email was sent.
 - Fixed the dashboard date-type mismatch exposed by the new live obligation by accepting the existing ISO date string returned by `today_in_timezone`; all 15 dashboard tests and all 138 repository tests pass.
+- Updated `icr-remit-import` to require the liquidation-rate report, attach both source reports, and keep internal remit totals out of the broker-facing draft.
+- Independently verified the current `remits/incoming/ICR/UNITED REMIT 7-12-26.xlsx` has 11 nonblank rows: Due to Agency `$511.83`, Due to Client `$767.68`, and Total Collected `$1,279.51`.
+- Imported the current remit with `remits/incoming/ICR/UNITED LIQ RATE.csv`. Production now contains exactly one Cash Flow HQ obligation for `$767.68`, one matching import-history row, and one unsent Outlook draft addressed only to the configured ICR recipient with both current files attached. Attachment hashes and the owner-approved message text were verified exactly.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The archived ICR remit totals and source identity were independently verified, and the controlled live import completed successfully after a scoped import-path fix. Production contains one matching Cash Flow HQ obligation, one matching import-history row, and one unsent Outlook draft with the source workbook attached.
+The current ICR remit and liquidation-rate files were independently verified and imported. Production contains one matching Cash Flow HQ obligation for `$767.68`, one matching import-history row, and one unsent Outlook draft containing only the approved attachment notice with both current reports attached.
 
 ## Next Recommended Task
 
-Review the Outlook draft and the Cash Flow HQ obligation, then manually send the draft only after final owner approval. Do not rerun the import; duplicate protection now records this broker, week, and filename.
+Review the corrected Outlook draft in the configured mailbox Drafts folder, then send it manually only after final owner approval. Do not rerun the import; duplicate protection records `UNITED REMIT 7-12-26.xlsx` for the week of `2026-07-06`.
 
 ## Known Issues
 
@@ -115,7 +118,7 @@ Review the Outlook draft and the Cash Flow HQ obligation, then manually send the
 - Codex sandbox cannot reach Microsoft login, so the live voicemail Outlook scan must be run from the Mac/network environment rather than inside Codex.
 - Operations Intelligence corrected OCR now passes the quality gate for the clear July 2 SCollect screenshot, but values should still be reviewed because OCR may read some table totals imperfectly.
 - The full Cash Flow HQ `Action Required` formula is not accepted by the live Notion API; the tested fallback formula is installed and should be reviewed in the live database for the intended business behavior.
-- The July 6 ICR remit import is complete and duplicate-protected. The Outlook item remains an unsent draft pending owner review.
+- The current ICR remit import is complete and duplicate-protected. The corrected Outlook item remains an unsent draft pending owner review; the incorrect archived-file draft and obligation were removed.
 - The project virtual environment uses Python 3.9.6 with LibreSSL 2.8.3, which triggers the `urllib3` v2 warning. Rebuild the virtual environment later with a supported Python 3.12+ distribution linked to current OpenSSL; no rebuild is required for the passing test suite.
 
 ## Session Update Rule

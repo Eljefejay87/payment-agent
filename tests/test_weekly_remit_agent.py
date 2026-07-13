@@ -156,9 +156,11 @@ class ICRRemitImportTests(unittest.TestCase):
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
             csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
             service = build_icr_service(base)
 
-            result = service.import_file(csv_path, dry_run=True)
+            result = service.import_file(csv_path, liquidation_path, dry_run=True)
 
             self.assertEqual(result.due_to_client, Decimal("20.00"))
             self.assertFalse(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
@@ -170,9 +172,11 @@ class ICRRemitImportTests(unittest.TestCase):
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
             csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
             service = build_icr_service(base)
 
-            result = service.import_file(csv_path, dry_run=False)
+            result = service.import_file(csv_path, liquidation_path, dry_run=False)
 
             self.assertTrue(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
             self.assertEqual(service.cash_flow.created_pages, 1)
@@ -182,18 +186,36 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertEqual(payload["Amount"]["number"], 20.0)
             self.assertEqual(len(service.graph.drafts), 1)
             self.assertIn("Weekly ICR Remit", service.graph.drafts[0]["subject"])
+            self.assertNotIn("Due to Agency", service.graph.drafts[0]["html_content"])
+            self.assertIn("Attached files:", service.graph.drafts[0]["html_content"])
+            self.assertEqual(service.graph.drafts[0]["attachments"], [csv_path, liquidation_path])
 
-    def test_icr_duplicate_prevention(self) -> None:
+    def test_icr_import_requires_liquidation_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
             csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
             service = build_icr_service(base)
 
-            service.import_file(csv_path, dry_run=False)
+            with self.assertRaisesRegex(ValueError, "liquidation report was not found"):
+                service.import_file(csv_path, base / "missing-liq.csv", dry_run=False)
+
+            self.assertEqual(service.cash_flow.created_pages, 0)
+            self.assertEqual(service.graph.drafts, [])
+
+    def test_icr_duplicate_prevention(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr.csv"
+            csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            service = build_icr_service(base)
+
+            service.import_file(csv_path, liquidation_path, dry_run=False)
 
             with self.assertRaisesRegex(RuntimeError, "Duplicate ICR remit import"):
-                service.import_file(csv_path, dry_run=False)
+                service.import_file(csv_path, liquidation_path, dry_run=False)
 
 
 def build_settings(base: Path) -> SimpleNamespace:

@@ -410,17 +410,18 @@ Duplicate protection is by broker and week start date. If an ICR remit for that 
 
 ### ICR Remit Import
 
-Import an ICR `.xlsx` or `.csv` export that contains `AgencyFee` and `ClientFee` columns. The importer totals both columns as Due to Agency and Due to Client, prevents duplicate imports by broker, week, and filename, creates the Cash Flow HQ obligation, and creates an Outlook draft with the source file attached.
+Import an ICR `.xlsx` or `.csv` export that contains `AgencyFee` and `ClientFee` columns. The importer totals both columns as Due to Agency and Due to Client, prevents duplicate imports by broker, week, and filename, creates the Cash Flow HQ obligation, and creates an Outlook draft with the remit and liquidation-rate reports attached. The broker draft contains only the weekly attachment notice and filenames; internal totals are not included.
 
 Preview and validate an export without creating a Notion row, import-history record, or Outlook draft:
 
 ```bash
-python main.py icr-remit-import --file "path/to/icr-remit.xlsx" --dry-run
+python main.py icr-remit-import --file "path/to/icr-remit.xlsx" --liquidation-file "path/to/icr-liq-rate.csv" --dry-run
 ```
 
 Important flags:
 
 - `--file` is required and accepts an `.xlsx` or `.csv` export.
+- `--liquidation-file` is required and identifies the liquidation-rate report attached to the broker draft.
 - `--dry-run` parses and totals the file without creating Notion or Outlook records.
 - `--env-file` loads an alternate environment file.
 
