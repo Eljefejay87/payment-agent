@@ -58,6 +58,11 @@ shared/
   database.py
   logging.py
   scheduler.py
+  data_layer/
+    models.py
+    repository.py
+    idempotency.py
+    adapters.py
   integrations/
     microsoft_graph.py
     microsoft_teams.py
@@ -87,6 +92,21 @@ Reserved future agent locations:
 - `agents/executive_agent/`
 
 Do not create these agents until their business requirements are defined.
+
+## Shared UCM Data Layer
+
+`shared/data_layer/` provides a storage-agnostic compatibility contract for normalized operational records. It includes typed enums/dataclasses, Decimal-safe serialization, stable idempotency helpers, an abstract repository interface, an in-memory test implementation, agent-run records, and initial adapters for Cash Flow HQ and ICR Remit.
+
+Agents can create normalized records without changing their existing writes:
+
+```python
+from shared.data_layer import normalize_cash_flow_bill
+
+shared_record = normalize_cash_flow_bill(existing_bill_candidate)
+payload = shared_record.to_dict()
+```
+
+Cash Flow HQ and ICR continue using their current Notion, SQLite, Outlook, and local-file workflows. No production shared database or storage migration has occurred. See `docs/shared_data_layer.md` for the inventory, status mappings, adapter metadata, repository contract, and idempotency rules.
 
 ## Voicemail Tracker Agent
 
