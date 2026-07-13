@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 186 repository tests pass, including scheduled success/failure run-history coverage.
+Automated verification is passing: 102 focused dashboard/Needs Review/shared-data/Cash Flow tests and all 188 repository tests pass.
 
 ## Completed Work
 
@@ -108,16 +108,18 @@ Automated verification is passing: all 186 repository tests pass, including sche
 - Added scheduled shared-data synchronization with configurable interval/source/limit, run-at-start behavior, durable success/failure agent-run history, dashboard health reporting, a confirmed manual Sync Now action, and independent macOS LaunchAgent install/status/uninstall helpers. Sync continues to write only shared SQLite and remains all-or-nothing on conflicts or source errors.
 - Live scheduled-style verification completed successfully: 10 records found, 10 unchanged skips, 0 creates/updates/conflicts/errors, and the completed run was persisted in shared agent-run history for dashboard health display.
 - Copied the scheduled-sync runtime and valid `com.ucm.shared-data-sync` plist into the durable macOS locations. The worker runs successfully from that runtime, but launchd activation from the Codex sandbox returned `Bootstrap failed: 5: Input/output error`; run `scripts/install_shared_data_agent.sh` once from a normal Terminal session to complete registration.
+- Refined the dashboard layout so Cash Flow Forecast and Needs Review share a weighted desktop row (approximately 63/37) and stack below 1020px. Needs Review now uses compact metrics and a maximum five-item preview while preserving the full queue route. Cash Flow cards were tightened without removing horizon, payment-type, summary, or upcoming-payment data.
+- Documented unavailable cash-flow business inputs in `docs/cash_flow_dashboard_data_requirements.md`; no balances, payroll, collections, remit forecasts, missing dates, or missing amounts were invented.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The durable shared database contains 10 reconciled source records. Scheduled sync code, runtime, plist, run history, and dashboard health are ready; only launchd registration remains. Needs Review contains 4 genuine unresolved records.
+The dashboard layout refinement is complete and remains read-only. The durable shared database and all agent behavior are unchanged.
 
 ## Next Recommended Task
 
-Install and verify the independent shared-data LaunchAgent, confirm its first recorded run on the dashboard, then decide whether failure-only Teams alerts are needed.
+Collect and configure the missing UCM cash-flow business data, then connect it to the existing read-only Cash Flow HQ dashboard calculations.
 
 ## Known Issues
 

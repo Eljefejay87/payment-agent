@@ -1082,3 +1082,5 @@ scripts/status_shared_data_agent.sh
 Remove only the synchronization LaunchAgent with `scripts/uninstall_shared_data_agent.sh`. The worker is separate from the Payment Agent and dashboard. Every attempt records start/completion times, status, create/update/skip counts, conflicts, errors, and external sources in shared SQLite.
 
 The dashboard Shared Data Sync card shows the latest run, configured interval/source, recent failures, and a confirmed `Sync Now` action. Sync failures appear as read-only operational alerts in Needs Review. No sync writes back to Notion, Outlook, Teams, ICR history, or source files.
+
+The dashboard places Cash Flow Forecast and a compact Needs Review preview side by side on wide screens, with Cash Flow receiving roughly two-thirds of the row. They stack on narrower screens. Needs Review shows at most five priority items; the full queue remains available at `/needs-review`. Missing business inputs for broader cash forecasting are documented in `docs/cash_flow_dashboard_data_requirements.md` and are never guessed.

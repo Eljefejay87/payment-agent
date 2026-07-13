@@ -415,11 +415,13 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         </div>
       </article>
     </section>
-    <section class="intelligence-grid">
+    <section class="intelligence-grid operations-only-grid">
       {operations_card}
-      {cash_flow_dashboard}
     </section>
-    {needs_review_card}
+    <section class="cash-review-grid">
+      {cash_flow_dashboard}
+      {needs_review_card}
+    </section>
     {sync_health_card}
     <section>
       <h2 class="section-title">Future Agents</h2>
@@ -630,32 +632,29 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
 
 def _render_needs_review(shared_dashboard: dict) -> str:
     review = shared_dashboard.get("needs_review", {})
-    rows = "".join(
-        "<tr>"
-        f"<td>{_e(item.get('title') or '')}</td>"
-        f"<td>{_e(item.get('record_type') or '')}</td>"
-        f"<td>{_e(item.get('priority') or '')}</td>"
-        f"<td>{_e(item.get('review_reason') or '')}</td>"
-        f"<td>{_e(item.get('effective_date') or '')}</td>"
-        "</tr>"
-        for item in review.get("top_items", [])
-    ) or "<tr><td colspan='5' class='muted'>No normalized records currently need review.</td></tr>"
+    preview_items = review.get("top_items", [])[:5]
+    items = "".join(
+        f"""
+        <li>
+          <div><strong>{_e(item.get('title') or '')}</strong><span>{_e(item.get('effective_date') or 'No effective date')}</span></div>
+          <p>{_e(item.get('review_reason') or '')}</p>
+        </li>
+        """
+        for item in preview_items
+    ) or "<li class='muted'>No normalized records currently need review.</li>"
     return f"""
     <section class="agent-card needs-review-dashboard">
       <div class="card-head">
         <div><h2>Needs Review</h2><p class="detail">Read-only normalized action queue</p></div>
         <div><span class="badge {'warn' if review.get('unresolved_count', 0) else 'ready'}">{review.get('unresolved_count', 0)} unresolved</span> <a class="button-link small secondary" href="/needs-review">View all</a></div>
       </div>
-      <div class="cash-flow-summary">
-        <div class="cash-flow-card"><span>Critical / High</span><strong>{review.get('critical_high_count', 0)}</strong></div>
-        <div class="cash-flow-card"><span>Past Due</span><strong>{review.get('past_due_count', 0)}</strong></div>
-        <div class="cash-flow-card"><span>Failed Runs</span><strong>{review.get('failed_agent_run_count', 0)}</strong></div>
-        <div class="cash-flow-card"><span>Oldest Age</span><strong>{review.get('oldest_unresolved_age_days', 0)}d</strong></div>
+      <div class="needs-review-summary">
+        <div><span>Critical / High</span><strong>{review.get('critical_high_count', 0)}</strong></div>
+        <div><span>Past Due</span><strong>{review.get('past_due_count', 0)}</strong></div>
+        <div><span>Failed Runs</span><strong>{review.get('failed_agent_run_count', 0)}</strong></div>
+        <div><span>Oldest Age</span><strong>{review.get('oldest_unresolved_age_days', 0)}d</strong></div>
       </div>
-      <table>
-        <thead><tr><th>Item</th><th>Type</th><th>Priority</th><th>Reason</th><th>Effective Date</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
+      <ul class="review-preview-list">{items}</ul>
     </section>
     """
 
@@ -1522,6 +1521,86 @@ button:disabled {
   margin-bottom: 14px;
   border-top: 3px solid var(--brand);
 }
+.cash-review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);
+  gap: 14px;
+  align-items: start;
+  margin-top: 14px;
+}
+.cash-review-grid .cash-flow-dashboard {
+  margin-bottom: 0;
+  padding: 16px;
+}
+.cash-review-grid .forecast-horizon-card {
+  padding: 10px;
+}
+.cash-review-grid .forecast-horizon-card strong {
+  font-size: 19px;
+}
+.cash-review-grid .cash-flow-card {
+  min-height: 72px;
+  padding: 10px;
+}
+.cash-review-grid .cash-flow-card strong {
+  font-size: 19px;
+}
+.needs-review-dashboard {
+  border-top: 3px solid var(--warn);
+  padding: 16px;
+}
+.needs-review-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.needs-review-summary > div {
+  min-height: 62px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+}
+.needs-review-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 5px;
+}
+.needs-review-summary strong {
+  font-size: 18px;
+}
+.review-preview-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.review-preview-list li {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.review-preview-list li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.review-preview-list strong {
+  font-size: 13px;
+  line-height: 1.25;
+}
+.review-preview-list span,
+.review-preview-list p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.review-preview-list span {
+  white-space: nowrap;
+}
+.review-preview-list p {
+  margin-top: 4px;
+  line-height: 1.3;
+}
 .forecast-horizon {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1677,6 +1756,9 @@ button:disabled {
 }
 .intelligence-grid .cash-flow-dashboard {
   margin-bottom: 0;
+}
+.operations-only-grid {
+  grid-template-columns: 1fr;
 }
 .agent-card {
   padding: 18px;
@@ -2062,6 +2144,11 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .muted-card {
   min-height: 110px;
 }
+@media (max-width: 1020px) {
+  .cash-review-grid {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 860px) {
   .summary-grid, .agent-grid, .future-grid, .intelligence-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections {
     grid-template-columns: 1fr;
@@ -2119,6 +2206,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
     grid-template-columns: 1fr;
   }
   .forecast-horizon, .forecast-payment-split, .forecast-filters {
+    grid-template-columns: 1fr;
+  }
+  .needs-review-summary {
     grid-template-columns: 1fr;
   }
   table {

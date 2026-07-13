@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from agents.dashboard.config import DashboardSettings
 from agents.dashboard.service import DashboardService, build_cash_flow_dashboard
-from agents.dashboard.web import render_dashboard, render_operations_page
+from agents.dashboard.web import CSS, _render_needs_review, render_dashboard, render_operations_page
 from agents.operations_intelligence_agent.database import OperationsDatabase
 from agents.operations_intelligence_agent.models import ExtractedReport, MetricValue
 from agents.payment_agent.database import PaymentDatabase
@@ -146,10 +146,46 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("View Full Operations Report", html)
         self.assertIn('src="/dashboard-logo"', html)
         self.assertIn('alt="United Capital Management"', html)
-        self.assertIn('<section class="intelligence-grid">', html)
-        intelligence_grid = html.split('<section class="intelligence-grid">', 1)[1].split("</section>", 1)[0]
+        self.assertIn('<section class="intelligence-grid operations-only-grid">', html)
+        intelligence_grid = html.split('<section class="intelligence-grid operations-only-grid">', 1)[1].split("</section>", 1)[0]
         self.assertIn("Operations Intelligence", intelligence_grid)
-        self.assertIn("Cash Flow Forecast", intelligence_grid)
+        self.assertIn('<section class="cash-review-grid">', html)
+        cash_review_grid = html.split('<section class="cash-review-grid">', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Cash Flow Forecast", cash_review_grid)
+        self.assertIn("Needs Review", cash_review_grid)
+
+    def test_cash_flow_and_needs_review_use_responsive_weighted_grid(self) -> None:
+        self.assertIn("grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);", CSS)
+        self.assertIn("@media (max-width: 1020px)", CSS)
+        responsive = CSS.split("@media (max-width: 1020px)", 1)[1].split("}", 2)[0:2]
+        self.assertIn("grid-template-columns: 1fr", "}".join(responsive))
+
+    def test_needs_review_dashboard_preview_is_limited_to_five_items(self) -> None:
+        review = {
+            "needs_review": {
+                "unresolved_count": 7,
+                "critical_high_count": 7,
+                "past_due_count": 1,
+                "failed_agent_run_count": 0,
+                "oldest_unresolved_age_days": 3,
+                "top_items": [
+                    {
+                        "title": f"Review item {index}",
+                        "effective_date": "2026-07-12",
+                        "review_reason": "Review is pending",
+                    }
+                    for index in range(7)
+                ],
+            }
+        }
+
+        html = _render_needs_review(review)
+
+        self.assertEqual(html.count("Review is pending"), 5)
+        self.assertIn("Review item 4", html)
+        self.assertNotIn("Review item 5", html)
+        self.assertIn('href="/needs-review"', html)
+        self.assertIn("7 unresolved", html)
 
     def test_cash_flow_dashboard_summary_lists_and_sorting(self) -> None:
         rows = [
