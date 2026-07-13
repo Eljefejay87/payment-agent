@@ -102,17 +102,18 @@ Automated verification is passing: 63 focused dashboard/shared/review/SQLite/syn
 - Added durable `SQLiteSharedRecordRepository` storage for normalized records, agent runs, and review audits. Review decisions and audit events commit atomically; schema versioning, indexes, uniqueness constraints, foreign keys, WAL mode, busy timeout, private file permissions, and non-destructive init/status commands are included. The dashboard now uses the configured SQLite repository while tests may still inject the in-memory implementation.
 - Initialized and verified the live shared database at `~/Library/Application Support/UCM/payment-agent/shared_ucm_data.sqlite3`. Integrity and foreign-key checks pass, schema version 1 is installed, permissions are `0600`, and initial normalized record/run/audit counts are zero because no historical source import was performed.
 - Added explicit `shared-data-sync` dry-run/apply reconciliation for Cash Flow HQ Notion pages and existing ICR import history. Dry-run is the default; apply requires `--apply --confirm APPLY_SHARED_SYNC`, writes only shared SQLite, is idempotent, preserves terminal human decisions, and blocks the entire apply on source errors or review conflicts.
-- Ran live read-only previews with zero writes: Cash Flow HQ produced 9 creates, 0 updates/conflicts/errors; ICR history produced 1 create, 0 updates/conflicts/errors. The durable shared database remains empty pending explicit authorization for the first apply.
+- Ran live read-only previews with zero writes: Cash Flow HQ produced 9 creates, 0 updates/conflicts/errors; ICR history produced 1 create, 0 updates/conflicts/errors. The database remained empty until explicit authorization was received.
+- Applied the owner-authorized 10-record shared-data import in one transaction: 9 Cash Flow HQ Notion bills and 1 ICR remit history record. Post-import integrity and foreign-key checks pass, duplicate groups remain zero, and an immediate second dry-run returned 10 skips with 0 creates, updates, conflicts, or errors.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The durable shared database and controlled source-sync path are ready. Live dry-runs found 10 clean records to create, but no import has been applied yet.
+The durable shared database contains 10 reconciled source records. The first controlled import and idempotency verification are complete.
 
 ## Next Recommended Task
 
-Review the clean 10-record preview and explicitly authorize the first shared-data apply. Then verify dashboard totals and queue contents before adding any schedule.
+Restart the dashboard, verify shared summary totals and Needs Review contents against the 10 imported records, then add scheduled read-only source synchronization with agent-run history.
 
 ## Known Issues
 
