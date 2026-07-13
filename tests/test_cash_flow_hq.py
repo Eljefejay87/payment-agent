@@ -68,6 +68,7 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertIn('"Pay Now"', action_formula)
         self.assertIn('"Upcoming AutoPay"', action_formula)
         self.assertIn('"OK"', action_formula)
+        self.assertTrue(action_formula.startswith('if(format(prop("Status")) == "Paid", "OK", '))
         self.assertTrue(action_formula.startswith("if("))
         self.assertNotIn("ifs(", action_formula)
         self.assertNotIn("not(", action_formula)

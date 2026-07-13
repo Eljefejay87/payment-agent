@@ -102,6 +102,8 @@ DUE_STATUS_FORMULA = (
     '"🟢 Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days")))))'
 )
 ACTION_REQUIRED_FORMULA = (
+    'if(format(prop("Status")) == "Paid", '
+    '"OK", '
     'if(empty(prop("Vendor / Payee")), '
     '"Needs Review", '
     'if(empty(prop("Amount")), '
@@ -116,7 +118,7 @@ ACTION_REQUIRED_FORMULA = (
     '"Pay Now", '
     'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) == "Auto Pay"), '
     '"Upcoming AutoPay", '
-    '"OK")))))))'
+    '"OK"))))))))'
 )
 ACTION_REQUIRED_FALLBACK_FORMULA = (
     'if(or(format(prop("Status")) == "Needs Review", format(prop("Status")) == "Past Due"), "Yes", "No")'
@@ -530,6 +532,8 @@ def build_action_required_formula(properties: dict[str, Any] | None = None) -> s
         manual_payment_condition = 'prop("AutoPay") == false'
 
     return (
+        'if(format(prop("Status")) == "Paid", '
+        '"OK", '
         'if(empty(prop("Vendor / Payee")), '
         '"Needs Review", '
         'if(empty(prop("Amount")), '
@@ -544,7 +548,7 @@ def build_action_required_formula(properties: dict[str, Any] | None = None) -> s
         '"Pay Now", '
         f"if(and({open_bill}, {auto_pay_condition}), "
         '"Upcoming AutoPay", '
-        '"OK")))))))'
+        '"OK"))))))))'
     )
 
 
