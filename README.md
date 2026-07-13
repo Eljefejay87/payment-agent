@@ -1046,6 +1046,19 @@ CASH_FLOW_HQ_RUN_TIMES=10:00,17:00
 
 Each scheduled run performs the bill email scan first, then the payment confirmation scan. Use `--dry-run` to test the scheduled path without importing bills or marking payments paid.
 
+Install the scheduler as a macOS LaunchAgent:
+
+```bash
+scripts/install_cash_flow_hq_scheduler.sh
+scripts/status_cash_flow_hq_scheduler.sh
+```
+
+Remove it with:
+
+```bash
+scripts/uninstall_cash_flow_hq_scheduler.sh
+```
+
 ## Shared Dashboard Data and Needs Review
 
 The dashboard includes a read-only normalized data service in `agents/dashboard/shared_data.py`. It reads `SharedRecordRepository` records and agent-run history to provide Decimal-safe cash summaries, upcoming and past-due bills, recent remits, agent health, and a centralized `Needs Review` section.
