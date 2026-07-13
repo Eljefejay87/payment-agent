@@ -184,6 +184,10 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertEqual(payload["Vendor / Payee"]["rich_text"][0]["text"]["content"], "ICR")
             self.assertEqual(payload["Category"]["select"]["name"], "Broker Remit")
             self.assertEqual(payload["Amount"]["number"], 20.0)
+            self.assertEqual(
+                payload["Notes"]["rich_text"][0]["text"]["content"],
+                "Due to Agency: $10.00 | Due to Client (owed to Jim): $20.00 | Total Collected: $30.00",
+            )
             self.assertEqual(len(service.graph.drafts), 1)
             self.assertIn("Weekly ICR Remit", service.graph.drafts[0]["subject"])
             self.assertNotIn("Due to Agency", service.graph.drafts[0]["html_content"])

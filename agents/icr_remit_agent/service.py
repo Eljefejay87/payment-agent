@@ -58,7 +58,20 @@ class ICRRemitImportService:
             source="Jim Remit",
         )
         payload["Payment Type"] = {"select": {"name": "Manual"}}
-        payload["Notes"] = {"rich_text": [{"type": "text", "text": {"content": "Weekly ICR remit owed to Jim"}}]}
+        payload["Notes"] = {
+            "rich_text": [
+                {
+                    "type": "text",
+                    "text": {
+                        "content": (
+                            f"Due to Agency: ${result.due_to_agency:,.2f} | "
+                            f"Due to Client (owed to Jim): ${result.due_to_client:,.2f} | "
+                            f"Total Collected: ${result.total_collected:,.2f}"
+                        )
+                    },
+                }
+            ]
+        }
         self.cash_flow.notion.request("POST", "/pages", json={"parent": {"data_source_id": data_source_id}, "properties": payload})
         self.db.save_import(result)
         self.create_email_draft(result, liquidation_file)

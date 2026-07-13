@@ -94,6 +94,7 @@ Automated verification is passing: all 6 focused ICR import tests and all 139 re
 - Updated `icr-remit-import` to require the liquidation-rate report, attach both source reports, and keep internal remit totals out of the broker-facing draft.
 - Independently verified the current `remits/incoming/ICR/UNITED REMIT 7-12-26.xlsx` has 11 nonblank rows: Due to Agency `$511.83`, Due to Client `$767.68`, and Total Collected `$1,279.51`.
 - Imported the current remit with `remits/incoming/ICR/UNITED LIQ RATE.csv`. Production now contains exactly one Cash Flow HQ obligation for `$767.68`, one matching import-history row, and one unsent Outlook draft addressed only to the configured ICR recipient with both current files attached. Attachment hashes and the owner-approved message text were verified exactly.
+- Updated the current Cash Flow HQ obligation and future ICR imports so the Notion `Amount` remains the `$767.68` owed to Jim while `Notes` records Due to Agency `$511.83`, Due to Client (owed to Jim) `$767.68`, and Total Collected `$1,279.51`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
