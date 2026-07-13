@@ -96,6 +96,11 @@ class CashFlowBillRecord:
     email_link: str | None
     invoice_number: str | None = None
     confirmation_link: str | None = None
+    category: str | None = None
+    frequency: str | None = None
+    due_status: str | None = None
+    action_required: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True)

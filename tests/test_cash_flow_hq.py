@@ -23,6 +23,7 @@ from agents.cash_flow_hq.payment_scan import (
     normalize_payment_confirmation_vendor,
     parse_payment_confirmation,
 )
+from agents.cash_flow_hq.review import build_review_report, ignore_email
 from agents.cash_flow_hq.schema import (
     ACTION_REQUIRED_PROPERTY_NAME,
     ACTION_REQUIRED_FALLBACK_FORMULA,
@@ -79,7 +80,7 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertNotIn('or(empty(prop("Vendor / Payee"))', action_formula)
         self.assertIn('format(prop("Payment Type")) != "Auto Pay"', action_formula)
         self.assertEqual(properties["Payment Date"], {"date": {}})
-        self.assertEqual(properties["Payment Source"]["select"]["options"][0]["name"], "Email")
+        self.assertEqual([item["name"] for item in properties["Payment Source"]["select"]["options"]], ["Email", "Manual"])
         self.assertEqual(properties["Payment Confirmation Subject"], {"rich_text": {}})
         self.assertEqual(properties["Confirmation Link"], {"url": {}})
         self.assertEqual(properties["Payment Method"]["select"]["options"][0]["name"], "Auto Pay")
@@ -1383,6 +1384,67 @@ class CashFlowHQPaymentScannerTests(unittest.TestCase):
         self.assertEqual(update["Payment Method"]["select"]["name"], "Manual")
 
 
+class CashFlowHQReviewWorkflowTests(unittest.TestCase):
+    def test_review_report_includes_needs_review_bills_and_payment_matches(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        notion.query_results = [
+            cash_flow_page("Unknown Vendor", None, None, "", "Needs Review"),
+        ]
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        report = build_review_report(service, graph=FakePaymentGraph(), days=7, limit=50)
+
+        self.assertEqual(len(report.bills_needing_review), 1)
+        self.assertEqual(report.bills_needing_review[0].vendor_payee, "Unknown Vendor")
+        self.assertEqual(len(report.payment_matches_needing_review), 1)
+        self.assertEqual(report.payment_matches_needing_review[0].reason, "Needs Review because no matching bill")
+
+    def test_review_report_filters_ignored_payment_confirmation_ids(self) -> None:
+        state_path = Path("work/test-cash-flow-review-ignore.json")
+        if state_path.exists():
+            state_path.unlink()
+        settings = build_settings(cash_flow_review_state_path=state_path)
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        service = CashFlowHQService(settings, notion=notion)
+        ignore_email(state_path, "message-id")
+
+        report = build_review_report(service, graph=FakePaymentGraph(), days=7, limit=50)
+
+        self.assertEqual(len(report.payment_matches_needing_review), 0)
+        self.assertEqual(len(report.ignored_payment_matches), 1)
+
+    def test_manual_mark_paid_updates_only_payment_fields(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        service.mark_bill_paid_manually("bill-id", date(2026, 7, 13), payment_method="Manual")
+
+        update = notion.paid_bill_updates[0]["properties"]
+        self.assertEqual(update["Status"]["select"]["name"], "Paid")
+        self.assertEqual(update["Payment Date"]["date"]["start"], "2026-07-13")
+        self.assertEqual(update["Payment Source"]["select"]["name"], "Manual")
+        self.assertEqual(update["Payment Method"]["select"]["name"], "Manual")
+        self.assertNotIn("Due Date", update)
+        self.assertNotIn("Amount", update)
+
+    def test_manual_update_bill_updates_only_supplied_fields(self) -> None:
+        notion = FakeNotion(existing_database=True)
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        service.update_bill_fields(
+            "bill-id",
+            amount=Decimal("99.50"),
+            due_date_value=date(2026, 7, 20),
+            status="Upcoming",
+        )
+
+        update = notion.updated_vendor_rules[0]["properties"]
+        self.assertEqual(update["Amount"]["number"], 99.50)
+        self.assertEqual(update["Due Date"]["date"]["start"], "2026-07-20")
+        self.assertEqual(update["Status"]["select"]["name"], "Upcoming")
+        self.assertNotIn("Payment Date", update)
+
+
 class FakeNotion:
     def __init__(self, existing_database: bool = False, existing_vendor_rules: bool = False) -> None:
         self.existing_database = existing_database
@@ -1628,6 +1690,7 @@ def build_settings(**overrides) -> SimpleNamespace:
         "teams_graph_token_cache_path": Path(".graph_teams_token_cache.bin"),
         "cash_flow_notification_time": "08:00",
         "cash_flow_notification_state_path": Path("work/test-cash-flow-notification-state.json"),
+        "cash_flow_review_state_path": Path("work/test-cash-flow-review-state.json"),
     }
     values.update(overrides)
     return SimpleNamespace(

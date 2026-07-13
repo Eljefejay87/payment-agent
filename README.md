@@ -980,11 +980,49 @@ When an email has enough detail, the scanner creates a Cash Flow HQ row with `St
 
 Duplicate protection checks the original email link first, then checks for an existing row with the same vendor/payee, amount, and due date. Matching rows are skipped rather than updated.
 
-### Phase 3 Connection Point
+### Payment Scan
 
-The reusable service layer lives in `agents/cash_flow_hq/`. Phase 3 payment confirmation detection should be added as a separate pass that proposes `Payment Date` updates for review without automatically marking rows paid.
+Preview payment confirmation matches without updating Notion:
 
-Daily schedule prep is marked in code for a future 10:00 AM run, but no Cash Flow HQ scheduler is created in Phase 2.
+```bash
+python main.py cashflow-payment-scan --dry-run --debug --days 7 --limit 50
+```
+
+Run the payment confirmation scan:
+
+```bash
+python main.py cashflow-payment-scan --days 7 --limit 50
+```
+
+The payment scan only updates existing Cash Flow HQ rows when the match is high confidence. It never creates new bills.
+
+### Review Workflow
+
+Show the Cash Flow HQ review queue:
+
+```bash
+python main.py cashflow-review --days 7 --limit 50
+```
+
+Update a bill after manual review:
+
+```bash
+python main.py cashflow-update-bill --page-id <notion-page-id> --due-date 2026-07-20 --amount 99.50 --status Upcoming
+```
+
+Mark a reviewed bill paid:
+
+```bash
+python main.py cashflow-mark-paid --page-id <notion-page-id> --payment-date 2026-07-13 --payment-method Manual
+```
+
+Hide an unmatched payment confirmation from future review output:
+
+```bash
+python main.py cashflow-ignore-email --message-id <outlook-message-id>
+```
+
+Ignored review email IDs are stored locally at `CASH_FLOW_HQ_REVIEW_STATE_PATH`, defaulting to `.cash_flow_hq_review.json`.
 
 ## Shared Dashboard Data and Needs Review
 

@@ -33,6 +33,7 @@ class CashFlowHQSettings:
     teams_graph_token_cache_path: Path
     cash_flow_notification_time: str
     cash_flow_notification_state_path: Path
+    cash_flow_review_state_path: Path
 
 
 def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
@@ -57,6 +58,7 @@ def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
         teams_graph_token_cache_path=Path(os.getenv("TEAMS_GRAPH_TOKEN_CACHE_PATH", ".graph_teams_token_cache.bin")),
         cash_flow_notification_time=os.getenv("CASH_FLOW_HQ_NOTIFICATION_TIME", "08:00"),
         cash_flow_notification_state_path=Path(os.getenv("CASH_FLOW_HQ_NOTIFICATION_STATE_PATH", ".cash_flow_hq_notifications.json")),
+        cash_flow_review_state_path=Path(os.getenv("CASH_FLOW_HQ_REVIEW_STATE_PATH", ".cash_flow_hq_review.json")),
     )
 
 

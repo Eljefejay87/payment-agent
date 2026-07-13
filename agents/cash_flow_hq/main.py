@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from datetime import date
+from decimal import Decimal
 
 from shared.logging import configure_logging
 from shared.integrations.microsoft_graph import GraphClient
@@ -15,6 +16,7 @@ from .config import NOTION_SETUP_MESSAGE, load_cash_flow_settings, validate_cash
 from .email_scan import CashFlowEmailScanner
 from .graph_client import CashFlowGraphClient
 from .payment_scan import CashFlowPaymentScanner
+from .review import build_review_report, format_review_report, ignore_email
 from .service import CashFlowHQService
 
 
@@ -42,6 +44,14 @@ def main() -> int:
             "cash-flow-scan-email",
             "cashflow-payment-scan",
             "cash-flow-payment-scan",
+            "cashflow-review",
+            "cash-flow-review",
+            "cashflow-update-bill",
+            "cash-flow-update-bill",
+            "cashflow-mark-paid",
+            "cash-flow-mark-paid",
+            "cashflow-ignore-email",
+            "cash-flow-ignore-email",
         ],
         help="Action to run.",
     )
@@ -50,6 +60,21 @@ def main() -> int:
     parser.add_argument("--debug", action="store_true", help="Log candidate extraction details.")
     parser.add_argument("--days", type=int, default=7, help="Number of Inbox days to scan.")
     parser.add_argument("--limit", type=int, default=50, help="Maximum recent emails to inspect.")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output.")
+    parser.add_argument("--no-payment-scan", action="store_true", help="Skip Outlook payment confirmation review scan.")
+    parser.add_argument("--page-id", default="", help="Notion page ID for manual bill update commands.")
+    parser.add_argument("--payment-date", default="", help="Payment date in YYYY-MM-DD format.")
+    parser.add_argument("--payment-method", choices=["Auto Pay", "Manual"], default="Manual")
+    parser.add_argument("--confirmation-link", default="", help="Optional Outlook confirmation URL.")
+    parser.add_argument("--subject", default="", help="Optional payment confirmation subject.")
+    parser.add_argument("--amount", default="", help="Bill amount for manual update.")
+    parser.add_argument("--due-date", default="", help="Bill due date in YYYY-MM-DD format.")
+    parser.add_argument("--status", choices=["Upcoming", "Paid", "Past Due", "Needs Review"], default=None)
+    parser.add_argument("--category", default="", help="Bill category for manual update.")
+    parser.add_argument("--payment-type", choices=["Auto Pay", "Manual"], default=None)
+    parser.add_argument("--frequency", default="", help="Bill frequency for manual update.")
+    parser.add_argument("--notes", default=None, help="Replacement Notes value for manual update.")
+    parser.add_argument("--message-id", default="", help="Outlook message ID to ignore in review queue.")
     args = parser.parse_args()
 
     settings = load_cash_flow_settings(args.env_file)
@@ -233,6 +258,68 @@ def main() -> int:
         )
         return 1 if result.errors else 0
 
+    if args.command in {"cashflow-review", "cash-flow-review"}:
+        errors = validate_cash_flow_settings(settings, include_graph=not args.no_payment_scan)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        graph = None if args.no_payment_scan else CashFlowGraphClient(settings)
+        report = build_review_report(service, graph=graph, days=max(args.days, 1), limit=max(args.limit, 1))
+        if args.json:
+            print(json.dumps(report.to_dict(), indent=2, default=str))
+        else:
+            print(format_review_report(report))
+        return 0
+
+    if args.command in {"cashflow-mark-paid", "cash-flow-mark-paid"}:
+        errors = validate_cash_flow_settings(settings)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        if not args.page_id or not args.payment_date:
+            logging.error("--page-id and --payment-date are required.")
+            return 2
+        foundation = service.get_existing_foundation()
+        service.ensure_payment_confirmation_properties(foundation["data_source_id"])
+        service.mark_bill_paid_manually(
+            args.page_id,
+            parse_iso_date(args.payment_date),
+            payment_method=args.payment_method,
+            confirmation_link=args.confirmation_link or None,
+            confirmation_subject=args.subject or None,
+        )
+        logging.info("Marked Cash Flow HQ bill paid: %s", args.page_id)
+        return 0
+
+    if args.command in {"cashflow-update-bill", "cash-flow-update-bill"}:
+        errors = validate_cash_flow_settings(settings)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        if not args.page_id:
+            logging.error("--page-id is required.")
+            return 2
+        service.update_bill_fields(
+            args.page_id,
+            amount=Decimal(args.amount) if args.amount else None,
+            due_date_value=parse_iso_date(args.due_date) if args.due_date else None,
+            status=args.status,
+            category=args.category or None,
+            payment_type=args.payment_type,
+            frequency=args.frequency or None,
+            notes=args.notes,
+        )
+        logging.info("Updated Cash Flow HQ bill: %s", args.page_id)
+        return 0
+
+    if args.command in {"cashflow-ignore-email", "cash-flow-ignore-email"}:
+        if not args.message_id:
+            logging.error("--message-id is required.")
+            return 2
+        ignored = ignore_email(settings.cash_flow_review_state_path, args.message_id)
+        logging.info("Ignored Cash Flow HQ review email: %s. Ignored count=%s", args.message_id, len(ignored))
+        return 0
+
     errors = validate_cash_flow_settings(settings)
     if errors:
         log_config_errors(errors)
@@ -262,6 +349,10 @@ def build_teams_graph(settings) -> GraphClient:
         client_secret=settings.teams_graph_client_secret,
         delegated_token_cache_path=settings.teams_graph_token_cache_path,
     )
+
+
+def parse_iso_date(value: str) -> date:
+    return date.fromisoformat(value)
 
 
 if __name__ == "__main__":

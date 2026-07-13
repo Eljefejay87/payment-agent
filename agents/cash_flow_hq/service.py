@@ -452,6 +452,56 @@ class CashFlowHQService:
             },
         )
 
+    def mark_bill_paid_manually(
+        self,
+        page_id: str,
+        payment_date: date,
+        payment_method: str = "Manual",
+        confirmation_link: str | None = None,
+        confirmation_subject: str | None = None,
+    ) -> None:
+        properties: dict[str, Any] = {
+            "Status": {"select": {"name": "Paid"}},
+            "Payment Date": {"date": {"start": payment_date.isoformat()}},
+            "Payment Source": {"select": {"name": "Email" if confirmation_link else "Manual"}},
+            "Payment Method": {"select": {"name": payment_method}},
+        }
+        if confirmation_link:
+            properties["Confirmation Link"] = {"url": confirmation_link}
+        if confirmation_subject:
+            properties["Payment Confirmation Subject"] = rich_text_property(confirmation_subject)
+        self.notion.request("PATCH", f"/pages/{page_id}", json={"properties": properties})
+
+    def update_bill_fields(
+        self,
+        page_id: str,
+        amount: Decimal | None = None,
+        due_date_value: date | None = None,
+        status: str | None = None,
+        category: str | None = None,
+        payment_type: str | None = None,
+        frequency: str | None = None,
+        notes: str | None = None,
+    ) -> None:
+        properties: dict[str, Any] = {}
+        if amount is not None:
+            properties["Amount"] = {"number": float(amount)}
+        if due_date_value is not None:
+            properties["Due Date"] = {"date": {"start": due_date_value.isoformat()}}
+        if status:
+            properties["Status"] = {"select": {"name": status}}
+        if category:
+            properties["Category"] = {"select": {"name": category}}
+        if payment_type:
+            properties["Payment Type"] = {"select": {"name": payment_type}}
+        if frequency:
+            properties["Frequency"] = {"select": {"name": frequency}}
+        if notes is not None:
+            properties["Notes"] = rich_text_property(notes)
+        if not properties:
+            raise RuntimeError("No Cash Flow HQ bill fields were provided to update.")
+        self.notion.request("PATCH", f"/pages/{page_id}", json={"properties": properties})
+
     def apply_vendor_rules(
         self,
         candidate: BillCandidate,
@@ -713,6 +763,11 @@ def cash_flow_bill_from_page(page: dict[str, Any]) -> CashFlowBillRecord:
         email_link=url_value(properties.get("Email Link", {})),
         invoice_number=plain_rich_text(properties.get("Invoice Number", {})) or None,
         confirmation_link=url_value(properties.get("Confirmation Link", {})),
+        category=select_name(properties.get("Category", {})),
+        frequency=select_name(properties.get("Frequency", {})),
+        due_status=formula_string(properties.get("Due Status", {})),
+        action_required=formula_string(properties.get("Action Required", {})),
+        notes=plain_rich_text(properties.get("Notes", {})) or None,
     )
 
 
@@ -747,6 +802,16 @@ def date_value(property_value: dict[str, Any]) -> date | None:
 
 def url_value(property_value: dict[str, Any]) -> str | None:
     return property_value.get("url") or None
+
+
+def formula_string(property_value: dict[str, Any]) -> str | None:
+    formula = property_value.get("formula") or {}
+    if formula.get("type") == "string":
+        return formula.get("string")
+    value = formula.get("string")
+    if value is not None:
+        return str(value)
+    return None
 
 
 def checkbox_value(property_value: dict[str, Any]) -> bool | None:
