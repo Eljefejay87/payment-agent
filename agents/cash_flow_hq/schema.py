@@ -42,6 +42,7 @@ PAYMENT_TYPE_OPTIONS = ["Auto Pay", "Manual"]
 VENDOR_RULE_PAYMENT_TYPE_OPTIONS = ["Auto Pay", "Manual", "Card / Unknown", "TBD"]
 FREQUENCY_OPTIONS = ["Weekly", "Biweekly", "Monthly", "Quarterly", "Annual", "One-Time"]
 SOURCE_OPTIONS = ["Email", "Manual", "Payroll", "Jim Remit"]
+PAYMENT_SOURCE_OPTIONS = ["Email"]
 DUE_STATUS_PROPERTY_NAME = "Due Status"
 ACTION_REQUIRED_PROPERTY_NAME = "Action Required"
 DASHBOARD_VIEW_PROPERTIES = [
@@ -444,6 +445,11 @@ def build_properties() -> dict[str, Any]:
         DUE_STATUS_PROPERTY_NAME: due_status_property(),
         ACTION_REQUIRED_PROPERTY_NAME: action_required_property(),
         "Payment Date": {"date": {}},
+        "Payment Source": select_property(PAYMENT_SOURCE_OPTIONS),
+        "Payment Confirmation Subject": {"rich_text": {}},
+        "Confirmation Link": {"url": {}},
+        "Payment Method": select_property(PAYMENT_TYPE_OPTIONS),
+        "Invoice Number": {"rich_text": {}},
         "Status": status_select_property(),
         "Payment Type": select_property(PAYMENT_TYPE_OPTIONS),
         "Frequency": select_property(FREQUENCY_OPTIONS),

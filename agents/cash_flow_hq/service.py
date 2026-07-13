@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from .config import CashFlowHQSettings
-from .models import BillCandidate, BillEmail, VendorRule
+from .models import BillCandidate, BillEmail, CashFlowBillRecord, PaymentConfirmation, VendorRule
 from .notion_client import NotionClient
 from .schema import (
     DUE_STATUS_PROPERTY_NAME,
@@ -21,6 +21,7 @@ from .schema import (
     build_action_required_diagnostic_formulas,
     build_action_required_formula,
     build_database_payload,
+    build_properties,
     due_status_property,
     build_vendor_rules_database_payload,
     build_view_payload,
@@ -211,6 +212,23 @@ class CashFlowHQService:
             )
             LOGGER.info("Updated Notion property with fallback formula: %s", ACTION_REQUIRED_PROPERTY_NAME)
             return ACTION_REQUIRED_FALLBACK_FORMULA
+
+    def ensure_payment_confirmation_properties(self, data_source_id: str) -> None:
+        data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
+        existing = data_source.get("properties", {})
+        all_properties = build_properties()
+        names = [
+            "Payment Source",
+            "Payment Confirmation Subject",
+            "Confirmation Link",
+            "Payment Method",
+            "Invoice Number",
+        ]
+        missing = {name: all_properties[name] for name in names if name not in existing}
+        if not missing:
+            return
+        self.notion.request("PATCH", f"/data_sources/{data_source_id}", json={"properties": missing})
+        LOGGER.info("Updated Notion payment confirmation properties: %s", ", ".join(missing))
 
     def action_required_formula_debug(self, data_source_id: str) -> dict[str, Any]:
         data_source = self.notion.request("GET", f"/data_sources/{data_source_id}")
@@ -406,6 +424,33 @@ class CashFlowHQService:
         if active_only:
             return [rule for rule in rules if rule.active]
         return rules
+
+    def list_cash_flow_bills(self, data_source_id: str) -> list[CashFlowBillRecord]:
+        response = self.notion.request("POST", f"/data_sources/{data_source_id}/query", json={"page_size": 100})
+        return [cash_flow_bill_from_page(page) for page in response.get("results", [])]
+
+    def mark_bill_paid_from_confirmation(
+        self,
+        bill: CashFlowBillRecord,
+        confirmation: PaymentConfirmation,
+        payment_method: str,
+    ) -> None:
+        if confirmation.received_date is None:
+            raise RuntimeError("Payment confirmation is missing received date.")
+        self.notion.request(
+            "PATCH",
+            f"/pages/{bill.page_id}",
+            json={
+                "properties": {
+                    "Status": {"select": {"name": "Paid"}},
+                    "Payment Date": {"date": {"start": confirmation.received_date.isoformat()}},
+                    "Payment Source": {"select": {"name": "Email"}},
+                    "Payment Confirmation Subject": rich_text_property(confirmation.subject),
+                    "Confirmation Link": {"url": confirmation.email_link},
+                    "Payment Method": {"select": {"name": payment_method}},
+                }
+            },
+        )
 
     def apply_vendor_rules(
         self,
@@ -654,6 +699,23 @@ def vendor_rule_from_page(page: dict[str, Any]) -> VendorRule:
     )
 
 
+def cash_flow_bill_from_page(page: dict[str, Any]) -> CashFlowBillRecord:
+    properties = page.get("properties", {})
+    return CashFlowBillRecord(
+        page_id=page.get("id", ""),
+        vendor_payee=plain_rich_text(properties.get("Vendor / Payee", {})),
+        expense_name=plain_title(properties.get("Expense Name", {}).get("title", [])),
+        amount=decimal_number_value(properties.get("Amount", {})),
+        due_date=date_value(properties.get("Due Date", {})),
+        status=select_name(properties.get("Status", {})),
+        payment_date=date_value(properties.get("Payment Date", {})),
+        payment_type=select_name(properties.get("Payment Type", {})),
+        email_link=url_value(properties.get("Email Link", {})),
+        invoice_number=plain_rich_text(properties.get("Invoice Number", {})) or None,
+        confirmation_link=url_value(properties.get("Confirmation Link", {})),
+    )
+
+
 def select_name(property_value: dict[str, Any]) -> str | None:
     select = property_value.get("select") or {}
     return select.get("name")
@@ -671,6 +733,20 @@ def decimal_number_value(property_value: dict[str, Any]) -> Decimal | None:
     if value is None:
         return None
     return Decimal(str(value))
+
+
+def date_value(property_value: dict[str, Any]) -> date | None:
+    value = (property_value.get("date") or {}).get("start")
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def url_value(property_value: dict[str, Any]) -> str | None:
+    return property_value.get("url") or None
 
 
 def checkbox_value(property_value: dict[str, Any]) -> bool | None:

@@ -81,3 +81,31 @@ class VendorRule:
     monthly_server_fee: Decimal | None = None
     provider_group: str | None = None
     page_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CashFlowBillRecord:
+    page_id: str
+    vendor_payee: str
+    expense_name: str
+    amount: Decimal | None
+    due_date: date | None
+    status: str | None
+    payment_date: date | None
+    payment_type: str | None
+    email_link: str | None
+    invoice_number: str | None = None
+    confirmation_link: str | None = None
+
+
+@dataclass(frozen=True)
+class PaymentConfirmation:
+    vendor_payee: str
+    amount: Decimal | None
+    invoice_number: str | None
+    received_date: date | None
+    subject: str
+    email_link: str
+    message_id: str
+    internet_message_id: str
+    confidence: str

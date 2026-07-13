@@ -14,6 +14,7 @@ from .alerts import CashFlowTeamsAlerts
 from .config import NOTION_SETUP_MESSAGE, load_cash_flow_settings, validate_cash_flow_settings
 from .email_scan import CashFlowEmailScanner
 from .graph_client import CashFlowGraphClient
+from .payment_scan import CashFlowPaymentScanner
 from .service import CashFlowHQService
 
 
@@ -39,6 +40,8 @@ def main() -> int:
             "cash-flow-notifications",
             "cashflow-scan-email",
             "cash-flow-scan-email",
+            "cashflow-payment-scan",
+            "cash-flow-payment-scan",
         ],
         help="Action to run.",
     )
@@ -204,6 +207,28 @@ def main() -> int:
             len(result.imported),
             len(result.skipped),
             len(result.flagged),
+            len(result.errors),
+        )
+        return 1 if result.errors else 0
+
+    if args.command in {"cashflow-payment-scan", "cash-flow-payment-scan"}:
+        errors = validate_cash_flow_settings(settings, include_graph=True)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        scanner = CashFlowPaymentScanner(service, CashFlowGraphClient(settings))
+        result = scanner.scan(
+            days=max(args.days, 1),
+            limit=max(args.limit, 1),
+            dry_run=args.dry_run,
+            debug=args.debug,
+        )
+        logging.info(
+            "Cash Flow HQ payment scan complete. Would mark paid=%s Marked paid=%s Skipped=%s Needs review=%s Errors=%s",
+            len(result.would_mark_paid),
+            len(result.marked_paid),
+            len(result.skipped),
+            len(result.needs_review),
             len(result.errors),
         )
         return 1 if result.errors else 0

@@ -15,8 +15,13 @@ from agents.cash_flow_hq.alerts import CashFlowBill, CashFlowTeamsAlerts, alread
 from agents.cash_flow_hq.config import load_cash_flow_settings, validate_cash_flow_settings
 from agents.cash_flow_hq.email_scan import CashFlowEmailScanner
 from agents.cash_flow_hq.graph_client import CashFlowGraphClient
-from agents.cash_flow_hq.models import AttachmentMetadata, BillEmail, VendorRule
+from agents.cash_flow_hq.models import AttachmentMetadata, BillEmail, CashFlowBillRecord, VendorRule
 from agents.cash_flow_hq.parser import extract_amount, extract_due_date, is_bill_related, message_from_graph, parse_bill_candidate
+from agents.cash_flow_hq.payment_scan import (
+    CashFlowPaymentScanner,
+    match_payment_confirmation,
+    parse_payment_confirmation,
+)
 from agents.cash_flow_hq.schema import (
     ACTION_REQUIRED_PROPERTY_NAME,
     ACTION_REQUIRED_FALLBACK_FORMULA,
@@ -73,6 +78,11 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertNotIn('or(empty(prop("Vendor / Payee"))', action_formula)
         self.assertIn('format(prop("Payment Type")) != "Auto Pay"', action_formula)
         self.assertEqual(properties["Payment Date"], {"date": {}})
+        self.assertEqual(properties["Payment Source"]["select"]["options"][0]["name"], "Email")
+        self.assertEqual(properties["Payment Confirmation Subject"], {"rich_text": {}})
+        self.assertEqual(properties["Confirmation Link"], {"url": {}})
+        self.assertEqual(properties["Payment Method"]["select"]["options"][0]["name"], "Auto Pay")
+        self.assertEqual(properties["Invoice Number"], {"rich_text": {}})
         self.assertEqual(properties["Email Link"], {"url": {}})
         self.assertEqual(properties["Notes"], {"rich_text": {}})
         self.assertIn('prop("Due Date")', properties["Week"]["formula"]["expression"])
@@ -1254,6 +1264,95 @@ class CashFlowHQEmailScannerTests(unittest.TestCase):
         self.assertEqual(notion.vendor_rules_search_count, 1)
 
 
+class CashFlowHQPaymentScannerTests(unittest.TestCase):
+    def test_invoice_match_is_high_confidence(self) -> None:
+        confirmation = parse_payment_confirmation(
+            build_email(subject="Payment confirmation INV-123", body="Payment received $315.37. Invoice #INV-123.")
+        )
+        bill = payment_bill(invoice_number="INV-123")
+
+        match = match_payment_confirmation(confirmation, [bill], [])
+
+        self.assertEqual(match.confidence, "High")
+        self.assertEqual(match.bill, bill)
+        self.assertEqual(match.reason, "Matched by invoice number")
+
+    def test_vendor_amount_match_is_high_confidence(self) -> None:
+        confirmation = parse_payment_confirmation(
+            build_email(sender_name="D1AL", subject="Payment successful", body="Payment received $315.37.")
+        )
+        bill = payment_bill(vendor="D1AL", amount=Decimal("315.37"), due_date=date(2026, 7, 1))
+
+        match = match_payment_confirmation(confirmation, [bill], [])
+
+        self.assertEqual(match.confidence, "High")
+        self.assertEqual(match.reason, "Matched by amount/date")
+
+    def test_duplicate_and_already_paid_bills_are_not_marked_again(self) -> None:
+        confirmation = parse_payment_confirmation(
+            build_email(sender_name="D1AL", subject="Payment successful", body="Payment received $315.37.")
+        )
+        paid = payment_bill(status="Paid", payment_date=date(2026, 7, 6))
+        linked = payment_bill(page_id="bill-linked", confirmation_link=confirmation.email_link)
+
+        match = match_payment_confirmation(confirmation, [paid, linked], [])
+
+        self.assertEqual(match.confidence, "Skip")
+        self.assertEqual(match.reason, "Already Paid")
+
+    def test_no_match_and_multiple_matches_need_review(self) -> None:
+        confirmation = parse_payment_confirmation(
+            build_email(sender_name="D1AL", subject="Payment successful", body="Payment received $315.37.")
+        )
+
+        no_match = match_payment_confirmation(confirmation, [payment_bill(vendor="Other")], [])
+        multiple = match_payment_confirmation(
+            confirmation,
+            [payment_bill(page_id="bill-1"), payment_bill(page_id="bill-2")],
+            [],
+        )
+
+        self.assertEqual(no_match.reason, "Needs Review because no matching bill")
+        self.assertEqual(multiple.reason, "Needs Review because multiple matches")
+
+    def test_payment_method_uses_vendor_rules_auto_pay_or_manual(self) -> None:
+        confirmation = parse_payment_confirmation(
+            build_email(sender_name="D1AL", subject="Payment successful", body="Payment received $315.37.")
+        )
+        bill = payment_bill(payment_type="Manual")
+        auto_rule = VendorRule("D1AL", "D1AL", "Software", "Monthly", 1, "Auto Pay", "Upcoming", True, auto_pay=True)
+        manual_rule = VendorRule("D1AL", "D1AL", "Software", "Monthly", 1, "Manual", "Upcoming", True, auto_pay=False)
+
+        self.assertEqual(match_payment_confirmation(confirmation, [bill], [auto_rule]).payment_method, "Auto Pay")
+        self.assertEqual(match_payment_confirmation(confirmation, [bill], [manual_rule]).payment_method, "Manual")
+
+    def test_dry_run_never_updates_notion_records(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        notion.query_results = [payment_bill_page()]
+        service = CashFlowHQService(build_settings(), notion=notion)
+        scanner = CashFlowPaymentScanner(service, FakePaymentGraph())
+
+        result = scanner.scan(days=7, limit=50, dry_run=True)
+
+        self.assertEqual(len(result.would_mark_paid), 1)
+        self.assertEqual(notion.paid_bill_updates, [])
+
+    def test_live_scan_marks_matched_bill_paid(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        notion.query_results = [payment_bill_page()]
+        service = CashFlowHQService(build_settings(), notion=notion)
+        scanner = CashFlowPaymentScanner(service, FakePaymentGraph())
+
+        result = scanner.scan(days=7, limit=50, dry_run=False)
+
+        self.assertEqual(len(result.marked_paid), 1)
+        update = notion.paid_bill_updates[0]["properties"]
+        self.assertEqual(update["Status"]["select"]["name"], "Paid")
+        self.assertEqual(update["Payment Date"]["date"]["start"], "2026-07-06")
+        self.assertEqual(update["Payment Source"]["select"]["name"], "Email")
+        self.assertEqual(update["Payment Method"]["select"]["name"], "Manual")
+
+
 class FakeNotion:
     def __init__(self, existing_database: bool = False, existing_vendor_rules: bool = False) -> None:
         self.existing_database = existing_database
@@ -1266,6 +1365,7 @@ class FakeNotion:
         self.view_patch_payloads: list[dict] = []
         self.query_results: list[dict] = []
         self.vendor_rule_pages: list[dict] = []
+        self.paid_bill_updates: list[dict] = []
         self.data_source_properties: dict = {}
         self.vendor_rule_properties: dict = {}
         self.updated_vendor_rules: list[dict] = []
@@ -1389,6 +1489,9 @@ class FakeNotion:
                 self.created_pages += 1
             return {"id": "page-id"}
         if method == "PATCH" and path.startswith("/pages/"):
+            if kwargs["json"].get("properties", {}).get("Status", {}).get("select", {}).get("name") == "Paid":
+                self.paid_bill_updates.append(kwargs["json"])
+                return {"id": path.rsplit("/", 1)[-1]}
             self.updated_vendor_rules.append(kwargs["json"])
             return {"id": path.rsplit("/", 1)[-1]}
         raise AssertionError(f"Unexpected Notion call: {method} {path}")
@@ -1403,6 +1506,58 @@ class FakeGraph:
                 body="Amount due $42.50. Due date July 20, 2026.",
             )
         ]
+
+
+class FakePaymentGraph:
+    def find_payment_confirmation_messages(self, days: int, limit: int):
+        return [
+            build_email(
+                sender_name="D1AL",
+                subject="Payment confirmation",
+                body="Thank you for your payment. Payment received $315.37.",
+            )
+        ]
+
+
+def payment_bill(
+    page_id: str = "bill-id",
+    vendor: str = "D1AL",
+    amount: Decimal = Decimal("315.37"),
+    due_date: date = date(2026, 7, 1),
+    status: str = "Upcoming",
+    payment_date: date | None = None,
+    payment_type: str = "Manual",
+    invoice_number: str | None = None,
+    confirmation_link: str | None = None,
+) -> CashFlowBillRecord:
+    return CashFlowBillRecord(
+        page_id=page_id,
+        vendor_payee=vendor,
+        expense_name=f"{vendor} Invoice",
+        amount=amount,
+        due_date=due_date,
+        status=status,
+        payment_date=payment_date,
+        payment_type=payment_type,
+        email_link="https://outlook.office.com/mail/id/original",
+        invoice_number=invoice_number,
+        confirmation_link=confirmation_link,
+    )
+
+
+def payment_bill_page() -> dict:
+    return {
+        "id": "bill-id",
+        "properties": {
+            "Expense Name": {"title": [{"plain_text": "D1AL Invoice"}]},
+            "Vendor / Payee": {"rich_text": [{"plain_text": "D1AL"}]},
+            "Amount": {"number": 315.37},
+            "Due Date": {"date": {"start": "2026-07-01"}},
+            "Status": {"select": {"name": "Upcoming"}},
+            "Payment Type": {"select": {"name": "Manual"}},
+            "Email Link": {"url": "https://outlook.office.com/mail/id/original"},
+        },
+    }
 
 
 def vendor_rule_page_from_properties(properties: dict) -> dict:

@@ -11,6 +11,21 @@ from .config import CashFlowHQSettings
 from .parser import BILL_TERMS, is_bill_related, message_from_graph
 from .models import BillEmail
 
+PAYMENT_CONFIRMATION_TERMS = [
+    "payment received",
+    "payment successful",
+    "payment processed",
+    "autopay successful",
+    "thank you for your payment",
+    "receipt",
+    "paid invoice",
+    "invoice paid",
+    "transaction complete",
+    "payment confirmation",
+    "ach processed",
+    "payment posted",
+]
+
 
 class CashFlowGraphClient(MicrosoftGraphClient):
     def __init__(self, settings: CashFlowHQSettings) -> None:
@@ -35,6 +50,22 @@ class CashFlowGraphClient(MicrosoftGraphClient):
                 full = self.get_message_detail(raw.get("id", ""))
                 if full.get("hasAttachments"):
                     full["attachments"] = self.list_message_attachments(raw.get("id", ""))
+                message = message_from_graph(full)
+                candidates.append(message)
+        return candidates
+
+    def find_payment_confirmation_messages(self, days: int, limit: int) -> list[BillEmail]:
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        filter_query = f"receivedDateTime ge {since.isoformat().replace('+00:00', 'Z')}"
+        messages = self.list_limited_inbox_messages(
+            filter_query=filter_query,
+            limit=limit,
+        )
+        candidates: list[BillEmail] = []
+        for raw in messages:
+            message = message_from_graph(raw)
+            if is_payment_confirmation_related(message):
+                full = self.get_message_detail(raw.get("id", ""))
                 message = message_from_graph(full)
                 candidates.append(message)
         return candidates
@@ -111,6 +142,11 @@ class CashFlowGraphClient(MicrosoftGraphClient):
 
 def bill_search_terms() -> list[str]:
     return list(BILL_TERMS)
+
+
+def is_payment_confirmation_related(message: BillEmail) -> bool:
+    haystack = f"{message.subject}\n{message.body_text}\n{message.sender_name}\n{message.sender_email}".lower()
+    return any(term in haystack for term in PAYMENT_CONFIRMATION_TERMS)
 
 
 def is_pdf_attachment(attachment: dict) -> bool:
