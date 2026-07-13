@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents.cash_flow_hq.alerts import CashFlowBill, CashFlowTeamsAlerts, already_sent, build_morning_brief, mark_sent
+from agents.cash_flow_hq.automation import run_cash_flow_automation_once
 from agents.cash_flow_hq.config import load_cash_flow_settings, validate_cash_flow_settings
 from agents.cash_flow_hq.email_scan import CashFlowEmailScanner
 from agents.cash_flow_hq.graph_client import CashFlowGraphClient
@@ -382,6 +383,7 @@ class CashFlowHQConfigTests(unittest.TestCase):
         self.assertEqual(settings.notion_version, "2026-03-11")
         self.assertEqual(settings.cash_flow_teams_user, "jaye@unitedaccountservices.com")
         self.assertEqual(settings.cash_flow_notification_time, "08:00")
+        self.assertEqual(settings.cash_flow_run_times, ("10:00", "17:00"))
 
     def test_load_settings_reads_explicit_notion_data_source_ids(self) -> None:
         with patch.dict(
@@ -1445,6 +1447,26 @@ class CashFlowHQReviewWorkflowTests(unittest.TestCase):
         self.assertNotIn("Payment Date", update)
 
 
+class CashFlowHQAutomationTests(unittest.TestCase):
+    def test_run_once_executes_bill_and_payment_scans(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        notion.query_results = [payment_bill_page()]
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        result = run_cash_flow_automation_once(
+            service,
+            FakeCombinedGraph(),
+            days=7,
+            limit=50,
+            dry_run=True,
+        )
+
+        self.assertEqual(len(result.bill_scan.skipped), 1)
+        self.assertEqual(len(result.payment_scan.would_mark_paid), 1)
+        self.assertEqual(notion.created_pages, 0)
+        self.assertEqual(notion.paid_bill_updates, [])
+
+
 class FakeNotion:
     def __init__(self, existing_database: bool = False, existing_vendor_rules: bool = False) -> None:
         self.existing_database = existing_database
@@ -1609,6 +1631,11 @@ class FakePaymentGraph:
                 body="Thank you for your payment. Payment received $315.37.",
             )
         ]
+
+
+class FakeCombinedGraph(FakeGraph):
+    def find_payment_confirmation_messages(self, days: int, limit: int):
+        return FakePaymentGraph().find_payment_confirmation_messages(days, limit)
 
 
 def payment_bill(

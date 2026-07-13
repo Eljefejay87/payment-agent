@@ -12,6 +12,7 @@ from shared.integrations.microsoft_graph import GraphClient
 from shared.scheduler import AgentScheduler
 
 from .alerts import CashFlowTeamsAlerts
+from .automation import run_cash_flow_automation_once
 from .config import NOTION_SETUP_MESSAGE, load_cash_flow_settings, validate_cash_flow_settings
 from .email_scan import CashFlowEmailScanner
 from .graph_client import CashFlowGraphClient
@@ -52,6 +53,10 @@ def main() -> int:
             "cash-flow-mark-paid",
             "cashflow-ignore-email",
             "cash-flow-ignore-email",
+            "cashflow-run",
+            "cash-flow-run",
+            "cashflow-scheduler",
+            "cash-flow-scheduler",
         ],
         help="Action to run.",
     )
@@ -318,6 +323,44 @@ def main() -> int:
             return 2
         ignored = ignore_email(settings.cash_flow_review_state_path, args.message_id)
         logging.info("Ignored Cash Flow HQ review email: %s. Ignored count=%s", args.message_id, len(ignored))
+        return 0
+
+    if args.command in {"cashflow-run", "cash-flow-run"}:
+        errors = validate_cash_flow_settings(settings, include_graph=True)
+        if errors:
+            log_config_errors(errors)
+            return 2
+        result = run_cash_flow_automation_once(
+            service,
+            CashFlowGraphClient(settings),
+            days=max(args.days, 1),
+            limit=max(args.limit, 1),
+            dry_run=args.dry_run,
+            debug=args.debug,
+        )
+        return 1 if result.bill_scan.errors or result.payment_scan.errors else 0
+
+    if args.command in {"cashflow-scheduler", "cash-flow-scheduler"}:
+        errors = validate_cash_flow_settings(settings, include_graph=True)
+        if errors:
+            log_config_errors(errors)
+            return 2
+
+        def scheduled_run() -> None:
+            run_cash_flow_automation_once(
+                service,
+                CashFlowGraphClient(settings),
+                days=max(args.days, 1),
+                limit=max(args.limit, 1),
+                dry_run=args.dry_run,
+                debug=args.debug,
+            )
+
+        scheduler = AgentScheduler()
+        for run_time in settings.cash_flow_run_times:
+            scheduler.every_day_at(run_time, scheduled_run)
+        logging.info("Cash Flow HQ scheduler running daily at %s.", ", ".join(settings.cash_flow_run_times))
+        scheduler.run_forever()
         return 0
 
     errors = validate_cash_flow_settings(settings)

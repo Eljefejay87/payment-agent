@@ -1024,6 +1024,28 @@ python main.py cashflow-ignore-email --message-id <outlook-message-id>
 
 Ignored review email IDs are stored locally at `CASH_FLOW_HQ_REVIEW_STATE_PATH`, defaulting to `.cash_flow_hq_review.json`.
 
+### Twice-Daily Automation
+
+Run one combined Cash Flow HQ pass manually:
+
+```bash
+python main.py cashflow-run --days 7 --limit 50
+```
+
+Start the long-running Cash Flow HQ scheduler:
+
+```bash
+python main.py cashflow-scheduler --days 7 --limit 50
+```
+
+By default, the scheduler runs daily at `10:00` and `17:00`. Override the times with:
+
+```bash
+CASH_FLOW_HQ_RUN_TIMES=10:00,17:00
+```
+
+Each scheduled run performs the bill email scan first, then the payment confirmation scan. Use `--dry-run` to test the scheduled path without importing bills or marking payments paid.
+
 ## Shared Dashboard Data and Needs Review
 
 The dashboard includes a read-only normalized data service in `agents/dashboard/shared_data.py`. It reads `SharedRecordRepository` records and agent-run history to provide Decimal-safe cash summaries, upcoming and past-due bills, recent remits, agent health, and a centralized `Needs Review` section.
