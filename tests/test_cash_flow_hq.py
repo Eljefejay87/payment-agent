@@ -109,6 +109,22 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         )
         self.assertEqual([item["name"] for item in properties["Source"]["select"]["options"]], SOURCE_OPTIONS)
 
+    def test_vendor_rule_seeds_include_recent_dry_run_vendors_without_due_day_guesses(self) -> None:
+        seeds = {seed["vendor_name"]: seed for seed in VENDOR_RULE_SEEDS}
+
+        self.assertEqual(seeds["Bitwarden"]["category"], "Software")
+        self.assertEqual(seeds["Bitwarden"]["frequency"], "Annual")
+        self.assertIsNone(seeds["Bitwarden"]["due_day"])
+        self.assertEqual(seeds["Intuit"]["category"], "Software")
+        self.assertIsNone(seeds["Intuit"]["due_day"])
+        self.assertEqual(seeds["ADP"]["category"], "Payroll")
+        self.assertIsNone(seeds["ADP"]["due_day"])
+        self.assertEqual(seeds["American Express"]["category"], "Banking")
+        self.assertIsNone(seeds["American Express"]["due_day"])
+        self.assertEqual(seeds["OFR"]["display_name"], "Florida OFR")
+        self.assertEqual(seeds["OFR"]["category"], "Licensing")
+        self.assertIsNone(seeds["OFR"]["due_day"])
+
     def test_action_required_fallback_formula_is_known_accepted_version(self) -> None:
         self.assertIn('"Yes"', ACTION_REQUIRED_FALLBACK_FORMULA)
         self.assertIn('"No"', ACTION_REQUIRED_FALLBACK_FORMULA)
