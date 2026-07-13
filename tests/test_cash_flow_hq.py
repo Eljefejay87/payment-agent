@@ -791,6 +791,18 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.status, "Upcoming")
         self.assertEqual(updated.notes, "✓ Ready for Payment")
 
+    def test_scollect_seed_matches_confirmed_billing_rule(self) -> None:
+        seed = next(item for item in VENDOR_RULE_SEEDS if item["vendor_name"] == "SCollect")
+
+        self.assertEqual(seed["invoice_day"], 1)
+        self.assertEqual(seed["due_day"], 5)
+        self.assertEqual(seed["payment_type"], "Auto Pay")
+        self.assertTrue(seed["auto_pay"])
+        self.assertEqual(seed["rate_per_user"], 50.00)
+        self.assertEqual(seed["current_user_count"], 10)
+        self.assertEqual(seed["monthly_server_fee"], 100.00)
+        self.assertEqual(seed["typical_amount"], 600.00)
+
     def test_expected_amount_variance_flags_note_without_blocking_import(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
         email = build_email(sender_name="D1AL", subject="D1AL invoice", body="Amount Due: $330.00.")

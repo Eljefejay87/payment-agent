@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: 102 focused dashboard/Needs Review/shared-data/Cash Flow tests and all 188 repository tests pass.
+Automated verification is passing: all 189 repository tests pass after the SCollect rule correction.
 
 ## Completed Work
 
@@ -110,6 +110,7 @@ Automated verification is passing: 102 focused dashboard/Needs Review/shared-dat
 - Copied the scheduled-sync runtime and valid `com.ucm.shared-data-sync` plist into the durable macOS locations. The worker runs successfully from that runtime, but launchd activation from the Codex sandbox returned `Bootstrap failed: 5: Input/output error`; run `scripts/install_shared_data_agent.sh` once from a normal Terminal session to complete registration.
 - Refined the dashboard layout so Cash Flow Forecast and Needs Review share a weighted desktop row (approximately 63/37) and stack below 1020px. Needs Review now uses compact metrics and a maximum five-item preview while preserving the full queue route. Cash Flow cards were tightened without removing horizon, payment-type, summary, or upcoming-payment data.
 - Documented unavailable cash-flow business inputs in `docs/cash_flow_dashboard_data_requirements.md`; no balances, payroll, collections, remit forecasts, missing dates, or missing amounts were invented.
+- Configured the owner-confirmed SCollect rule in code and live Notion: invoice on the 1st, AutoPay/due on the 5th, 10 users at $50 plus a $100 server fee, totaling $600. Marked the matched July bill paid by AutoPay on July 5, reconciled the one shared SQLite update, and verified the repeat sync was idempotent. Needs Review decreased from 4 to 3.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 

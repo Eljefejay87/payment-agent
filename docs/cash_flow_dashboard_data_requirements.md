@@ -16,3 +16,9 @@ The following business values are not reliably available from the current normal
 | AutoPay status for incomplete rows | AutoPay can be calculated only when Payment Type is populated | Explicit AutoPay/Manual selection | Controlled boolean or select value | Manually configured Vendor Rule or existing bill record |
 
 Rent and other individual bill amounts are usable when present in Cash Flow HQ. Missing amounts or dates remain review items rather than being replaced with estimates or zero-value placeholders.
+
+## Configured business rules
+
+- SCollect: monthly, invoice on the 1st, AutoPay/due on the 5th, `(active users × $50) + $100 server fee`; current confirmed count is 10 users and current amount is $600.
+- ICR/Jim remit: existing remit import remains the current expected client-remit source.
+- Bank balance and weekly expected collections remain intentionally deferred.
