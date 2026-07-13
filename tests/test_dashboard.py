@@ -154,11 +154,11 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Cash Flow Forecast", cash_review_grid)
         self.assertIn("Needs Review", cash_review_grid)
 
-    def test_cash_flow_and_needs_review_use_responsive_weighted_grid(self) -> None:
-        self.assertIn("grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);", CSS)
-        self.assertIn("@media (max-width: 1020px)", CSS)
-        responsive = CSS.split("@media (max-width: 1020px)", 1)[1].split("}", 2)[0:2]
-        self.assertIn("grid-template-columns: 1fr", "}".join(responsive))
+    def test_cash_flow_and_needs_review_use_readable_stacked_layout(self) -> None:
+        cash_review_css = CSS.split(".cash-review-grid {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns: 1fr", cash_review_css)
+        self.assertIn("width: min(1380px, calc(100vw - 40px));", CSS)
+        self.assertIn(".needs-review-summary { grid-template-columns: repeat(2", CSS)
 
     def test_needs_review_dashboard_preview_is_limited_to_five_items(self) -> None:
         review = {

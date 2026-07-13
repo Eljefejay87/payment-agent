@@ -1364,17 +1364,18 @@ def _date_or_none(value: str | None) -> date | None:
 CSS = """
 :root {
   color-scheme: light;
-  --bg: #f5f7f8;
+  --bg: #f3f6f8;
   --panel: #ffffff;
-  --ink: #172026;
-  --muted: #5e6b73;
-  --line: #dbe2e7;
+  --ink: #15232b;
+  --muted: #566872;
+  --line: #d7e1e6;
   --brand: #155e75;
   --brand-strong: #0f4658;
   --ok: #116149;
   --warn: #9a5b00;
   --soft-ok: #e8f5ef;
   --soft-warn: #fff4df;
+  --shadow: 0 6px 22px rgba(28, 54, 66, 0.07);
 }
 * { box-sizing: border-box; }
 body {
@@ -1382,11 +1383,13 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
 }
 main {
-  width: min(1180px, calc(100vw - 32px));
+  width: min(1380px, calc(100vw - 40px));
   margin: 0 auto;
-  padding: 24px 0 40px;
+  padding: 28px 0 56px;
 }
 .topbar {
   display: flex;
@@ -1415,8 +1418,11 @@ main {
   transform: translate(-38px, -73px);
 }
 h1, h2, h3, p { margin: 0; }
-h1 { font-size: 30px; letter-spacing: 0; }
+h1 { font-size: 30px; line-height: 1.15; letter-spacing: -0.02em; }
+h2 { font-size: 21px; line-height: 1.25; letter-spacing: -0.01em; }
+h3 { line-height: 1.3; }
 .topbar p, .detail, .muted { color: var(--muted); }
+.detail { line-height: 1.5; }
 button {
   appearance: none;
   border: 0;
@@ -1446,6 +1452,10 @@ a.button-link {
   text-decoration: none;
 }
 button:hover { background: var(--brand-strong); }
+button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 3px solid rgba(21, 94, 117, 0.24);
+  outline-offset: 2px;
+}
 button.secondary, a.button-link.secondary {
   background: #e8eef2;
   color: var(--ink);
@@ -1492,19 +1502,21 @@ button:disabled {
 }
 .summary-grid, .agent-grid, .future-grid {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 .summary-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-bottom: 14px;
+  margin-bottom: 20px;
 }
 .metric, .agent-card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
 }
 .metric {
-  padding: 16px;
+  padding: 18px 20px;
+  border-top: 3px solid var(--brand);
 }
 .metric span {
   display: block;
@@ -1523,41 +1535,41 @@ button:disabled {
 }
 .cash-review-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);
-  gap: 14px;
+  grid-template-columns: 1fr;
+  gap: 20px;
   align-items: start;
-  margin-top: 14px;
+  margin-top: 20px;
 }
 .cash-review-grid .cash-flow-dashboard {
   margin-bottom: 0;
-  padding: 16px;
+  padding: 22px;
 }
 .cash-review-grid .forecast-horizon-card {
-  padding: 10px;
+  padding: 14px;
 }
 .cash-review-grid .forecast-horizon-card strong {
-  font-size: 19px;
+  font-size: 22px;
 }
 .cash-review-grid .cash-flow-card {
-  min-height: 72px;
-  padding: 10px;
+  min-height: 82px;
+  padding: 14px;
 }
 .cash-review-grid .cash-flow-card strong {
-  font-size: 19px;
+  font-size: 22px;
 }
 .needs-review-dashboard {
   border-top: 3px solid var(--warn);
-  padding: 16px;
+  padding: 22px;
 }
 .needs-review-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 12px 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
 }
 .needs-review-summary > div {
-  min-height: 62px;
-  padding: 10px;
+  min-height: 78px;
+  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #f8fafb;
@@ -1565,11 +1577,11 @@ button:disabled {
 .needs-review-summary span {
   display: block;
   color: var(--muted);
-  font-size: 11px;
-  margin-bottom: 5px;
+  font-size: 12px;
+  margin-bottom: 8px;
 }
 .needs-review-summary strong {
-  font-size: 18px;
+  font-size: 22px;
 }
 .review-preview-list {
   margin: 0;
@@ -1577,7 +1589,7 @@ button:disabled {
   list-style: none;
 }
 .review-preview-list li {
-  padding: 10px 0;
+  padding: 13px 4px;
   border-top: 1px solid var(--line);
 }
 .review-preview-list li > div {
@@ -1586,13 +1598,13 @@ button:disabled {
   gap: 10px;
 }
 .review-preview-list strong {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.25;
 }
 .review-preview-list span,
 .review-preview-list p {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .review-preview-list span {
   white-space: nowrap;
@@ -1750,7 +1762,7 @@ button:disabled {
 .intelligence-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.75fr) minmax(0, 2.25fr);
-  gap: 14px;
+  gap: 20px;
   align-items: start;
   margin-top: 14px;
 }
@@ -1761,7 +1773,7 @@ button:disabled {
   grid-template-columns: 1fr;
 }
 .agent-card {
-  padding: 18px;
+  padding: 22px;
 }
 .operations-card {
   border-top: 3px solid var(--brand);
@@ -1771,7 +1783,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 .badge {
   display: inline-flex;
@@ -2096,18 +2108,23 @@ table {
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 14px;
+  line-height: 1.4;
 }
 th, td {
   text-align: left;
   border-bottom: 1px solid var(--line);
-  padding: 10px 8px;
+  padding: 12px 10px;
   overflow-wrap: anywhere;
 }
 th {
   color: var(--muted);
   font-size: 12px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #f6f9fa;
 }
+tbody tr:nth-child(even) { background: #fafcfd; }
+tbody tr:hover { background: #f0f6f8; }
 dl {
   display: grid;
   grid-template-columns: 92px 1fr;
@@ -2136,7 +2153,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   color: var(--muted);
 }
 .section-title {
-  margin: 22px 0 12px;
+  margin: 30px 0 14px;
 }
 .future-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2145,9 +2162,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   min-height: 110px;
 }
 @media (max-width: 1020px) {
-  .cash-review-grid {
-    grid-template-columns: 1fr;
-  }
+  .needs-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 860px) {
   .summary-grid, .agent-grid, .future-grid, .intelligence-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections {
@@ -2187,7 +2202,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 }
 @media (max-width: 520px) {
   main {
-    width: min(100vw - 20px, 1180px);
+    width: min(100vw - 20px, 1380px);
     padding-top: 16px;
   }
   .ops-score-row {
