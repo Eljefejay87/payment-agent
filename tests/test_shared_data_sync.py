@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from agents.dashboard.review_actions import ReviewActionService
 from agents.icr_remit_agent.database import ICRRemitDatabase
@@ -16,7 +17,12 @@ from shared.data_layer import (
     ReviewStatus,
     normalize_cash_flow_notion_page,
 )
-from shared.data_layer.sync import SharedDataSyncService, load_icr_records
+from shared.data_layer.sync import (
+    ScheduledSharedDataSync,
+    SharedDataSyncService,
+    SourceLoadResult,
+    load_icr_records,
+)
 
 
 NOW = datetime(2026, 7, 12, 18, 0, tzinfo=timezone.utc)
@@ -157,6 +163,41 @@ class SharedDataSyncTests(unittest.TestCase):
         self.assertEqual(len(loaded.records), 1)
         self.assertEqual(loaded.records[0].amount, Decimal("767.68"))
         self.assertEqual(loaded.records[0].status.value, "completed")
+
+    def test_scheduled_sync_records_successful_run_history(self) -> None:
+        runner = ScheduledSharedDataSync(
+            self.repository,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        with patch(
+            "shared.data_layer.sync.load_cash_flow_records",
+            return_value=SourceLoadResult((self.record,)),
+        ), patch(
+            "shared.data_layer.sync.load_icr_records",
+            return_value=SourceLoadResult(()),
+        ):
+            report = runner.run_once(source="all", limit=100)
+
+        self.assertEqual(report["run"]["status"], "completed")
+        self.assertEqual(report["counts"]["create"], 1)
+        self.assertEqual(len(self.repository.list_agent_runs()), 1)
+
+    def test_scheduled_sync_records_failed_source_run(self) -> None:
+        runner = ScheduledSharedDataSync(
+            self.repository,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        with patch(
+            "shared.data_layer.sync.load_cash_flow_records",
+            side_effect=RuntimeError("Fixture source unavailable"),
+        ):
+            report = runner.run_once(source="cash-flow", limit=100)
+
+        self.assertEqual(report["run"]["status"], "failed")
+        self.assertEqual(report["counts"]["error"], 1)
+        self.assertEqual(self.repository.list_agent_runs()[0].records_flagged_for_review, 1)
 
 
 def notion_page(

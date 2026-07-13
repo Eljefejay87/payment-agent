@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 184 repository tests pass, including focused Action Required normalization coverage.
+Automated verification is passing: all 186 repository tests pass, including scheduled success/failure run-history coverage.
 
 ## Completed Work
 
@@ -105,16 +105,18 @@ Automated verification is passing: all 184 repository tests pass, including focu
 - Ran live read-only previews with zero writes: Cash Flow HQ produced 9 creates, 0 updates/conflicts/errors; ICR history produced 1 create, 0 updates/conflicts/errors. The database remained empty until explicit authorization was received.
 - Applied the owner-authorized 10-record shared-data import in one transaction: 9 Cash Flow HQ Notion bills and 1 ICR remit history record. Post-import integrity and foreign-key checks pass, duplicate groups remain zero, and an immediate second dry-run returned 10 skips with 0 creates, updates, conflicts, or errors.
 - Corrected Cash Flow HQ Action Required normalization after dashboard verification showed `No` values entering the queue. Negative values now mean no action, `Yes` becomes `Action required`, and specific instructions are preserved. Applied 9 reconciled record updates; the queue now contains 4 genuine unresolved items, and the follow-up dry-run returned 10 skips with no conflicts or errors.
+- Added scheduled shared-data synchronization with configurable interval/source/limit, run-at-start behavior, durable success/failure agent-run history, dashboard health reporting, a confirmed manual Sync Now action, and independent macOS LaunchAgent install/status/uninstall helpers. Sync continues to write only shared SQLite and remains all-or-nothing on conflicts or source errors.
+- Live scheduled-style verification completed successfully: 10 records found, 10 unchanged skips, 0 creates/updates/conflicts/errors, and the completed run was persisted in shared agent-run history for dashboard health display.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The durable shared database contains 10 reconciled source records. Needs Review now contains 4 genuine unresolved records after correcting the Action Required Yes/No interpretation.
+The durable shared database contains 10 reconciled source records and the scheduled synchronization worker is ready for live installation. Needs Review contains 4 genuine unresolved records.
 
 ## Next Recommended Task
 
-Restart the dashboard, verify shared summary totals and Needs Review contents against the 10 imported records, then add scheduled read-only source synchronization with agent-run history.
+Install and verify the independent shared-data LaunchAgent, confirm its first recorded run on the dashboard, then decide whether failure-only Teams alerts are needed.
 
 ## Known Issues
 

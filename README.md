@@ -1020,6 +1020,11 @@ Configure the database location if the durable macOS default is not appropriate:
 
 ```bash
 SHARED_DATA_DATABASE_PATH=~/Library/Application Support/UCM/payment-agent/shared_ucm_data.sqlite3
+SHARED_DATA_SYNC_ENABLED=true
+SHARED_DATA_SYNC_INTERVAL_MINUTES=60
+SHARED_DATA_SYNC_SOURCE=all
+SHARED_DATA_SYNC_LIMIT=100
+SHARED_DATA_SYNC_RUN_AT_START=true
 ```
 
 Initialize and verify it without importing source records:
@@ -1052,3 +1057,28 @@ python main.py shared-data-sync --source all --apply --confirm APPLY_SHARED_SYNC
 Apply is all-or-nothing at the plan level: source errors or human-review conflicts block every create/update. Approved, rejected, and resolved decisions are preserved. Repeated runs skip unchanged records.
 
 Cash Flow HQ `Action Required = No` and equivalent negative values do not enter Needs Review. `Yes` becomes a clear action, while specific formula instructions remain unchanged.
+
+### Scheduled synchronization
+
+Run one guarded scheduled-style synchronization and record its agent-run history:
+
+```bash
+python main.py shared-data-sync-once
+```
+
+Run the long-lived scheduler using the configured interval:
+
+```bash
+python main.py shared-data-run
+```
+
+Install it as an independent macOS LaunchAgent:
+
+```bash
+scripts/install_shared_data_agent.sh
+scripts/status_shared_data_agent.sh
+```
+
+Remove only the synchronization LaunchAgent with `scripts/uninstall_shared_data_agent.sh`. The worker is separate from the Payment Agent and dashboard. Every attempt records start/completion times, status, create/update/skip counts, conflicts, errors, and external sources in shared SQLite.
+
+The dashboard Shared Data Sync card shows the latest run, configured interval/source, recent failures, and a confirmed `Sync Now` action. Sync failures appear as read-only operational alerts in Needs Review. No sync writes back to Notion, Outlook, Teams, ICR history, or source files.

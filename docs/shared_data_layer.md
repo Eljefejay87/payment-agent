@@ -134,6 +134,20 @@ Apply is blocked as a whole when any source record fails normalization, duplicat
 
 Cash Flow HQ `Action Required` formula values are interpreted semantically: `No`, blank, false, none, and equivalent negative values mean no action; `Yes` becomes `Action required`; specific instruction text is preserved. This prevents negative formula results from entering the Needs Review queue.
 
+## Scheduled Synchronization and Health
+
+`ScheduledSharedDataSync` runs the same guarded all-or-nothing apply path and writes an `AgentRunRecord` for every attempt. Successful runs store create/update/skip totals. Source failures and reconciliation conflicts store a bounded error, failed status, and review count, causing a read-only operational alert to appear in Needs Review.
+
+Configuration:
+
+- `SHARED_DATA_SYNC_ENABLED`
+- `SHARED_DATA_SYNC_INTERVAL_MINUTES`
+- `SHARED_DATA_SYNC_SOURCE` (`cash-flow`, `icr`, or `all`)
+- `SHARED_DATA_SYNC_LIMIT`
+- `SHARED_DATA_SYNC_RUN_AT_START`
+
+Commands are `shared-data-sync-once` for one guarded run and `shared-data-run` for the long-lived scheduler. The dashboard shows latest-run health and exposes a confirmed manual Sync Now action. macOS install/status/uninstall helpers use the independent `com.ucm.shared-data-sync` LaunchAgent and the durable Application Support runtime.
+
 ## Read-Only Dashboard Service
 
 `agents/dashboard/shared_data.py` provides `ReadOnlyDashboardDataService`. It accepts the storage-agnostic repository interface and exposes record/status counts, action and review records, upcoming and past-due bills, recent remits, recent/failed agent runs, source-system queries, date-range queries, and Decimal-safe financial aggregates.

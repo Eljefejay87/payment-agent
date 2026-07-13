@@ -126,6 +126,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             "/api/payment-scan": self.dashboard_service.scan_payments,
             "/api/remit-send": self.dashboard_service.send_weekly_remit,
             "/api/open-remit-folder": self.dashboard_service.open_remit_folder,
+            "/api/shared-sync": self.dashboard_service.sync_shared_data,
         }
         action = actions.get(self.path)
         if action:
@@ -275,6 +276,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
     operations = snapshot["operations"]
     future_agents = snapshot["future_agents"]
     shared_dashboard = snapshot.get("shared_dashboard") or {"needs_review": {}}
+    sync_health = snapshot.get("sync_health") or {}
     banner_html = f"<div id='banner' class='banner'>{_e(banner)}</div>" if banner else "<div id='banner'></div>"
     payment_rows = "".join(
         "<tr>"
@@ -303,6 +305,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
     cash_flow_dashboard = _render_cash_flow_dashboard(cash_flow)
     operations_card = _render_operations_card(operations)
     needs_review_card = _render_needs_review(shared_dashboard)
+    sync_health_card = _render_sync_health(sync_health)
     checklist_open_link = (
         f"<a class='button-link' href='{_e(checklist['url'])}' target='_blank' rel='noopener'>Open Checklist</a>"
         if checklist["url"]
@@ -417,6 +420,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       {cash_flow_dashboard}
     </section>
     {needs_review_card}
+    {sync_health_card}
     <section>
       <h2 class="section-title">Future Agents</h2>
       <div class="future-grid">{future_cards}</div>
@@ -652,6 +656,35 @@ def _render_needs_review(shared_dashboard: dict) -> str:
         <thead><tr><th>Item</th><th>Type</th><th>Priority</th><th>Reason</th><th>Effective Date</th></tr></thead>
         <tbody>{rows}</tbody>
       </table>
+    </section>
+    """
+
+
+def _render_sync_health(health: dict) -> str:
+    latest = health.get("latest") or {}
+    status = latest.get("status") or "not_run"
+    last_run = latest.get("completed_at") or "Never"
+    counts = (
+        f"{latest.get('records_created', 0)} created, "
+        f"{latest.get('records_updated', 0)} updated, "
+        f"{latest.get('records_skipped', 0)} unchanged"
+        if latest
+        else "No scheduled sync has run yet."
+    )
+    return f"""
+    <section class="agent-card sync-health-card">
+      <div class="card-head">
+        <div><h2>Shared Data Sync</h2><p class="detail">Cash Flow HQ and ICR synchronization health</p></div>
+        <span class="badge {'ready' if status == 'completed' else 'warn'}">{_e(status.replace('_', ' ').title())}</span>
+      </div>
+      <div class="cash-flow-summary">
+        <div class="cash-flow-card"><span>Schedule</span><strong>{health.get('interval_minutes', 60)}m</strong></div>
+        <div class="cash-flow-card"><span>Source</span><strong>{_e(health.get('source', 'all'))}</strong></div>
+        <div class="cash-flow-card"><span>Recent Failures</span><strong>{health.get('failed_count', 0)}</strong></div>
+      </div>
+      <p class="detail">Last completed: {_e(last_run)}</p>
+      <p>{_e(counts)}</p>
+      <div class="actions"><button onclick="postAction('/api/shared-sync', true)">Sync Now</button></div>
     </section>
     """
 

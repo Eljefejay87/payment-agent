@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Iterable
+from uuid import uuid4
 
 from agents.cash_flow_hq.config import CashFlowHQSettings
 from agents.cash_flow_hq.service import CashFlowHQService
@@ -9,7 +11,7 @@ from agents.icr_remit_agent.database import ICRRemitDatabase
 from agents.weekly_remit_agent.config import RemitSettings
 
 from .adapters import normalize_cash_flow_notion_page, normalize_icr_remit
-from .models import ReviewStatus, SharedRecord, utc_now
+from .models import AgentRunRecord, ReviewStatus, SharedRecord, SourceSystem, Status, utc_now
 from .repository import SharedRecordRepository
 
 
@@ -115,6 +117,75 @@ class SharedDataSyncService:
         writes = [item.record for item in plan.items if item.action in {"create", "update"}]
         self._repository.upsert_many(writes)
         return plan.to_dict(applied=True)
+
+
+class ScheduledSharedDataSync:
+    """Run guarded source synchronization and persist operational run history."""
+
+    def __init__(
+        self,
+        repository: SharedRecordRepository,
+        cash_flow_settings: CashFlowHQSettings,
+        remit_settings: RemitSettings,
+    ) -> None:
+        self.repository = repository
+        self.cash_flow_settings = cash_flow_settings
+        self.remit_settings = remit_settings
+
+    def run_once(self, *, source: str = "all", limit: int = 100) -> dict:
+        started_at = datetime.now(timezone.utc)
+        run_id = str(uuid4())
+        records = []
+        errors = []
+        counts = {"create": 0, "update": 0, "skip": 0, "conflict": 0, "error": 0}
+        try:
+            if source in {"cash-flow", "all"}:
+                loaded = load_cash_flow_records(self.cash_flow_settings, limit=limit)
+                records.extend(loaded.records)
+                errors.extend(loaded.errors)
+            if source in {"icr", "all"}:
+                loaded = load_icr_records(self.remit_settings, limit=limit)
+                records.extend(loaded.records)
+                errors.extend(loaded.errors)
+            plan = SharedDataSyncService(self.repository).plan(records, source_errors=errors)
+            counts = plan.to_dict()["counts"]
+            report = SharedDataSyncService(self.repository).apply(plan)
+            status = Status.COMPLETED
+            error_message = None
+        except Exception as exc:
+            status = Status.FAILED
+            error_message = str(exc)[:500]
+            if not counts["conflict"] and not counts["error"]:
+                counts["error"] = 1
+            report = {"mode": "apply", "counts": counts, "error": error_message}
+        completed_at = datetime.now(timezone.utc)
+        run = AgentRunRecord(
+            agent_name="shared_data_sync",
+            run_id=run_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            status=status,
+            records_found=len(records),
+            records_created=counts["create"],
+            records_updated=counts["update"],
+            records_skipped=counts["skip"],
+            records_flagged_for_review=counts["conflict"] + counts["error"],
+            error_message=error_message,
+            dry_run=False,
+            external_services_used=_services_for_source(source),
+        )
+        self.repository.record_agent_run(run)
+        report["run"] = run.to_dict()
+        return report
+
+
+def _services_for_source(source: str) -> tuple[SourceSystem, ...]:
+    services = [SourceSystem.SQLITE]
+    if source in {"cash-flow", "all"}:
+        services.append(SourceSystem.NOTION)
+    if source in {"icr", "all"}:
+        services.append(SourceSystem.LOCAL_FILE)
+    return tuple(services)
 
 
 def load_cash_flow_records(settings: CashFlowHQSettings, *, limit: int | None = None) -> SourceLoadResult:

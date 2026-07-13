@@ -14,6 +14,9 @@ from zoneinfo import ZoneInfo
 
 from shared.data_layer.repository import InMemorySharedRecordRepository, SharedRecordRepository
 from shared.data_layer.sqlite_repository import SQLiteSharedRecordRepository
+from shared.data_layer.config import load_shared_data_sync_settings
+from shared.data_layer.sync import ScheduledSharedDataSync
+from shared.data_layer.models import Status
 
 from .shared_data import ReadOnlyDashboardDataService
 from .review_actions import ReviewActionService
@@ -35,7 +38,7 @@ from agents.payment_agent.database import PaymentDatabase
 from agents.payment_agent.parser import cents_to_currency
 from agents.payment_agent.reports import today_in_timezone
 from agents.payment_agent.service import PaymentAgent
-from agents.weekly_remit_agent.config import RemitSettings
+from agents.weekly_remit_agent.config import RemitSettings, load_remit_settings
 from agents.weekly_remit_agent.database import RemitDatabase
 from agents.weekly_remit_agent.file_detector import RemitFileValidationError, find_required_remit_files
 from agents.weekly_remit_agent.service import WeeklyRemitAgent
@@ -267,6 +270,7 @@ class DashboardService:
             repository.initialize()
         else:
             repository = InMemorySharedRecordRepository()
+        self.shared_repository = repository
         self.shared_data = ReadOnlyDashboardDataService(repository)
         self.review_actions = ReviewActionService(repository)
         self.review_csrf_token = secrets.token_urlsafe(32)
@@ -279,6 +283,7 @@ class DashboardService:
             "manager_checklist": self.manager_checklist_snapshot(),
             "operations": self.operations_snapshot(),
             "shared_dashboard": self.shared_data.summary(),
+            "sync_health": self.shared_sync_health(),
             "future_agents": [
                 {"name": "Placement Agent", "status": "Planned", "priority": "High"},
                 {"name": "Compliance Agent", "status": "Planned", "priority": "High"},
@@ -286,6 +291,43 @@ class DashboardService:
                 {"name": "Executive Dashboard", "status": "Planned", "priority": "Medium"},
             ],
         }
+
+    def shared_sync_health(self) -> dict:
+        settings = load_shared_data_sync_settings()
+        runs = sorted(
+            (
+                run
+                for run in self.shared_repository.list_agent_runs()
+                if run.agent_name == "shared_data_sync"
+            ),
+            key=lambda run: run.started_at,
+            reverse=True,
+        )
+        latest = runs[0].to_dict() if runs else None
+        return {
+            "enabled": settings.enabled,
+            "interval_minutes": settings.interval_minutes,
+            "source": settings.source,
+            "latest": latest,
+            "failed_count": sum(run.status == Status.FAILED for run in runs[:20]),
+        }
+
+    def sync_shared_data(self) -> ActionResult:
+        settings = load_shared_data_sync_settings()
+        report = ScheduledSharedDataSync(
+            self.shared_repository,
+            load_cash_flow_settings(),
+            load_remit_settings(),
+        ).run_once(source=settings.source, limit=settings.limit)
+        counts = report["counts"]
+        if report["run"]["status"] != "completed":
+            return ActionResult(False, f"Shared sync failed: {report.get('error', 'Review run history.')}")
+        return ActionResult(
+            True,
+            "Shared sync complete: "
+            f"{counts['create']} created, {counts['update']} updated, "
+            f"{counts['skip']} unchanged.",
+        )
 
     def operations_snapshot(self) -> dict:
         reports = self._operations_reports()
