@@ -8,9 +8,9 @@ The Weekly Remit Agent V1 supports ICR weekly remit delivery, file archiving, du
 
 The local UCM Admin Dashboard V1 has been added for browser-based agent status and simple owner actions.
 
-The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
+The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: 41 focused ICR import and Notion formula tests pass, followed by all 137 repository tests.
+Automated verification is passing: all 5 focused ICR import tests pass, followed by all 138 repository tests.
 
 ## Completed Work
 
@@ -83,7 +83,8 @@ Automated verification is passing: 41 focused ICR import and Notion formula test
 - Added `cash-flow-debug-action-required`, `cash-flow-diagnose-action-required`, and `cash-flow-patch-action-required` for inspecting, diagnosing, and updating the Notion `Action Required` formula.
 - Live Notion debug verification succeeded against the configured Cash Flow HQ data source on July 12, 2026.
 - Live Notion patch verification found that Notion rejected the full formula with a `400 validation_error` (`Type error with formula`); the command then successfully installed its tested fallback formula.
-- A non-destructive ICR import dry-run was attempted against the only archived `United Remit` export. It created no records and stopped because that file does not contain the required `Due to Agency` and `Due to Client` headers.
+- Corrected the ICR import source headers to the actual export fields: `AgencyFee` and `ClientFee`, and normalized imported totals to two-decimal currency precision.
+- The corrected non-destructive dry-run parsed the archived export successfully: Due to Agency `$1,617.91`, Due to Client `$2,426.72`, and Total Collected `$4,044.63`. It created no production records.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
@@ -92,7 +93,7 @@ Documentation and verification for the ICR import and Cash Flow HQ Notion formul
 
 ## Next Recommended Task
 
-Obtain a real ICR import export containing the exact `Due to Agency` and `Due to Client` headers, run `icr-remit-import --dry-run`, review the calculated totals, and only then authorize a live import that creates the Cash Flow HQ obligation and Outlook draft.
+Confirm the corrected dry-run totals—Due to Agency `$1,617.91`, Due to Client `$2,426.72`, and Total Collected `$4,044.63`—then authorize a live import only if those figures are correct.
 
 ## Known Issues
 
@@ -108,7 +109,7 @@ Obtain a real ICR import export containing the exact `Due to Agency` and `Due to
 - Codex sandbox cannot reach Microsoft login, so the live voicemail Outlook scan must be run from the Mac/network environment rather than inside Codex.
 - Operations Intelligence corrected OCR now passes the quality gate for the clear July 2 SCollect screenshot, but values should still be reviewed because OCR may read some table totals imperfectly.
 - The full Cash Flow HQ `Action Required` formula is not accepted by the live Notion API; the tested fallback formula is installed and should be reviewed in the live database for the intended business behavior.
-- The available archived `United Remit 7-6-26.xlsx` is not a valid ICR import input because it lacks the required `Due to Agency` and `Due to Client` headers. Live ICR import verification remains pending a compatible export.
+- Production ICR record creation remains pending review of the corrected dry-run totals; the dry-run itself does not create Notion rows, import-history records, or Outlook drafts.
 - Live Graph draft creation and broader live network behavior remain unverified. Confirm the configured Graph permissions and admin consent before a production ICR import; do not bypass duplicate protection.
 - The project virtual environment uses Python 3.9.6 with LibreSSL 2.8.3, which triggers the `urllib3` v2 warning. Rebuild the virtual environment later with a supported Python 3.12+ distribution linked to current OpenSSL; no rebuild is required for the passing test suite.
 

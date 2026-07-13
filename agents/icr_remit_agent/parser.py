@@ -12,8 +12,8 @@ from .models import ICRRemitResult
 
 
 REQUIRED_HEADERS = {
-    "due_to_agency": "Due to Agency",
-    "due_to_client": "Due to Client",
+    "due_to_agency": "AgencyFee",
+    "due_to_client": "ClientFee",
 }
 
 
@@ -101,7 +101,7 @@ def find_required_columns(rows: list[list[str]]) -> tuple[int, int]:
             )
         except ValueError:
             continue
-    raise ValueError("ICR remit file is missing Due to Agency or Due to Client headers.")
+    raise ValueError("ICR remit file is missing AgencyFee or ClientFee headers.")
 
 
 def sum_decimal_column(rows: list[list[str]], index: int) -> Decimal:
@@ -112,7 +112,7 @@ def sum_decimal_column(rows: list[list[str]], index: int) -> Decimal:
         value = parse_decimal(row[index])
         if value is not None:
             total += value
-    return total
+    return total.quantize(Decimal("0.01"))
 
 
 def parse_decimal(value: str) -> Decimal | None:
@@ -129,4 +129,3 @@ def parse_decimal(value: str) -> Decimal | None:
 
 def monday_of_week(value: date) -> date:
     return value - timedelta(days=value.weekday())
-

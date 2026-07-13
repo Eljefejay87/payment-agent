@@ -410,7 +410,7 @@ Duplicate protection is by broker and week start date. If an ICR remit for that 
 
 ### ICR Remit Import
 
-Import an ICR `.xlsx` or `.csv` export that contains `Due to Agency` and `Due to Client` columns. The importer totals both columns, prevents duplicate imports by broker, week, and filename, creates the Cash Flow HQ obligation, and creates an Outlook draft with the source file attached.
+Import an ICR `.xlsx` or `.csv` export that contains `AgencyFee` and `ClientFee` columns. The importer totals both columns as Due to Agency and Due to Client, prevents duplicate imports by broker, week, and filename, creates the Cash Flow HQ obligation, and creates an Outlook draft with the source file attached.
 
 Preview and validate an export without creating a Notion row, import-history record, or Outlook draft:
 

@@ -128,6 +128,17 @@ class WeeklyRemitServiceTests(unittest.TestCase):
 
 
 class ICRRemitImportTests(unittest.TestCase):
+    def test_icr_totals_are_rounded_to_currency_precision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "icr.csv"
+            path.write_text("AgencyFee,ClientFee\n1617.909999999999949,2426.720000000000091\n")
+
+            result = parse_icr_remit_file(path)
+
+            self.assertEqual(result.due_to_agency, Decimal("1617.91"))
+            self.assertEqual(result.due_to_client, Decimal("2426.72"))
+            self.assertEqual(result.total_collected, Decimal("4044.63"))
+
     def test_icr_xlsx_column_detection_and_sums(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "icr-remit.xlsx"
@@ -144,7 +155,7 @@ class ICRRemitImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
-            csv_path.write_text("Due to Agency,Due to Client\n10.00,20.00\n")
+            csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
             service = build_icr_service(base)
 
             result = service.import_file(csv_path, dry_run=True)
@@ -158,7 +169,7 @@ class ICRRemitImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
-            csv_path.write_text("Due to Agency,Due to Client\n10.00,20.00\n")
+            csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
             service = build_icr_service(base)
 
             result = service.import_file(csv_path, dry_run=False)
@@ -176,7 +187,7 @@ class ICRRemitImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
-            csv_path.write_text("Due to Agency,Due to Client\n10.00,20.00\n")
+            csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
             service = build_icr_service(base)
 
             service.import_file(csv_path, dry_run=False)
@@ -313,7 +324,7 @@ def write_sample_xlsx(path: Path) -> None:
             """<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
-    <row r="1"><c r="A1" t="inlineStr"><is><t>Account</t></is></c><c r="B1" t="inlineStr"><is><t>Due to Agency</t></is></c><c r="C1" t="inlineStr"><is><t>Due to Client</t></is></c></row>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Account</t></is></c><c r="B1" t="inlineStr"><is><t>AgencyFee</t></is></c><c r="C1" t="inlineStr"><is><t>ClientFee</t></is></c></row>
     <row r="2"><c r="A2" t="inlineStr"><is><t>A</t></is></c><c r="B2"><v>50.25</v></c><c r="C2"><v>300.25</v></c></row>
     <row r="3"><c r="A3" t="inlineStr"><is><t>B</t></is></c><c r="B3"><v>25.25</v></c><c r="C3"><v>50.00</v></c></row>
   </sheetData>
