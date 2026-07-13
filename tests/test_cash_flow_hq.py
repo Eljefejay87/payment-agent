@@ -1268,6 +1268,17 @@ class CashFlowHQEmailScannerTests(unittest.TestCase):
         self.assertEqual(notion.created_pages, 1)
         self.assertEqual(notion.vendor_rules_search_count, 1)
 
+    def test_live_scan_reuses_existing_foundation_without_touching_views(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        service = CashFlowHQService(build_settings(), notion=notion)
+        scanner = CashFlowEmailScanner(service, FakeGraph())
+
+        result = scanner.scan(days=7, limit=50, dry_run=False)
+
+        self.assertEqual(len(result.imported), 1)
+        self.assertEqual(notion.patched_views, 0)
+        self.assertEqual(notion.views, [])
+
 
 class CashFlowHQPaymentScannerTests(unittest.TestCase):
     def test_invoice_match_is_high_confidence(self) -> None:

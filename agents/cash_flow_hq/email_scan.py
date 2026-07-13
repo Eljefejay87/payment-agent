@@ -27,7 +27,7 @@ class CashFlowEmailScanner:
 
     def scan(self, days: int, limit: int, dry_run: bool = False, debug: bool = False) -> CashFlowScanResult:
         result = CashFlowScanResult()
-        foundation = self.cash_flow.get_existing_foundation() if dry_run else self.cash_flow.ensure_foundation()
+        foundation = self.cash_flow.get_existing_foundation() if dry_run else self.cash_flow.ensure_runtime_foundation()
         data_source_id = foundation["data_source_id"]
         vendor_rules_foundation = (
             self.cash_flow.get_existing_vendor_rules_foundation()

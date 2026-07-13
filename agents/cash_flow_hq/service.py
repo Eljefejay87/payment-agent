@@ -96,6 +96,24 @@ class CashFlowHQService:
             "vendor_rules_foundation": vendor_rules_foundation,
         }
 
+    def ensure_runtime_foundation(self) -> dict[str, Any]:
+        foundation = self.find_cash_flow_foundation()
+        if foundation is None:
+            return self.ensure_foundation()
+        data_source_id = foundation["data_source_id"]
+        self.ensure_due_status_property(data_source_id)
+        self.ensure_action_required_property(data_source_id)
+        vendor_rules_foundation = self.get_existing_vendor_rules_foundation()
+        if vendor_rules_foundation is None:
+            vendor_rules_foundation = self.ensure_vendor_rules_foundation()
+        return {
+            "database_id": foundation["database_id"],
+            "data_source_id": data_source_id,
+            "database_created": False,
+            "views_created": [],
+            "vendor_rules_foundation": vendor_rules_foundation,
+        }
+
     def get_existing_foundation(self) -> dict[str, str]:
         foundation = self.find_cash_flow_foundation()
         if foundation is None:
