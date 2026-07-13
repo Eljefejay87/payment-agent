@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: 47 focused dashboard/shared/review/SQLite tests and all 171 repository tests pass.
+Automated verification is passing: 63 focused dashboard/shared/review/SQLite/sync/ICR tests and all 181 repository tests pass.
 
 ## Completed Work
 
@@ -101,16 +101,18 @@ Automated verification is passing: 47 focused dashboard/shared/review/SQLite tes
 - Added controlled local approve, reject, and resolve actions for shared Needs Review records. Added reviewer/confirmation requirements, CSRF protection, stale-write detection, idempotent request IDs, terminal-state guards, append-only review audit events, and read-only audit history. Failed agent-run projections remain non-actionable, and no external or agent-specific write path is connected.
 - Added durable `SQLiteSharedRecordRepository` storage for normalized records, agent runs, and review audits. Review decisions and audit events commit atomically; schema versioning, indexes, uniqueness constraints, foreign keys, WAL mode, busy timeout, private file permissions, and non-destructive init/status commands are included. The dashboard now uses the configured SQLite repository while tests may still inject the in-memory implementation.
 - Initialized and verified the live shared database at `~/Library/Application Support/UCM/payment-agent/shared_ucm_data.sqlite3`. Integrity and foreign-key checks pass, schema version 1 is installed, permissions are `0600`, and initial normalized record/run/audit counts are zero because no historical source import was performed.
+- Added explicit `shared-data-sync` dry-run/apply reconciliation for Cash Flow HQ Notion pages and existing ICR import history. Dry-run is the default; apply requires `--apply --confirm APPLY_SHARED_SYNC`, writes only shared SQLite, is idempotent, preserves terminal human decisions, and blocks the entire apply on source errors or review conflicts.
+- Ran live read-only previews with zero writes: Cash Flow HQ produced 9 creates, 0 updates/conflicts/errors; ICR history produced 1 create, 0 updates/conflicts/errors. The durable shared database remains empty pending explicit authorization for the first apply.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The shared dashboard and centralized Needs Review queue now use a durable local SQLite database, so normalized records, review decisions, audit history, and agent runs survive restarts. Existing production source systems remain separate and no historical records are imported automatically.
+The durable shared database and controlled source-sync path are ready. Live dry-runs found 10 clean records to create, but no import has been applied yet.
 
 ## Next Recommended Task
 
-Add explicit dry-run source synchronization for Cash Flow HQ and ICR records into the durable shared database, with reconciliation before any scheduled sync.
+Review the clean 10-record preview and explicitly authorize the first shared-data apply. Then verify dashboard totals and queue contents before adding any schedule.
 
 ## Known Issues
 

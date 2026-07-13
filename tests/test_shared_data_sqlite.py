@@ -164,6 +164,21 @@ class SQLiteSharedRecordRepositoryTests(unittest.TestCase):
         self.assertEqual(report["duplicate_idempotency_groups"], 0)
         self.assertEqual(report["foreign_key_issues"], [])
 
+    def test_bulk_upsert_rolls_back_every_record_on_failure(self) -> None:
+        circular: list[object] = []
+        circular.append(circular)
+        invalid = replace(
+            build_record(record_id="invalid"),
+            source_record_id="source-invalid",
+            idempotency_key="key-invalid",
+            metadata={"circular": circular},
+        )
+
+        with self.assertRaises(ValueError):
+            self.repository.upsert_many([build_record(), invalid])
+
+        self.assertEqual(self.repository.list(), [])
+
 
 def build_record(*, record_id: str = "record-1") -> SharedRecord:
     return SharedRecord(

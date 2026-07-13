@@ -24,6 +24,9 @@ class SharedRecordRepository(ABC):
     def upsert(self, record: SharedRecord) -> SharedRecord: ...
 
     @abstractmethod
+    def upsert_many(self, records: list[SharedRecord]) -> list[SharedRecord]: ...
+
+    @abstractmethod
     def get(self, record_id: str) -> SharedRecord | None: ...
 
     @abstractmethod
@@ -91,6 +94,18 @@ class InMemorySharedRecordRepository(SharedRecordRepository):
         if record.idempotency_key:
             self._idempotency_index[record.idempotency_key] = record.id
         return record
+
+    def upsert_many(self, records: list[SharedRecord]) -> list[SharedRecord]:
+        records_snapshot = dict(self._records)
+        source_snapshot = dict(self._source_index)
+        idempotency_snapshot = dict(self._idempotency_index)
+        try:
+            return [self.upsert(record) for record in records]
+        except Exception:
+            self._records = records_snapshot
+            self._source_index = source_snapshot
+            self._idempotency_index = idempotency_snapshot
+            raise
 
     def get(self, record_id: str) -> SharedRecord | None:
         return self._records.get(record_id)

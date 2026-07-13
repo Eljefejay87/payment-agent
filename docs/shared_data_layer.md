@@ -112,6 +112,26 @@ python main.py shared-data-status
 
 No historical Notion, Outlook, Teams, Cash Flow HQ, ICR, or agent-specific SQLite records are imported automatically. Existing production source databases and write paths remain unchanged.
 
+## Controlled Source Synchronization
+
+`shared-data-sync` reads existing source records, normalizes them, and reconciles them against shared SQLite. It is always dry-run unless `--apply` and the exact confirmation phrase are both supplied.
+
+```bash
+python main.py shared-data-sync --source cash-flow
+python main.py shared-data-sync --source icr
+python main.py shared-data-sync --source all --limit 100
+python main.py shared-data-sync --source all --apply --confirm APPLY_SHARED_SYNC
+```
+
+Sources:
+
+- `cash-flow` performs a read-only paginated query of the configured Cash Flow HQ Notion data source and normalizes each page using its stable Notion page ID.
+- `icr` reads the existing local `icr_remit_imports` SQLite history and normalizes each import using broker, week, totals, and filename identity.
+
+The plan reports `create`, `update`, `skip`, `conflict`, and `error` counts plus safe record titles and identities. Dry-run never writes shared SQLite. Apply writes only to shared SQLite and never modifies Notion, Outlook, Teams, source files, or the ICR history database.
+
+Apply is blocked as a whole when any source record fails normalization, duplicate source identities appear, or source-owned fields changed after an approved/rejected/resolved human decision. Unchanged terminal decisions are preserved and skipped. Repeated syncs are idempotent.
+
 ## Read-Only Dashboard Service
 
 `agents/dashboard/shared_data.py` provides `ReadOnlyDashboardDataService`. It accepts the storage-agnostic repository interface and exposes record/status counts, action and review records, upcoming and past-due bills, recent remits, recent/failed agent runs, source-system queries, date-range queries, and Decimal-safe financial aggregates.
@@ -201,4 +221,4 @@ This is an operational compliance review, not legal advice.
 
 ## Next Recommended Step
 
-Add explicit dry-run source synchronization for Cash Flow HQ and ICR records into the durable shared database, with reconciliation before any scheduled sync.
+Review the clean 10-record live preview and explicitly authorize the first shared-data apply. After verification, add scheduled read-only source synchronization with run-history reporting.

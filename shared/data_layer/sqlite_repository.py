@@ -168,6 +168,12 @@ class SQLiteSharedRecordRepository(SharedRecordRepository):
             connection.execute("BEGIN IMMEDIATE")
             return self._upsert(connection, record)
 
+    def upsert_many(self, records: list[SharedRecord]) -> list[SharedRecord]:
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return [self._upsert(connection, record) for record in records]
+
     def get(self, record_id: str) -> SharedRecord | None:
         self.initialize()
         with self._connect() as connection:

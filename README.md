@@ -1030,3 +1030,23 @@ python main.py shared-data-status
 ```
 
 The status command checks integrity, foreign keys, schema versions, counts, and duplicate groups. No historical source data is imported automatically.
+
+### Preview and synchronize existing records
+
+Preview source records without writing the shared database:
+
+```bash
+python main.py shared-data-sync --source cash-flow
+python main.py shared-data-sync --source icr
+python main.py shared-data-sync --source all --limit 100
+```
+
+The command reports creates, updates, skips, conflicts, and normalization errors. Cash Flow HQ is read from Notion; ICR is read from existing local import history. Neither source is modified.
+
+After reviewing a conflict-free preview, explicitly apply the same reconciliation plan to shared SQLite:
+
+```bash
+python main.py shared-data-sync --source all --apply --confirm APPLY_SHARED_SYNC
+```
+
+Apply is all-or-nothing at the plan level: source errors or human-review conflicts block every create/update. Approved, rejected, and resolved decisions are preserved. Repeated runs skip unchanged records.

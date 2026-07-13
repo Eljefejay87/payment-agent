@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from shared.database import SQLiteDatabase
@@ -70,3 +71,35 @@ class ICRRemitDatabase(SQLiteDatabase):
                 ),
             )
 
+    def list_imports(self, limit: int | None = None) -> list[ICRRemitResult]:
+        self.initialize()
+        sql = """
+            SELECT broker, contact, remit_week, file_name, due_to_agency_total,
+                   due_to_client_total, total_collected, status, notes
+            FROM icr_remit_imports
+            ORDER BY remit_week DESC, id DESC
+        """
+        values: tuple[int, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            values = (limit,)
+        with self.connect() as conn:
+            rows = conn.execute(sql, values).fetchall()
+        results = []
+        for row in rows:
+            remit_week = datetime.fromisoformat(row["remit_week"]).date()
+            results.append(
+                ICRRemitResult(
+                    broker=row["broker"],
+                    contact=row["contact"],
+                    remit_week=remit_week,
+                    week_ending=remit_week + timedelta(days=6),
+                    file_path=Path(row["file_name"]),
+                    due_to_agency=Decimal(str(row["due_to_agency_total"])),
+                    due_to_client=Decimal(str(row["due_to_client_total"])),
+                    total_collected=Decimal(str(row["total_collected"])),
+                    status=row["status"],
+                    notes=row["notes"],
+                )
+            )
+        return results

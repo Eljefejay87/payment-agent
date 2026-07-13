@@ -1,6 +1,6 @@
 """Compatibility contracts for normalized UCM operational records."""
 
-from .adapters import normalize_cash_flow_bill, normalize_icr_remit
+from .adapters import normalize_cash_flow_bill, normalize_cash_flow_notion_page, normalize_icr_remit
 from .idempotency import (
     cash_flow_idempotency_key,
     generate_idempotency_key,
@@ -36,5 +36,6 @@ __all__ = [
     "generate_idempotency_key",
     "icr_remit_idempotency_key",
     "normalize_cash_flow_bill",
+    "normalize_cash_flow_notion_page",
     "normalize_icr_remit",
 ]
