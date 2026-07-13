@@ -17,6 +17,7 @@ from .models import (
     Status,
 )
 from .repository import InMemorySharedRecordRepository, RecordFilters, SharedRecordRepository
+from .sqlite_repository import SQLiteSharedRecordRepository
 
 __all__ = [
     "AgentRunRecord",
@@ -28,6 +29,7 @@ __all__ = [
     "ReviewStatus",
     "SharedRecord",
     "SharedRecordRepository",
+    "SQLiteSharedRecordRepository",
     "SourceSystem",
     "Status",
     "cash_flow_idempotency_key",

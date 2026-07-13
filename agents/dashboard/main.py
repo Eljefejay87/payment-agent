@@ -34,6 +34,7 @@ def main() -> int:
     logging.info("Local URL: %s", local_url)
     logging.info("LAN URL: %s", lan_url)
     logging.info("Tailscale URL: %s", tailscale_url)
+    logging.info("Shared data database: %s", settings.shared_database_path)
     if not args.no_browser:
         webbrowser.open(local_url)
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from shared.data_layer.repository import InMemorySharedRecordRepository, SharedRecordRepository
+from shared.data_layer.sqlite_repository import SQLiteSharedRecordRepository
 
 from .shared_data import ReadOnlyDashboardDataService
 from .review_actions import ReviewActionService
@@ -259,7 +260,13 @@ class DashboardService:
         self.payment_settings = payment_settings
         self.remit_settings = remit_settings
         self.dashboard_settings = dashboard_settings
-        repository = shared_repository or InMemorySharedRecordRepository()
+        if shared_repository is not None:
+            repository = shared_repository
+        elif dashboard_settings.shared_database_path:
+            repository = SQLiteSharedRecordRepository(dashboard_settings.shared_database_path)
+            repository.initialize()
+        else:
+            repository = InMemorySharedRecordRepository()
         self.shared_data = ReadOnlyDashboardDataService(repository)
         self.review_actions = ReviewActionService(repository)
         self.review_csrf_token = secrets.token_urlsafe(32)

@@ -95,7 +95,7 @@ Do not create these agents until their business requirements are defined.
 
 ## Shared UCM Data Layer
 
-`shared/data_layer/` provides a storage-agnostic compatibility contract for normalized operational records. It includes typed enums/dataclasses, Decimal-safe serialization, stable idempotency helpers, an abstract repository interface, an in-memory test implementation, agent-run records, and initial adapters for Cash Flow HQ and ICR Remit.
+`shared/data_layer/` provides a storage-agnostic compatibility contract for normalized operational records. It includes typed enums/dataclasses, Decimal-safe serialization, stable idempotency helpers, an abstract repository interface, in-memory and durable SQLite implementations, agent-run records, and initial adapters for Cash Flow HQ and ICR Remit.
 
 Agents can create normalized records without changing their existing writes:
 
@@ -106,7 +106,7 @@ shared_record = normalize_cash_flow_bill(existing_bill_candidate)
 payload = shared_record.to_dict()
 ```
 
-Cash Flow HQ and ICR continue using their current Notion, SQLite, Outlook, and local-file workflows. No production shared database or storage migration has occurred. See `docs/shared_data_layer.md` for the inventory, status mappings, adapter metadata, repository contract, and idempotency rules.
+Cash Flow HQ and ICR continue using their current Notion, SQLite, Outlook, and local-file workflows. The shared SQLite database is separate and does not automatically migrate historical source records. See `docs/shared_data_layer.md` for the inventory, status mappings, adapter metadata, repository contract, persistence rules, and idempotency rules.
 
 ## Voicemail Tracker Agent
 
@@ -1003,7 +1003,7 @@ GET /api/agent-health
 
 Open `GET /needs-review` for the read-only filtered list view.
 
-The service currently supports fixture/in-memory normalized Cash Flow HQ, ICR Remit, and agent-run records. The running dashboard defaults to an empty in-memory shared repository because no production shared-record migration has occurred.
+The service supports normalized Cash Flow HQ, ICR Remit, and agent-run records. The configured dashboard uses a durable SQLite repository so shared records, review decisions, audit events, and run history survive restarts.
 
 The Needs Review page supports controlled local Approve, Reject, and Resolve decisions for shared records. Each action requires a reviewer, explicit confirmation, a current record timestamp, a unique request ID, and a valid process-local CSRF token. Reject also requires a reason. Successful decisions append an audit event and remove the item from the open queue. Failed agent-run projections are not actionable.
 
@@ -1014,4 +1014,19 @@ POST /api/needs-review/<shared-record-id>/resolve
 GET  /api/needs-review/<shared-record-id>/audit
 ```
 
-These actions only change the injected shared repository. They do not call Notion, Outlook, Teams, Google Sheets, payment services, or existing agent storage. With the default in-memory repository, decisions and audits disappear when the dashboard restarts; treat this as a controlled local foundation, not a durable production approval system.
+These actions only change the injected shared repository. They do not call Notion, Outlook, Teams, Google Sheets, payment services, or existing agent storage.
+
+Configure the database location if the durable macOS default is not appropriate:
+
+```bash
+SHARED_DATA_DATABASE_PATH=~/Library/Application Support/UCM/payment-agent/shared_ucm_data.sqlite3
+```
+
+Initialize and verify it without importing source records:
+
+```bash
+python main.py shared-data-init
+python main.py shared-data-status
+```
+
+The status command checks integrity, foreign keys, schema versions, counts, and duplicate groups. No historical source data is imported automatically.

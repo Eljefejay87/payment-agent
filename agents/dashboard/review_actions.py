@@ -94,9 +94,7 @@ class ReviewActionService:
         metadata["review_action"] = action
         if reason:
             metadata["review_reason"] = reason
-        updated = self._repository.upsert(
-            replace(record, review_status=new_status, updated_at=now, metadata=metadata)
-        )
+        updated = replace(record, review_status=new_status, updated_at=now, metadata=metadata)
         event = ReviewAuditEvent(
             event_id=str(uuid4()),
             record_id=record.id,
@@ -109,7 +107,11 @@ class ReviewActionService:
             record_updated_at=updated.updated_at,
             created_at=now,
         )
-        self._repository.append_review_audit(event)
+        updated, event = self._repository.commit_review_decision(
+            updated,
+            event,
+            expected_updated_at=record.updated_at,
+        )
         return ReviewActionResult(updated, event)
 
     def audit_history(self, record_id: str) -> list[dict]:

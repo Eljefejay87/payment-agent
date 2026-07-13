@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from shared.config import get_int, load_environment
 
@@ -14,6 +15,7 @@ class DashboardSettings:
     manager_checklist_url: str
     manager_checklist_sheet_url: str
     logo_path: str = ""
+    shared_database_path: str = ""
 
 
 def load_dashboard_settings(env_file: str | None = None) -> DashboardSettings:
@@ -28,4 +30,15 @@ def load_dashboard_settings(env_file: str | None = None) -> DashboardSettings:
             "https://docs.google.com/spreadsheets/d/1jiKKhZmqTnVRiO9Mi8UicB9xda_MNwPQrDsPNaVOWq0/edit",
         ),
         logo_path=os.getenv("DASHBOARD_LOGO_PATH", ""),
+        shared_database_path=os.getenv(
+            "SHARED_DATA_DATABASE_PATH",
+            str(
+                Path.home()
+                / "Library"
+                / "Application Support"
+                / "UCM"
+                / "payment-agent"
+                / "shared_ucm_data.sqlite3"
+            ),
+        ),
     )

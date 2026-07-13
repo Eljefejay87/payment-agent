@@ -9,11 +9,14 @@ from agents.voicemail_tracker_agent.main import main as voicemail_main
 from agents.operations_intelligence_agent.main import main as operations_main
 from agents.cash_flow_hq.main import main as cash_flow_main
 from agents.icr_remit_agent.main import main as icr_remit_main
+from shared.data_layer.main import main as shared_data_main
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "dashboard":
         sys.exit(dashboard_main())
+    if len(sys.argv) > 1 and sys.argv[1].startswith("shared-data-"):
+        sys.exit(shared_data_main())
     if len(sys.argv) > 1 and sys.argv[1].startswith("voicemail-"):
         sys.argv[1] = sys.argv[1].replace("voicemail-", "", 1)
         sys.exit(voicemail_main())

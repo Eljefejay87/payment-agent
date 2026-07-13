@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 
 from .models import AgentRunRecord, RecordType, ReviewAuditEvent, ReviewStatus, SharedRecord, SourceSystem, Status, utc_now
 
@@ -57,6 +57,14 @@ class SharedRecordRepository(ABC):
 
     @abstractmethod
     def list_review_audits(self, record_id: str | None = None) -> list[ReviewAuditEvent]: ...
+
+    @abstractmethod
+    def commit_review_decision(
+        self,
+        record: SharedRecord,
+        event: ReviewAuditEvent,
+        expected_updated_at: datetime,
+    ) -> tuple[SharedRecord, ReviewAuditEvent]: ...
 
 
 class InMemorySharedRecordRepository(SharedRecordRepository):
@@ -142,6 +150,19 @@ class InMemorySharedRecordRepository(SharedRecordRepository):
         if record_id is None:
             return list(self._review_audits)
         return [event for event in self._review_audits if event.record_id == record_id]
+
+    def commit_review_decision(
+        self,
+        record: SharedRecord,
+        event: ReviewAuditEvent,
+        expected_updated_at: datetime,
+    ) -> tuple[SharedRecord, ReviewAuditEvent]:
+        current = self._required(record.id)
+        if current.updated_at != expected_updated_at:
+            raise RuntimeError("Shared record changed before the review transaction committed.")
+        updated = self.upsert(record)
+        audit = self.append_review_audit(event)
+        return updated, audit
 
     def _required(self, record_id: str) -> SharedRecord:
         record = self.get(record_id)

@@ -87,7 +87,30 @@ Priorities are `low`, `normal`, `high`, and `critical`. Review statuses are `not
 - `record_agent_run(...)`
 - `list_agent_runs()`
 
-`InMemorySharedRecordRepository` is provided only for tests and local integration prototyping. It prevents duplicates using the idempotency key first and source-system/source-record identity second. The dashboard defaults to an empty instance; no production agent writes normalized records to it.
+`InMemorySharedRecordRepository` remains available for tests and local integration prototyping. `SQLiteSharedRecordRepository` is the durable implementation used by the configured dashboard runtime. Both prevent duplicates using the idempotency key first and source-system/source-record identity second.
+
+## Durable SQLite Storage
+
+The dashboard uses `SHARED_DATA_DATABASE_PATH`. Its macOS default is:
+
+```text
+~/Library/Application Support/UCM/payment-agent/shared_ucm_data.sqlite3
+```
+
+The database stores normalized records, agent-run history, review audit events, and applied schema versions in separate tables. It enables foreign keys, WAL journaling, a bounded busy timeout, indexed review/date/status queries, unique source identities, and unique idempotency/request keys. The database file is restricted to owner read/write permissions (`0600`).
+
+Review decisions update the record and append its audit event in one `BEGIN IMMEDIATE` transaction. A failed audit insert rolls back the record update, preventing partial decisions.
+
+Maintenance commands:
+
+```bash
+python main.py shared-data-init
+python main.py shared-data-status
+```
+
+`shared-data-init` creates or reuses the versioned schema. `shared-data-status` performs non-destructive SQLite integrity, foreign-key, schema-version, count, and duplicate checks. Both support `--env-file`.
+
+No historical Notion, Outlook, Teams, Cash Flow HQ, ICR, or agent-specific SQLite records are imported automatically. Existing production source databases and write paths remain unchanged.
 
 ## Read-Only Dashboard Service
 
@@ -129,7 +152,7 @@ Controlled routes are:
 - `POST /api/needs-review/<shared-record-id>/resolve`
 - `GET /api/needs-review/<shared-record-id>/audit`
 
-Terminal decisions remove the item from the open queue without changing agent-specific status fields or writing back to its source system. Because this phase still uses the in-memory repository, decisions and audit events do not survive a dashboard restart and are not production approvals.
+Terminal decisions remove the item from the open queue without changing agent-specific status fields or writing back to its source system. When the configured SQLite repository is used, decisions and audit events survive dashboard restarts.
 
 ### Needs Review inclusion and ordering
 
@@ -137,7 +160,7 @@ A normalized record is included when its status is `needs_review`, its review st
 
 Items sort by critical priority, high priority, past-due/failed state, then oldest creation time. Dashboard metadata is allowlisted; source-file paths, raw email bodies, credentials, tokens, and unknown metadata fields are omitted.
 
-This phase supports normalized Cash Flow HQ bills, ICR remit records, and agent-run records through dependency-injected fixture/in-memory loading. It does not migrate history, add persistent shared storage, read live Notion/Outlook/Teams data, or expose external update, delete, send, or payment actions.
+This phase durably stores normalized Cash Flow HQ bills, ICR remit records, agent-run records, and review audits once they are written through the shared repository. It does not migrate historical source data, read live Notion/Outlook/Teams data, or expose external update, delete, send, or payment actions.
 
 ## Adapter Contracts
 
@@ -172,10 +195,10 @@ These helpers do not weaken or replace the current Notion or SQLite duplicate ch
 - The contract stores only normalized fields supplied by an adapter; agent-specific data stays in metadata.
 - No tokens, tenant IDs, client IDs, mailbox names, recipients, or webhook URLs are added to the shared models.
 - No retention policy or production authorization boundary is created here. Those must be defined before a persistent shared repository is introduced.
-- A future persistent implementation must add access control, encryption/host protections, retention, audit events, and migration/reconciliation procedures.
+- SQLite file permissions, transactional audit events, schema versioning, and reconciliation checks are implemented. Broader user authentication, encryption at rest beyond host protections, and a formal retention policy remain future controls.
 
 This is an operational compliance review, not legal advice.
 
 ## Next Recommended Step
 
-Add durable SQLite persistence for normalized records, review decisions, and agent-run history, with explicit migration and reconciliation tooling.
+Add explicit dry-run source synchronization for Cash Flow HQ and ICR records into the durable shared database, with reconciliation before any scheduled sync.
