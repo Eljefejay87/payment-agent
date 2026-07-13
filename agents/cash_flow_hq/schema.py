@@ -92,12 +92,13 @@ ALL_VIEW_PROPERTIES = [
 ]
 DASHBOARD_HIDDEN_PROPERTIES = {"Email Link", "Source", "Frequency", "Month", "Week", "Payment Date", "Notes"}
 DUE_STATUS_FORMULA = (
+    'if(format(prop("Status")) == "Paid", "Paid", '
     'if(empty(prop("Due Date")), "", '
     'if(dateBetween(prop("Due Date"), now(), "days") < 0, '
     '"🔴 Past Due by " + format(abs(dateBetween(prop("Due Date"), now(), "days"))) + " Days", '
     'if(dateBetween(prop("Due Date"), now(), "days") == 0, "🟡 Due Today", '
     'if(dateBetween(prop("Due Date"), now(), "days") == 1, "🟡 Due Tomorrow", '
-    '"🟢 Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days"))))'
+    '"🟢 Due in " + format(dateBetween(prop("Due Date"), now(), "days")) + " Days")))))'
 )
 ACTION_REQUIRED_FORMULA = (
     'if(empty(prop("Vendor / Payee")), '
@@ -108,11 +109,11 @@ ACTION_REQUIRED_FORMULA = (
     '"Needs Review", '
     'if(empty(prop("Category")), '
     '"Needs Review", '
-    'if(and(format(prop("Status")) != "Paid", dateBetween(dateStart(prop("Due Date")), now(), "days") < 0), '
+    'if(and(format(prop("Status")) != "Paid", dateBetween(now(), prop("Due Date"), "days") > 0), '
     '"Past Due", '
-    'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) != "Auto Pay", dateBetween(dateStart(prop("Due Date")), now(), "days") >= 0), '
+    'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) != "Auto Pay"), '
     '"Pay Now", '
-    'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) == "Auto Pay", dateBetween(dateStart(prop("Due Date")), now(), "days") >= 0), '
+    'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) == "Auto Pay"), '
     '"Upcoming AutoPay", '
     '"OK")))))))'
 )
@@ -443,7 +444,7 @@ def action_required_property() -> dict[str, Any]:
 def build_action_required_formula(properties: dict[str, Any] | None = None) -> str:
     properties = properties or {}
     open_bill = 'format(prop("Status")) != "Paid"'
-    due_days = 'dateBetween(dateStart(prop("Due Date")), now(), "days")'
+    due_days = 'dateBetween(now(), prop("Due Date"), "days")'
     auto_pay_condition = 'format(prop("Payment Type")) == "Auto Pay"'
     manual_payment_condition = 'format(prop("Payment Type")) != "Auto Pay"'
     if property_type(properties, "AutoPay") == "checkbox":
@@ -459,11 +460,11 @@ def build_action_required_formula(properties: dict[str, Any] | None = None) -> s
         '"Needs Review", '
         'if(empty(prop("Category")), '
         '"Needs Review", '
-        f"if(and({open_bill}, {due_days} < 0), "
+        f"if(and({open_bill}, {due_days} > 0), "
         '"Past Due", '
-        f"if(and({open_bill}, {manual_payment_condition}, {due_days} >= 0), "
+        f"if(and({open_bill}, {manual_payment_condition}), "
         '"Pay Now", '
-        f"if(and({open_bill}, {auto_pay_condition}, {due_days} >= 0), "
+        f"if(and({open_bill}, {auto_pay_condition}), "
         '"Upcoming AutoPay", '
         '"OK")))))))'
     )
@@ -472,13 +473,35 @@ def build_action_required_formula(properties: dict[str, Any] | None = None) -> s
 def build_action_required_diagnostic_formulas(
     properties: dict[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
+    missing_fields = (
+        'if(empty(prop("Vendor / Payee")), "Needs Review", '
+        'if(empty(prop("Amount")), "Needs Review", '
+        'if(empty(prop("Due Date")), "Needs Review", '
+        'if(empty(prop("Category")), "Needs Review", "OK"))))'
+    )
+    missing_plus_past_due = (
+        'if(empty(prop("Vendor / Payee")), "Needs Review", '
+        'if(empty(prop("Amount")), "Needs Review", '
+        'if(empty(prop("Due Date")), "Needs Review", '
+        'if(empty(prop("Category")), "Needs Review", '
+        'if(and(format(prop("Status")) != "Paid", dateBetween(now(), prop("Due Date"), "days") > 0), '
+        '"Past Due", "OK")))))'
+    )
+    missing_plus_pay_now = (
+        'if(empty(prop("Vendor / Payee")), "Needs Review", '
+        'if(empty(prop("Amount")), "Needs Review", '
+        'if(empty(prop("Due Date")), "Needs Review", '
+        'if(empty(prop("Category")), "Needs Review", '
+        'if(and(format(prop("Status")) != "Paid", dateBetween(now(), prop("Due Date"), "days") > 0), '
+        '"Past Due", '
+        'if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) != "Auto Pay"), '
+        '"Pay Now", "OK"))))))'
+    )
     return [
-        ("now only", "now()"),
-        ("due date property only", 'prop("Due Date")'),
-        ("format due date", 'formatDate(prop("Due Date"), "YYYY-MM-DD")'),
-        ("dateBetween now now", 'dateBetween(now(), now(), "days")'),
-        ("dateBetween due date due date", 'dateBetween(prop("Due Date"), prop("Due Date"), "days")'),
-        ("dateBetween now due date", 'dateBetween(now(), prop("Due Date"), "days")'),
+        ("missing fields only", missing_fields),
+        ("missing fields plus past due", missing_plus_past_due),
+        ("missing fields plus pay now", missing_plus_pay_now),
+        ("full nested formula", build_action_required_formula(properties)),
     ]
 
 
@@ -533,7 +556,9 @@ def action_required_property_safety_report(property_types: dict[str, str]) -> di
     }
 
 
-def due_status_label(due_date: date | None, today: date) -> str:
+def due_status_label(due_date: date | None, today: date, status: str = "") -> str:
+    if status == "Paid":
+        return "Paid"
     if due_date is None:
         return ""
     days = (due_date - today).days

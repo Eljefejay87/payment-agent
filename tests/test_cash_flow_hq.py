@@ -64,8 +64,10 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertNotIn("ifs(", action_formula)
         self.assertNotIn("not(", action_formula)
         self.assertIn("dateBetween", action_formula)
-        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', action_formula)
+        self.assertIn('dateBetween(now(), prop("Due Date"), "days")', action_formula)
+        self.assertNotIn('dateBetween(now(), prop("Due Date"), "days") <= 0', action_formula)
         self.assertNotIn('dateBetween(prop("Due Date"), now(), "days")', action_formula)
+        self.assertNotIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', action_formula)
         self.assertIn('empty(prop("Vendor / Payee"))', action_formula)
         self.assertIn('empty(prop("Category"))', action_formula)
         self.assertNotIn('or(empty(prop("Vendor / Payee"))', action_formula)
@@ -84,6 +86,7 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(due_status_label(date(2026, 7, 11), today), "🟢 Due in 3 Days")
         self.assertEqual(due_status_label(date(2026, 7, 6), today), "🔴 Past Due by 2 Days")
         self.assertEqual(due_status_label(None, today), "")
+        self.assertEqual(due_status_label(date(2026, 7, 6), today, status="Paid"), "Paid")
 
     def test_database_payload_uses_current_notion_parent_and_initial_data_source_shape(self) -> None:
         payload = build_database_payload("395d2fa0e6ed80e79603f4ca876c10f1", "Cash Flow HQ")
@@ -122,9 +125,12 @@ class CashFlowHQSchemaTests(unittest.TestCase):
 
         self.assertIn('prop("AutoPay")', formula)
         self.assertIn('prop("AutoPay") == false', formula)
-        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days") < 0', formula)
-        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days") >= 0', formula)
+        self.assertIn('dateBetween(now(), prop("Due Date"), "days") > 0', formula)
+        self.assertNotIn('dateBetween(now(), prop("Due Date"), "days") <= 0', formula)
         self.assertNotIn('dateBetween(prop("Due Date"), now(), "days")', formula)
+        self.assertNotIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', formula)
+        self.assertIn('and(format(prop("Status")) != "Paid", prop("AutoPay") == false)', formula)
+        self.assertIn('and(format(prop("Status")) != "Paid", prop("AutoPay"))', formula)
         self.assertTrue(formula.startswith("if("))
         self.assertNotIn("ifs(", formula)
         self.assertNotIn("not(", formula)
@@ -150,8 +156,10 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertIn('format(prop("Payment Type")) == "Auto Pay"', formula)
         self.assertIn('format(prop("Payment Type")) != "Auto Pay"', formula)
         self.assertIn("dateBetween", formula)
-        self.assertIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', formula)
+        self.assertIn('dateBetween(now(), prop("Due Date"), "days")', formula)
+        self.assertNotIn('dateBetween(now(), prop("Due Date"), "days") <= 0', formula)
         self.assertNotIn('dateBetween(prop("Due Date"), now(), "days")', formula)
+        self.assertNotIn('dateBetween(dateStart(prop("Due Date")), now(), "days")', formula)
         self.assertNotIn("ifs(", formula)
         self.assertNotIn("not(", formula)
         self.assertNotIn('prop("Due Date") < now()', formula)
@@ -515,7 +523,10 @@ class CashFlowHQServiceTests(unittest.TestCase):
 
         results = service.diagnose_action_required_formula_patches("source-id")
 
-        self.assertEqual([result["status"] for result in results], ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS"])
+        self.assertEqual(
+            [result["status"] for result in results],
+            ["PASS", "PASS", "PASS", "FAIL"],
+        )
         self.assertEqual(results[3]["formula"], diagnostic_formulas[3][1])
         self.assertIn("Notion PATCH rejected formula", results[3]["response"])
         self.assertEqual(results[3]["patch_body"]["properties"][ACTION_REQUIRED_PROPERTY_NAME]["formula"]["expression"], diagnostic_formulas[3][1])
@@ -528,12 +539,10 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(
             [formula for _, formula in formulas],
             [
-                "now()",
-                'prop("Due Date")',
-                'formatDate(prop("Due Date"), "YYYY-MM-DD")',
-                'dateBetween(now(), now(), "days")',
-                'dateBetween(prop("Due Date"), prop("Due Date"), "days")',
-                'dateBetween(now(), prop("Due Date"), "days")',
+                'if(empty(prop("Vendor / Payee")), "Needs Review", if(empty(prop("Amount")), "Needs Review", if(empty(prop("Due Date")), "Needs Review", if(empty(prop("Category")), "Needs Review", "OK"))))',
+                'if(empty(prop("Vendor / Payee")), "Needs Review", if(empty(prop("Amount")), "Needs Review", if(empty(prop("Due Date")), "Needs Review", if(empty(prop("Category")), "Needs Review", if(and(format(prop("Status")) != "Paid", dateBetween(now(), prop("Due Date"), "days") > 0), "Past Due", "OK")))))',
+                'if(empty(prop("Vendor / Payee")), "Needs Review", if(empty(prop("Amount")), "Needs Review", if(empty(prop("Due Date")), "Needs Review", if(empty(prop("Category")), "Needs Review", if(and(format(prop("Status")) != "Paid", dateBetween(now(), prop("Due Date"), "days") > 0), "Past Due", if(and(format(prop("Status")) != "Paid", format(prop("Payment Type")) != "Auto Pay"), "Pay Now", "OK"))))))',
+                build_action_required_formula(),
             ],
         )
         self.assertTrue(all("ifs(" not in formula for _, formula in formulas))
