@@ -3,6 +3,8 @@ from __future__ import annotations
 import html
 import json
 import re
+from datetime import date
+from enum import Enum
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 from http import HTTPStatus
@@ -10,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 from .service import DashboardService
+from .shared_data import ReviewQueueFilters
+from shared.data_layer.models import Priority, RecordType, ReviewStatus, SourceSystem
 
 
 class DashboardServer:
@@ -39,6 +43,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/operations":
             self._send_html(render_operations_page(self.dashboard_service.snapshot()["operations"]))
             return
+        if parsed.path == "/needs-review":
+            self._send_html(render_needs_review_page(self._review_items(parsed.query), parsed.query))
+            return
         review_match = re.fullmatch(r"/operations/review/(\d+)", parsed.path)
         if review_match:
             report = self.dashboard_service.operations_review_report(int(review_match.group(1)))
@@ -56,10 +63,44 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             self._send_json(self.dashboard_service.snapshot())
             return
+        if parsed.path == "/api/shared-dashboard":
+            self._send_json(self.dashboard_service.shared_data.summary())
+            return
+        if parsed.path == "/api/needs-review":
+            self._send_json({"items": self._review_items(parsed.query)})
+            return
+        review_item_match = re.fullmatch(r"/api/needs-review/([^/]+)", parsed.path)
+        if review_item_match:
+            item = self.dashboard_service.shared_data.review_item(review_item_match.group(1))
+            if item is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(item)
+            return
+        if parsed.path == "/api/agent-health":
+            self._send_json(self.dashboard_service.shared_data.agent_health())
+            return
         if parsed.path == "/dashboard-logo":
             self._send_dashboard_logo()
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _review_items(self, query: str) -> list[dict]:
+        params = {key: values[-1] for key, values in parse_qs(query).items() if values}
+        filters = ReviewQueueFilters(
+            record_type=_enum_or_none(RecordType, params.get("record_type")),
+            source_system=_enum_or_none(SourceSystem, params.get("source_system")),
+            priority=_enum_or_none(Priority, params.get("priority")),
+            review_status=_enum_or_none(ReviewStatus, params.get("review_status")),
+            action_required=_bool_or_none(params.get("action_required")),
+            date_from=_date_or_none(params.get("date_from")),
+            date_to=_date_or_none(params.get("date_to")),
+        )
+        return self.dashboard_service.shared_data.needs_review(
+            filters,
+            page=max(1, int(params.get("page", "1"))),
+            page_size=min(100, max(1, int(params.get("page_size", "25")))),
+        )
 
     def do_POST(self) -> None:
         actions: dict[str, Callable[[], object]] = {
@@ -188,6 +229,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
     checklist = snapshot["manager_checklist"]
     operations = snapshot["operations"]
     future_agents = snapshot["future_agents"]
+    shared_dashboard = snapshot.get("shared_dashboard") or {"needs_review": {}}
     banner_html = f"<div id='banner' class='banner'>{_e(banner)}</div>" if banner else "<div id='banner'></div>"
     payment_rows = "".join(
         "<tr>"
@@ -215,6 +257,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
     remit_send_disabled = "disabled" if remit["status"] != "Ready" else ""
     cash_flow_dashboard = _render_cash_flow_dashboard(cash_flow)
     operations_card = _render_operations_card(operations)
+    needs_review_card = _render_needs_review(shared_dashboard)
     checklist_open_link = (
         f"<a class='button-link' href='{_e(checklist['url'])}' target='_blank' rel='noopener'>Open Checklist</a>"
         if checklist["url"]
@@ -328,6 +371,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       {operations_card}
       {cash_flow_dashboard}
     </section>
+    {needs_review_card}
     <section>
       <h2 class="section-title">Future Agents</h2>
       <div class="future-grid">{future_cards}</div>
@@ -533,6 +577,82 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
       </div>
     </section>
     """
+
+
+def _render_needs_review(shared_dashboard: dict) -> str:
+    review = shared_dashboard.get("needs_review", {})
+    rows = "".join(
+        "<tr>"
+        f"<td>{_e(item.get('title') or '')}</td>"
+        f"<td>{_e(item.get('record_type') or '')}</td>"
+        f"<td>{_e(item.get('priority') or '')}</td>"
+        f"<td>{_e(item.get('review_reason') or '')}</td>"
+        f"<td>{_e(item.get('effective_date') or '')}</td>"
+        "</tr>"
+        for item in review.get("top_items", [])
+    ) or "<tr><td colspan='5' class='muted'>No normalized records currently need review.</td></tr>"
+    return f"""
+    <section class="agent-card needs-review-dashboard">
+      <div class="card-head">
+        <div><h2>Needs Review</h2><p class="detail">Read-only normalized action queue</p></div>
+        <div><span class="badge {'warn' if review.get('unresolved_count', 0) else 'ready'}">{review.get('unresolved_count', 0)} unresolved</span> <a class="button-link small secondary" href="/needs-review">View all</a></div>
+      </div>
+      <div class="cash-flow-summary">
+        <div class="cash-flow-card"><span>Critical / High</span><strong>{review.get('critical_high_count', 0)}</strong></div>
+        <div class="cash-flow-card"><span>Past Due</span><strong>{review.get('past_due_count', 0)}</strong></div>
+        <div class="cash-flow-card"><span>Failed Runs</span><strong>{review.get('failed_agent_run_count', 0)}</strong></div>
+        <div class="cash-flow-card"><span>Oldest Age</span><strong>{review.get('oldest_unresolved_age_days', 0)}d</strong></div>
+      </div>
+      <table>
+        <thead><tr><th>Item</th><th>Type</th><th>Priority</th><th>Reason</th><th>Effective Date</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def render_needs_review_page(items: list[dict], query: str = "") -> str:
+    params = {key: values[-1] for key, values in parse_qs(query).items() if values}
+    rows = "".join(
+        "<tr>"
+        f"<td>{_e(item.get('title') or '')}<br><small>{_e(item.get('summary') or '')}</small></td>"
+        f"<td>{_e(item.get('record_type') or '')}</td>"
+        f"<td>{_e(item.get('source_system') or '')}</td>"
+        f"<td>{_e(item.get('priority') or '')}</td>"
+        f"<td>{_e(item.get('review_status') or '')}</td>"
+        f"<td>{_e(item.get('review_reason') or '')}</td>"
+        f"<td>{_e(item.get('effective_date') or '')}</td>"
+        "</tr>"
+        for item in items
+    ) or "<tr><td colspan='7' class='muted'>No review items match these filters.</td></tr>"
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Needs Review - UCM Admin Dashboard</title><style>{CSS}</style></head>
+<body><main>
+  <header class="topbar"><div><h1>Needs Review</h1><p class="detail">Read-only normalized action queue</p></div><a class="button-link secondary" href="/">Dashboard</a></header>
+  <section class="agent-card">
+    <form class="forecast-filters" method="get" action="/needs-review">
+      {_filter_select('record_type', params.get('record_type'), ['bill', 'remit', 'agent_run'], 'All record types')}
+      {_filter_select('source_system', params.get('source_system'), ['outlook', 'local_file', 'sqlite'], 'All sources')}
+      {_filter_select('priority', params.get('priority'), ['critical', 'high', 'normal', 'low'], 'All priorities')}
+      {_filter_select('review_status', params.get('review_status'), ['pending'], 'All review statuses')}
+      {_filter_select('action_required', params.get('action_required'), ['true', 'false'], 'Any action state')}
+      <label><span>From</span><input type="date" name="date_from" value="{_e(params.get('date_from', ''))}"></label>
+      <label><span>To</span><input type="date" name="date_to" value="{_e(params.get('date_to', ''))}"></label>
+      <button type="submit">Apply filters</button>
+    </form>
+    <table><thead><tr><th>Item</th><th>Type</th><th>Source</th><th>Priority</th><th>Review</th><th>Reason</th><th>Date</th></tr></thead><tbody>{rows}</tbody></table>
+  </section>
+</main></body></html>"""
+
+
+def _filter_select(name: str, selected: str | None, values: list[str], all_label: str) -> str:
+    options = [f'<option value="">{_e(all_label)}</option>']
+    options.extend(
+        f'<option value="{_e(value)}"{" selected" if value == selected else ""}>{_e(value.replace("_", " ").title())}</option>'
+        for value in values
+    )
+    return f'<label><span>{_e(name.replace("_", " ").title())}</span><select name="{_e(name)}">{"".join(options)}</select></label>'
 
 
 def _cash_amount(value: object) -> str:
@@ -1109,6 +1229,30 @@ def _content_type(path: Path) -> str:
     if suffix in {".jpg", ".jpeg"}:
         return "image/jpeg"
     return "text/plain; charset=utf-8"
+
+
+def _enum_or_none(enum_type: type[Enum], value: str | None):
+    if not value:
+        return None
+    try:
+        return enum_type(value)
+    except ValueError:
+        return None
+
+
+def _bool_or_none(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+def _date_or_none(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 CSS = """

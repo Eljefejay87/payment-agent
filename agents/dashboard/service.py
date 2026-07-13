@@ -11,6 +11,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from shared.data_layer.repository import InMemorySharedRecordRepository, SharedRecordRepository
+
+from .shared_data import ReadOnlyDashboardDataService
+
 from agents.cash_flow_hq.config import load_cash_flow_settings
 from agents.cash_flow_hq.service import CashFlowHQService, plain_rich_text, plain_title
 from agents.dashboard.config import DashboardSettings
@@ -248,10 +252,14 @@ class DashboardService:
         payment_settings: PaymentSettings,
         remit_settings: RemitSettings,
         dashboard_settings: DashboardSettings,
+        shared_repository: SharedRecordRepository | None = None,
     ) -> None:
         self.payment_settings = payment_settings
         self.remit_settings = remit_settings
         self.dashboard_settings = dashboard_settings
+        self.shared_data = ReadOnlyDashboardDataService(
+            shared_repository or InMemorySharedRecordRepository()
+        )
 
     def snapshot(self) -> dict:
         return {
@@ -260,6 +268,7 @@ class DashboardService:
             "cash_flow": self.cash_flow_snapshot(),
             "manager_checklist": self.manager_checklist_snapshot(),
             "operations": self.operations_snapshot(),
+            "shared_dashboard": self.shared_data.summary(),
             "future_agents": [
                 {"name": "Placement Agent", "status": "Planned", "priority": "High"},
                 {"name": "Compliance Agent", "status": "Planned", "priority": "High"},

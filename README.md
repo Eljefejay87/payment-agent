@@ -985,3 +985,22 @@ Duplicate protection checks the original email link first, then checks for an ex
 The reusable service layer lives in `agents/cash_flow_hq/`. Phase 3 payment confirmation detection should be added as a separate pass that proposes `Payment Date` updates for review without automatically marking rows paid.
 
 Daily schedule prep is marked in code for a future 10:00 AM run, but no Cash Flow HQ scheduler is created in Phase 2.
+
+## Shared Dashboard Data and Needs Review
+
+The dashboard includes a read-only normalized data service in `agents/dashboard/shared_data.py`. It reads `SharedRecordRepository` records and agent-run history to provide Decimal-safe cash summaries, upcoming and past-due bills, recent remits, agent health, and a centralized `Needs Review` section.
+
+Records enter the review queue when normalized status is `needs_review`, review status is `pending`, action is required, confidence is below 72%, or an agent run failed. Queue filters support record type, source system, priority, review status, action requirement, and effective-date range. Only allowlisted operational metadata is returned.
+
+Read-only routes:
+
+```text
+GET /api/shared-dashboard
+GET /api/needs-review?page=1&page_size=25
+GET /api/needs-review/<shared-record-id>
+GET /api/agent-health
+```
+
+Open `GET /needs-review` for the read-only filtered list view.
+
+The service currently supports fixture/in-memory normalized Cash Flow HQ, ICR Remit, and agent-run records. The running dashboard defaults to an empty in-memory shared repository because no production shared-record migration has occurred. These routes do not call Notion, Outlook, Teams, or Google Sheets and expose no approval, rejection, update, send, delete, or payment action.

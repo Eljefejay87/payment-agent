@@ -85,8 +85,34 @@ Priorities are `low`, `normal`, `high`, and `critical`. Review statuses are `not
 - `mark_reviewed(...)`
 - `update_status(...)`
 - `record_agent_run(...)`
+- `list_agent_runs()`
 
-`InMemorySharedRecordRepository` is provided only for tests and future integration prototyping. It prevents duplicates using the idempotency key first and source-system/source-record identity second. It is not wired into any production agent.
+`InMemorySharedRecordRepository` is provided only for tests and local integration prototyping. It prevents duplicates using the idempotency key first and source-system/source-record identity second. The dashboard defaults to an empty instance; no production agent writes normalized records to it.
+
+## Read-Only Dashboard Service
+
+`agents/dashboard/shared_data.py` provides `ReadOnlyDashboardDataService`. It accepts the storage-agnostic repository interface and exposes record/status counts, action and review records, upcoming and past-due bills, recent remits, recent/failed agent runs, source-system queries, date-range queries, and Decimal-safe financial aggregates.
+
+The current HTTP integration exposes read-only endpoints:
+
+- `GET /api/shared-dashboard`
+- `GET /api/needs-review`
+- `GET /api/needs-review/<shared-record-id>`
+- `GET /api/agent-health`
+
+Review-list filters are `record_type`, `source_system`, `priority`, `review_status`, `action_required`, `date_from`, and `date_to`. `page` and `page_size` provide bounded pagination. Decimal values serialize as strings and datetimes as ISO-8601 values.
+
+The dashboard home page includes a `Needs Review` section with unresolved, critical/high, past-due, failed-run, oldest-age, and top-item summaries. It also makes normalized upcoming bills, past-due bills, recent remits, and agent health available through the shared dashboard payload. Existing Cash Flow HQ and Operations cards are unchanged.
+
+`GET /needs-review` renders the matching read-only list view and supports the same filters without adding approval or write controls.
+
+### Needs Review inclusion and ordering
+
+A normalized record is included when its status is `needs_review`, its review status is `pending`, it has a non-empty action requirement, or its numeric confidence is below the existing dashboard review threshold of 72%. Failed agent runs are projected as read-only operational review items.
+
+Items sort by critical priority, high priority, past-due/failed state, then oldest creation time. Dashboard metadata is allowlisted; source-file paths, raw email bodies, credentials, tokens, and unknown metadata fields are omitted.
+
+This phase supports normalized Cash Flow HQ bills, ICR remit records, and agent-run records through dependency-injected fixture/in-memory loading. It does not migrate history, add persistent shared storage, read live Notion/Outlook/Teams data, or expose approval, rejection, update, delete, send, or payment actions.
 
 ## Adapter Contracts
 
@@ -127,4 +153,4 @@ This is an operational compliance review, not legal advice.
 
 ## Next Recommended Step
 
-Connect normalized shared records to a read-only dashboard data service and centralized Needs Review queue.
+Add controlled human approval actions for the Needs Review queue with audit logging and strict write safeguards.

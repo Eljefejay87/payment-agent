@@ -49,6 +49,9 @@ class SharedRecordRepository(ABC):
     @abstractmethod
     def record_agent_run(self, run: AgentRunRecord) -> AgentRunRecord: ...
 
+    @abstractmethod
+    def list_agent_runs(self) -> list[AgentRunRecord]: ...
+
 
 class InMemorySharedRecordRepository(SharedRecordRepository):
     def __init__(self) -> None:
@@ -114,6 +117,9 @@ class InMemorySharedRecordRepository(SharedRecordRepository):
 
     def get_agent_run(self, run_id: str) -> AgentRunRecord | None:
         return self._agent_runs.get(run_id)
+
+    def list_agent_runs(self) -> list[AgentRunRecord]:
+        return list(self._agent_runs.values())
 
     def _required(self, record_id: str) -> SharedRecord:
         record = self.get(record_id)
