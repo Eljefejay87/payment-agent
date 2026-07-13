@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 6 focused ICR import tests and all 139 repository tests pass after the corrected live import.
+Automated verification is passing. The latest scoped dashboard validation passes all 16 dashboard tests.
 
 ## Completed Work
 
@@ -95,15 +95,16 @@ Automated verification is passing: all 6 focused ICR import tests and all 139 re
 - Independently verified the current `remits/incoming/ICR/UNITED REMIT 7-12-26.xlsx` has 11 nonblank rows: Due to Agency `$511.83`, Due to Client `$767.68`, and Total Collected `$1,279.51`.
 - Imported the current remit with `remits/incoming/ICR/UNITED LIQ RATE.csv`. Production now contains exactly one Cash Flow HQ obligation for `$767.68`, one matching import-history row, and one unsent Outlook draft addressed only to the configured ICR recipient with both current files attached. Attachment hashes and the owner-approved message text were verified exactly.
 - Updated the current Cash Flow HQ obligation and future ICR imports so the Notion `Amount` remains the `$767.68` owed to Jim while `Notes` records Due to Agency `$511.83`, Due to Client (owed to Jim) `$767.68`, and Total Collected `$1,279.51`.
+- Added the read-only Cash Flow Forecast section to the existing UCM Dashboard. It calculates Past Due, Due Today, Next 7 Days, Next 30 Days, This Month, AutoPay, and Manual totals from Cash Flow HQ; shows proportional horizon bars, status badges, filters, and the next 10 unpaid obligations. No Outlook scan, Notion write, or new route was added.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The current ICR remit and liquidation-rate files were independently verified and imported. Production contains one matching Cash Flow HQ obligation for `$767.68`, one matching import-history row, and one unsent Outlook draft containing only the approved attachment notice with both current reports attached.
+The Cash Flow Forecast dashboard widget is implemented using only the existing Cash Flow HQ data source and existing UCM Dashboard architecture.
 
 ## Next Recommended Task
 
-Review the corrected Outlook draft in the configured mailbox Drafts folder, then send it manually only after final owner approval. Do not rerun the import; duplicate protection records `UNITED REMIT 7-12-26.xlsx` for the week of `2026-07-06`.
+Refresh the running UCM Dashboard and review the Cash Flow Forecast against the current Cash Flow HQ rows. The approved ICR draft remains scheduled separately for Monday, July 13, 2026 at 10:00 AM Eastern.
 
 ## Known Issues
 

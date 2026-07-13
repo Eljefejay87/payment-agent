@@ -53,6 +53,23 @@ def empty_cash_flow_dashboard(message: str = "") -> dict:
         },
         "needs_attention": [],
         "upcoming_bills": [],
+        "forecast": empty_cash_flow_forecast(),
+    }
+
+
+def empty_cash_flow_forecast() -> dict:
+    periods = {
+        key: {"total": "$0.00", "amount": 0.0, "count": 0, "progress": 0}
+        for key in ("past_due", "due_today", "next_7_days", "next_30_days", "this_month")
+    }
+    return {
+        "periods": periods,
+        "payment_types": {
+            "autopay": {"total": "$0.00", "amount": 0.0},
+            "manual": {"total": "$0.00", "amount": 0.0},
+        },
+        "top_upcoming": [],
+        "filters": {"categories": [], "vendors": [], "statuses": []},
     }
 
 
@@ -91,7 +108,84 @@ def build_cash_flow_dashboard(rows: list[dict], today: date | str) -> dict:
         "summary": summary,
         "needs_attention": needs_attention,
         "upcoming_bills": upcoming,
+        "forecast": build_cash_flow_forecast(rows, today),
     }
+
+
+def build_cash_flow_forecast(rows: list[dict], today: date) -> dict:
+    forecast = empty_cash_flow_forecast()
+    periods = forecast["periods"]
+    next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+    unpaid_rows = [row for row in rows if str(row.get("status", "")).strip().lower() != "paid"]
+
+    def add_period(name: str, row: dict) -> None:
+        periods[name]["count"] += 1
+        amount = row.get("amount")
+        if isinstance(amount, (int, float)):
+            periods[name]["amount"] += float(amount)
+
+    for row in unpaid_rows:
+        due_date = row.get("due_date")
+        if not isinstance(due_date, date):
+            continue
+        if due_date < today:
+            add_period("past_due", row)
+        if due_date == today:
+            add_period("due_today", row)
+        if today < due_date <= today + timedelta(days=7):
+            add_period("next_7_days", row)
+        if today < due_date <= today + timedelta(days=30):
+            add_period("next_30_days", row)
+        if today <= due_date <= month_end:
+            add_period("this_month", row)
+
+        amount = row.get("amount")
+        if isinstance(amount, (int, float)):
+            payment_type = str(row.get("payment_type", "")).strip().lower()
+            key = "autopay" if payment_type in {"auto pay", "autopay"} else "manual"
+            forecast["payment_types"][key]["amount"] += float(amount)
+
+    max_amount = max((period["amount"] for period in periods.values()), default=0.0)
+    for period in periods.values():
+        period["total"] = format_cash_flow_money(period["amount"])
+        period["progress"] = round((period["amount"] / max_amount) * 100) if max_amount else 0
+    for payment_type in forecast["payment_types"].values():
+        payment_type["total"] = format_cash_flow_money(payment_type["amount"])
+
+    top_upcoming = sorted(
+        [row for row in unpaid_rows if isinstance(row.get("due_date"), date)],
+        key=lambda row: (row["due_date"], row.get("vendor") or row.get("expense_name") or ""),
+    )[:10]
+    forecast["top_upcoming"] = [
+        {**row, "forecast_status": cash_flow_forecast_status(row, today)}
+        for row in top_upcoming
+    ]
+    forecast["filters"] = {
+        "categories": sorted({str(row.get("category", "")).strip() for row in rows if row.get("category")}),
+        "vendors": sorted(
+            {
+                str(row.get("vendor") or row.get("expense_name") or "").strip()
+                for row in rows
+                if row.get("vendor") or row.get("expense_name")
+            }
+        ),
+        "statuses": sorted({str(row.get("status", "")).strip() for row in rows if row.get("status")}),
+    }
+    return forecast
+
+
+def cash_flow_forecast_status(row: dict, today: date) -> str:
+    if str(row.get("status", "")).strip().lower() == "paid":
+        return "Paid"
+    due_date = row.get("due_date")
+    if not isinstance(due_date, date):
+        return "Upcoming"
+    if due_date < today:
+        return "Past Due"
+    if due_date <= today + timedelta(days=7):
+        return "Due Soon"
+    return "Upcoming"
 
 
 def cash_flow_notion_rows(pages: list[dict]) -> list[dict]:
@@ -109,6 +203,8 @@ def cash_flow_row_from_page(page: dict) -> dict:
         "notes": plain_rich_text(properties.get("Notes", {})),
         "status": select_property_name(properties.get("Status", {})),
         "category": select_property_name(properties.get("Category", {})),
+        "payment_type": select_property_name(properties.get("Payment Type", {})),
+        "action_required": formula_string(properties.get("Action Required", {})),
     }
 
 
@@ -315,13 +411,22 @@ class DashboardService:
         try:
             cash_flow = CashFlowHQService(settings)
             foundation = cash_flow.get_existing_foundation()
-            rows = cash_flow_notion_rows(
-                cash_flow.notion.request(
+            pages: list[dict] = []
+            cursor = ""
+            while True:
+                query = {"page_size": 100}
+                if cursor:
+                    query["start_cursor"] = cursor
+                response = cash_flow.notion.request(
                     "POST",
                     f"/data_sources/{foundation['data_source_id']}/query",
-                    json={"page_size": 100},
-                ).get("results", [])
-            )
+                    json=query,
+                )
+                pages.extend(response.get("results", []))
+                cursor = response.get("next_cursor") or ""
+                if not response.get("has_more") or not cursor:
+                    break
+            rows = cash_flow_notion_rows(pages)
         except Exception as exc:
             return empty_cash_flow_dashboard(f"Unavailable: {exc}")
         return build_cash_flow_dashboard(rows, today_in_timezone(self.payment_settings.timezone))

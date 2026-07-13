@@ -436,7 +436,21 @@ V1 includes:
 - Payment Agent status, today's payment count, today's collected total, and recent payments.
 - Weekly Remit Agent file status for `United Remit` and `United Liq`.
 - Buttons to scan payments, open the ICR remit drop folder, and send the weekly remit when files are ready.
+- Cash Flow Forecast from the existing Cash Flow HQ Notion data source.
 - Placeholders for Placement, Compliance, Finance, and Executive Dashboard agents.
+
+### Cash Flow Forecast
+
+The dashboard reads the existing Cash Flow HQ data source and calculates a read-only cash horizon. It does not scan Outlook or create Notion records.
+
+- Past Due: unpaid bills with a due date before today.
+- Due Today: unpaid bills due today.
+- Next 7 Days and Next 30 Days: unpaid bills due after today through the inclusive horizon.
+- This Month: unpaid bills due from today through the last day of the current month.
+- AutoPay and Manual totals: all dated, unpaid obligations separated by `Payment Type`; blank or non-AutoPay values count as Manual.
+- Top Upcoming Payments: the next 10 unpaid obligations sorted by due date, including unresolved past-due bills.
+
+The section displays Vendor, Due Date, Amount, Category, forecast status, and Action Required. Category, Vendor, Status, and payment-type filters run in the browser against the 10 displayed rows. No new route was added; the widget reuses the existing dashboard `/` page and `/api/status` snapshot.
 
 Dashboard settings:
 

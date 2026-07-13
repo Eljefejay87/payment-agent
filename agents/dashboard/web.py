@@ -334,6 +334,23 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         list.appendChild(li);
       }});
     }}
+    function filterCashFlowForecast() {{
+      const category = document.getElementById('forecastCategory')?.value || '';
+      const vendor = document.getElementById('forecastVendor')?.value || '';
+      const status = document.getElementById('forecastStatus')?.value || '';
+      const payment = document.getElementById('forecastPayment')?.value || '';
+      let visible = 0;
+      document.querySelectorAll('.forecast-row').forEach((row) => {{
+        const matches = (!category || row.dataset.category === category)
+          && (!vendor || row.dataset.vendor === vendor)
+          && (!status || row.dataset.status === status)
+          && (!payment || row.dataset.payment === payment);
+        row.hidden = !matches;
+        if (matches) visible += 1;
+      }});
+      const empty = document.getElementById('forecastEmptyRow');
+      if (empty) empty.hidden = visible !== 0;
+    }}
     function renderScheduledOffToday(items) {{
       const alert = document.getElementById('scheduledOffTodayAlert');
       const names = (items || [])
@@ -399,6 +416,10 @@ def _e(value: object) -> str:
 
 def _render_cash_flow_dashboard(cash_flow: dict) -> str:
     summary = cash_flow["summary"]
+    forecast = cash_flow.get("forecast") or {}
+    periods = forecast.get("periods") or {}
+    payment_types = forecast.get("payment_types") or {}
+    filters = forecast.get("filters") or {}
     needs_attention = "".join(
         f"""
         <div class="cash-flow-attention-item">
@@ -410,24 +431,59 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
         """
         for item in cash_flow.get("needs_attention", [])
     ) or "<p class='muted'>No bills need attention.</p>"
-    upcoming_rows = "".join(
-        "<tr>"
+    period_specs = (
+        ("past_due", "Past Due", "red"),
+        ("due_today", "Due Today", "yellow"),
+        ("next_7_days", "Next 7 Days", "yellow"),
+        ("next_30_days", "Next 30 Days", "green"),
+        ("this_month", "This Month", "green"),
+    )
+    horizon_cards = "".join(
+        f"""
+        <div class="forecast-horizon-card {tone}">
+          <span>{label}</span>
+          <strong>{_e(periods.get(key, {}).get('total', '$0.00'))}</strong>
+          <small>{periods.get(key, {}).get('count', 0)} bill{'s' if periods.get(key, {}).get('count', 0) != 1 else ''}</small>
+          <div class="forecast-progress" aria-hidden="true"><i style="width:{periods.get(key, {}).get('progress', 0)}%"></i></div>
+        </div>
+        """
+        for key, label, tone in period_specs
+    )
+    top_rows = "".join(
+        "<tr class='forecast-row' "
+        f"data-category='{_e(_cash_filter_value(item.get('category')))}' "
+        f"data-vendor='{_e(_cash_filter_value(item.get('vendor') or item.get('expense_name')))}' "
+        f"data-status='{_e(_cash_filter_value(item.get('forecast_status')))}' "
+        f"data-payment='{_e(_cash_payment_filter(item.get('payment_type')))}'>"
         f"<td>{_e(item.get('vendor') or item.get('expense_name') or 'Unknown vendor')}</td>"
         f"<td>{_e(_cash_date(item.get('due_date')))}</td>"
-        f"<td>{_e(item.get('due_status') or '')}</td>"
         f"<td>{_e(_cash_amount(item.get('amount')))}</td>"
         f"<td>{_e(item.get('category') or '')}</td>"
+        f"<td><span class='badge forecast-{_cash_badge_class(item.get('forecast_status'))}'>{_e(item.get('forecast_status') or 'Upcoming')}</span></td>"
+        f"<td>{_e(item.get('action_required') or '—')}</td>"
         "</tr>"
-        for item in cash_flow.get("upcoming_bills", [])
-    ) or "<tr><td colspan='5' class='muted'>No upcoming bills found.</td></tr>"
+        for item in forecast.get("top_upcoming", [])
+    )
+    top_rows += "<tr id='forecastEmptyRow' hidden><td colspan='6' class='muted'>No upcoming bills match these filters.</td></tr>"
+    category_options = _cash_filter_options(filters.get("categories", []), "All categories")
+    vendor_options = _cash_filter_options(filters.get("vendors", []), "All vendors")
+    status_options = _cash_filter_options(filters.get("statuses", []), "All statuses", forecast_status=True)
     message = f"<p class='detail'>{_e(cash_flow['message'])}</p>" if cash_flow.get("message") else ""
     return f"""
     <section class="agent-card cash-flow-dashboard">
       <div class="card-head">
-        <h2>Cash Flow HQ</h2>
+        <div>
+          <h2>Cash Flow Forecast</h2>
+          <p class="detail">Read-only forecast from Cash Flow HQ</p>
+        </div>
         <span class="badge {'ready' if cash_flow.get('status') == 'Ready' else 'warn'}">{_e(cash_flow.get('status', 'Ready'))}</span>
       </div>
       {message}
+      <div class="forecast-horizon">{horizon_cards}</div>
+      <div class="forecast-payment-split">
+        <div><span>AutoPay Total</span><strong>{_e(payment_types.get('autopay', {}).get('total', '$0.00'))}</strong></div>
+        <div><span>Manual Payment Total</span><strong>{_e(payment_types.get('manual', {}).get('total', '$0.00'))}</strong></div>
+      </div>
       <div class="cash-flow-summary">
         <div class="cash-flow-card"><span>Bills Due This Week</span><strong>{_e(summary['due_this_week_total'])}</strong></div>
         <div class="cash-flow-card"><span>Needs Review</span><strong>{summary['needs_review_count']}</strong></div>
@@ -441,10 +497,16 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
           <div class="cash-flow-attention-list">{needs_attention}</div>
         </section>
         <section>
-          <h3>Upcoming Bills</h3>
+          <h3>Top Upcoming Payments</h3>
+          <div class="forecast-filters" aria-label="Cash Flow Forecast filters">
+            <label><span>Category</span><select id="forecastCategory" onchange="filterCashFlowForecast()">{category_options}</select></label>
+            <label><span>Vendor</span><select id="forecastVendor" onchange="filterCashFlowForecast()">{vendor_options}</select></label>
+            <label><span>Status</span><select id="forecastStatus" onchange="filterCashFlowForecast()">{status_options}</select></label>
+            <label><span>Payment</span><select id="forecastPayment" onchange="filterCashFlowForecast()"><option value="">All payments</option><option value="autopay">AutoPay only</option><option value="manual">Manual only</option></select></label>
+          </div>
           <table>
-            <thead><tr><th>Vendor</th><th>Due Date</th><th>Due Status</th><th>Amount</th><th>Category</th></tr></thead>
-            <tbody>{upcoming_rows}</tbody>
+            <thead><tr><th>Vendor</th><th>Due Date</th><th>Amount</th><th>Category</th><th>Status</th><th>Action Required</th></tr></thead>
+            <tbody>{top_rows}</tbody>
           </table>
         </section>
       </div>
@@ -458,6 +520,25 @@ def _cash_amount(value: object) -> str:
 
 def _cash_date(value: object) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+
+def _cash_filter_value(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _cash_payment_filter(value: object) -> str:
+    return "autopay" if _cash_filter_value(value) in {"auto pay", "autopay"} else "manual"
+
+
+def _cash_badge_class(value: object) -> str:
+    return {"past due": "past-due", "due soon": "due-soon", "paid": "paid"}.get(_cash_filter_value(value), "upcoming")
+
+
+def _cash_filter_options(values: list[str], all_label: str, *, forecast_status: bool = False) -> str:
+    options = [f'<option value="">{_e(all_label)}</option>']
+    source = ["Past Due", "Due Soon", "Upcoming", "Paid"] if forecast_status else values
+    options.extend(f'<option value="{_e(_cash_filter_value(value))}">{_e(value)}</option>' for value in source)
+    return "".join(options)
 
 
 def render_operations_page(operations: dict) -> str:
@@ -1143,7 +1224,91 @@ button:disabled {
 }
 .cash-flow-dashboard {
   margin-bottom: 14px;
+  border-top: 3px solid var(--brand);
 }
+.forecast-horizon {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+.forecast-horizon-card {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-top-width: 3px;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+.forecast-horizon-card.red { border-top-color: #b42318; }
+.forecast-horizon-card.yellow { border-top-color: #c47a00; }
+.forecast-horizon-card.green { border-top-color: var(--ok); }
+.forecast-horizon-card span,
+.forecast-payment-split span,
+.forecast-filters label > span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+.forecast-horizon-card strong {
+  display: block;
+  margin: 7px 0 3px;
+  font-size: 21px;
+}
+.forecast-horizon-card small { color: var(--muted); }
+.forecast-progress {
+  height: 5px;
+  margin-top: 11px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5ebee;
+}
+.forecast-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+}
+.forecast-horizon-card.red .forecast-progress i { background: #b42318; }
+.forecast-horizon-card.yellow .forecast-progress i { background: #c47a00; }
+.forecast-horizon-card.green .forecast-progress i { background: var(--ok); }
+.forecast-payment-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.forecast-payment-split > div {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f0f6f8;
+}
+.forecast-payment-split strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 20px;
+}
+.forecast-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.forecast-filters select {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 4px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--ink);
+}
+.badge.forecast-upcoming { color: var(--ok); background: var(--soft-ok); }
+.badge.forecast-due-soon { color: var(--warn); background: var(--soft-warn); }
+.badge.forecast-past-due { color: #9f1c13; background: #fde9e7; }
+.badge.forecast-paid { color: var(--muted); background: #edf1f4; }
+.forecast-row[hidden] { display: none; }
+.forecast-row td:last-child { min-width: 130px; }
 .cash-flow-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1598,6 +1763,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .cash-flow-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .forecast-horizon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .forecast-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .ops-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1630,6 +1801,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
     grid-template-columns: 1fr;
   }
   .cash-flow-summary {
+    grid-template-columns: 1fr;
+  }
+  .forecast-horizon, .forecast-payment-split, .forecast-filters {
     grid-template-columns: 1fr;
   }
   table {

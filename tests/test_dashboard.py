@@ -238,6 +238,119 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Upcoming Bills", html)
         self.assertIn("$425.00", html)
 
+    def test_cash_flow_forecast_totals_payment_types_and_filters(self) -> None:
+        rows = [
+            {
+                "vendor": "Past Utility",
+                "amount": 75.0,
+                "due_date": date(2026, 7, 7),
+                "status": "Upcoming",
+                "category": "Utilities",
+                "payment_type": "Manual",
+                "action_required": "Pay now",
+            },
+            {
+                "vendor": "Today Insurance",
+                "amount": 80.0,
+                "due_date": date(2026, 7, 8),
+                "status": "Upcoming",
+                "category": "Insurance",
+                "payment_type": "Auto Pay",
+                "action_required": "AutoPay scheduled",
+            },
+            {
+                "vendor": "Soon Software",
+                "amount": 125.0,
+                "due_date": date(2026, 7, 9),
+                "status": "Upcoming",
+                "category": "Software",
+                "payment_type": "Manual",
+                "action_required": "Schedule payment",
+            },
+            {
+                "vendor": "Later Rent",
+                "amount": 300.0,
+                "due_date": date(2026, 7, 12),
+                "status": "Upcoming",
+                "category": "Rent",
+                "payment_type": "AutoPay",
+                "action_required": "AutoPay scheduled",
+            },
+            {
+                "vendor": "August Vendor",
+                "amount": 200.0,
+                "due_date": date(2026, 8, 1),
+                "status": "Upcoming",
+                "category": "Other",
+                "payment_type": "Manual",
+                "action_required": "Review",
+            },
+            {
+                "vendor": "Paid Vendor",
+                "amount": 999.0,
+                "due_date": date(2026, 7, 6),
+                "status": "Paid",
+                "category": "Rent",
+                "payment_type": "Auto Pay",
+                "action_required": "",
+            },
+        ]
+
+        dashboard = build_cash_flow_dashboard(rows, date(2026, 7, 8))
+        forecast = dashboard["forecast"]
+
+        self.assertEqual(forecast["periods"]["past_due"]["total"], "$75.00")
+        self.assertEqual(forecast["periods"]["past_due"]["count"], 1)
+        self.assertEqual(forecast["periods"]["due_today"]["total"], "$80.00")
+        self.assertEqual(forecast["periods"]["due_today"]["count"], 1)
+        self.assertEqual(forecast["periods"]["next_7_days"]["total"], "$425.00")
+        self.assertEqual(forecast["periods"]["next_7_days"]["count"], 2)
+        self.assertEqual(forecast["periods"]["next_30_days"]["total"], "$625.00")
+        self.assertEqual(forecast["periods"]["next_30_days"]["count"], 3)
+        self.assertEqual(forecast["periods"]["this_month"]["total"], "$505.00")
+        self.assertEqual(forecast["periods"]["this_month"]["count"], 3)
+        self.assertEqual(forecast["payment_types"]["autopay"]["total"], "$380.00")
+        self.assertEqual(forecast["payment_types"]["manual"]["total"], "$400.00")
+        self.assertEqual(
+            [row["vendor"] for row in forecast["top_upcoming"]],
+            ["Past Utility", "Today Insurance", "Soon Software", "Later Rent", "August Vendor"],
+        )
+
+        html = render_dashboard(
+            {
+                "payment": {"status": "Ready", "today_count": 0, "today_total": "$0.00", "recent": [], "detail": ""},
+                "remit": {
+                    "status": "Waiting",
+                    "broker": "ICR",
+                    "incoming_folder": "",
+                    "detail": "",
+                    "files": [],
+                    "last_sent": "Never",
+                    "send_deadline": "Monday by 15:00",
+                },
+                "cash_flow": dashboard,
+                "future_agents": [],
+                "manager_checklist": {
+                    "status": "Ready",
+                    "detail": "",
+                    "url": "https://example.com/checklist",
+                    "sheet_url": "https://example.com/sheet",
+                    "schedule": "",
+                },
+                "operations": empty_operations_snapshot(),
+            }
+        )
+
+        self.assertIn("Cash Flow Forecast", html)
+        self.assertIn("AutoPay Total", html)
+        self.assertIn("Manual Payment Total", html)
+        self.assertIn("AutoPay only", html)
+        self.assertIn("Manual only", html)
+        self.assertIn("Action Required", html)
+        self.assertIn("filterCashFlowForecast", html)
+        self.assertIn("forecast-due-soon", html)
+        self.assertIn("forecast-past-due", html)
+
     def test_operations_snapshot_reads_latest_processed_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
