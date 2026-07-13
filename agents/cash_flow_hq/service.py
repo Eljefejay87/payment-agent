@@ -537,7 +537,7 @@ class CashFlowHQService:
         if display_name and candidate.vendor_payee != display_name:
             updates["vendor_payee"] = display_name
             field_sources["vendor"] = "vendor rules"
-        if not candidate.category and rule.category:
+        if rule.category and (not candidate.category or (candidate.status == "Needs Review" and candidate.category != rule.category)):
             updates["category"] = rule.category
             field_sources["category"] = "vendor rules"
             LOGGER.info("Filled Category from Vendor Rules")

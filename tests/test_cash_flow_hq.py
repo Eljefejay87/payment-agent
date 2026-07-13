@@ -881,6 +881,23 @@ class CashFlowHQServiceTests(unittest.TestCase):
         self.assertEqual(updated.due_date.isoformat(), "2026-07-20")
         self.assertEqual(updated.frequency, "Monthly")
 
+    def test_vendor_rule_corrects_needs_review_category(self) -> None:
+        service = CashFlowHQService(build_settings(), notion=FakeNotion())
+        email = build_email(
+            sender_name="American Express",
+            subject="American Express statement",
+            body="Your rent payment and card activity are ready for review.",
+        )
+        candidate = parse_bill_candidate(email)
+        rule = VendorRule("American Express", "American Express", "Banking", "Monthly", None, "Manual", "Upcoming", True)
+
+        updated = service.apply_vendor_rules(candidate, email, [rule])
+
+        self.assertEqual(candidate.status, "Needs Review")
+        self.assertEqual(candidate.category, "Rent")
+        self.assertEqual(updated.category, "Banking")
+        self.assertEqual(updated.field_sources["category"], "vendor rules")
+
     def test_missing_due_date_example_populates_notes_and_needs_review(self) -> None:
         service = CashFlowHQService(build_settings(), notion=FakeNotion())
         candidate = parse_bill_candidate(
