@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 5 focused ICR import tests pass, followed by all 138 repository tests.
+Automated verification is passing: all 5 focused ICR import tests, all 15 dashboard tests, and all 138 repository tests pass after the live import.
 
 ## Completed Work
 
@@ -85,15 +85,21 @@ Automated verification is passing: all 5 focused ICR import tests pass, followed
 - Live Notion patch verification found that Notion rejected the full formula with a `400 validation_error` (`Type error with formula`); the command then successfully installed its tested fallback formula.
 - Corrected the ICR import source headers to the actual export fields: `AgencyFee` and `ClientFee`, and normalized imported totals to two-decimal currency precision.
 - The corrected non-destructive dry-run parsed the archived export successfully: Due to Agency `$1,617.91`, Due to Client `$2,426.72`, and Total Collected `$4,044.63`. It created no production records.
+- Independently verified `remits/sent/ICR/2026-07-06/United Remit 7-6-26.xlsx` (SHA-256 `ebf1378f4082f229a89d9b47b73042594cff56597895934961bc881c1745a954`) contains 18 nonblank data rows and totals AgencyFee `$1,617.91`, ClientFee `$2,426.72`, and Total Collected `$4,044.63`; the two fee totals reconcile exactly.
+- Re-ran `.venv/bin/python main.py icr-remit-import --file 'remits/sent/ICR/2026-07-06/United Remit 7-6-26.xlsx' --dry-run`; it reproduced the expected totals and created no Notion page, import-history row, or Outlook item.
+- The first live command attempt stopped before creating the intended production artifacts because the importer invoked Cash Flow HQ view provisioning and Notion rejected a view payload. Post-failure checks confirmed zero matching Notion pages, import-history rows, and Outlook items.
+- Fixed the scoped import-path defect so an ICR import uses the configured Cash Flow HQ data source directly and does not run unrelated schema/view provisioning.
+- Ran `.venv/bin/python main.py icr-remit-import --file 'remits/sent/ICR/2026-07-06/United Remit 7-6-26.xlsx'` successfully. Verification found exactly one Cash Flow HQ obligation for `$2,426.72`, exactly one matching import-history row with all three source totals, and exactly one matching Outlook draft with the source workbook attached. No matching non-draft item or duplicate was found, and no email was sent.
+- Fixed the dashboard date-type mismatch exposed by the new live obligation by accepting the existing ISO date string returned by `today_in_timezone`; all 15 dashboard tests and all 138 repository tests pass.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-Documentation and verification for the ICR import and Cash Flow HQ Notion formula tools are complete. Automated tests pass, the live Notion fallback formula patch succeeded, and no production ICR records were created during verification.
+The archived ICR remit totals and source identity were independently verified, and the controlled live import completed successfully after a scoped import-path fix. Production contains one matching Cash Flow HQ obligation, one matching import-history row, and one unsent Outlook draft with the source workbook attached.
 
 ## Next Recommended Task
 
-Confirm the corrected dry-run totals—Due to Agency `$1,617.91`, Due to Client `$2,426.72`, and Total Collected `$4,044.63`—then authorize a live import only if those figures are correct.
+Review the Outlook draft and the Cash Flow HQ obligation, then manually send the draft only after final owner approval. Do not rerun the import; duplicate protection now records this broker, week, and filename.
 
 ## Known Issues
 
@@ -109,8 +115,7 @@ Confirm the corrected dry-run totals—Due to Agency `$1,617.91`, Due to Client 
 - Codex sandbox cannot reach Microsoft login, so the live voicemail Outlook scan must be run from the Mac/network environment rather than inside Codex.
 - Operations Intelligence corrected OCR now passes the quality gate for the clear July 2 SCollect screenshot, but values should still be reviewed because OCR may read some table totals imperfectly.
 - The full Cash Flow HQ `Action Required` formula is not accepted by the live Notion API; the tested fallback formula is installed and should be reviewed in the live database for the intended business behavior.
-- Production ICR record creation remains pending review of the corrected dry-run totals; the dry-run itself does not create Notion rows, import-history records, or Outlook drafts.
-- Live Graph draft creation and broader live network behavior remain unverified. Confirm the configured Graph permissions and admin consent before a production ICR import; do not bypass duplicate protection.
+- The July 6 ICR remit import is complete and duplicate-protected. The Outlook item remains an unsent draft pending owner review.
 - The project virtual environment uses Python 3.9.6 with LibreSSL 2.8.3, which triggers the `urllib3` v2 warning. Rebuild the virtual environment later with a supported Python 3.12+ distribution linked to current OpenSSL; no rebuild is required for the passing test suite.
 
 ## Session Update Rule

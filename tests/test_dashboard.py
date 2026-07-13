@@ -204,6 +204,9 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual([item["vendor"] for item in dashboard["upcoming_bills"]], ["Past Vendor", "Soon Vendor", "Later Vendor"])
         self.assertEqual([item["vendor"] for item in dashboard["needs_attention"]], ["Needs Vendor", "Past Vendor", "Paid Vendor"])
 
+        dashboard_from_iso_date = build_cash_flow_dashboard(rows, "2026-07-08")
+        self.assertEqual(dashboard_from_iso_date["summary"], dashboard["summary"])
+
         html = render_dashboard(
             {
                 "payment": {"status": "Ready", "today_count": 0, "today_total": "$0.00", "recent": [], "detail": ""},

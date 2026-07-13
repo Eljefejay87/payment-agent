@@ -41,8 +41,12 @@ class ICRRemitImportService:
         if dry_run:
             LOGGER.info("Dry run ICR remit import: Due to Client=%s", result.due_to_client)
             return result
-        foundation = self.cash_flow.ensure_foundation()
-        data_source_id = foundation["data_source_id"]
+        data_source_id = self.cash_flow_settings.cash_flow_data_source_id
+        if not data_source_id:
+            foundation = self.cash_flow.find_cash_flow_foundation()
+            if foundation is None:
+                raise RuntimeError("Cash Flow HQ foundation was not found. Run cash-flow-init before importing an ICR remit.")
+            data_source_id = foundation["data_source_id"]
         payload = self.cash_flow.create_manual_expense_payload(
             expense_name=f"ICR Weekly Remit - {result.remit_week.isoformat()}",
             amount=float(result.due_to_client),
@@ -80,4 +84,3 @@ class ICRRemitImportService:
             html_content=body,
             attachments=[result.file_path],
         )
-

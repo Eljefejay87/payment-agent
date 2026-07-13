@@ -56,7 +56,9 @@ def empty_cash_flow_dashboard(message: str = "") -> dict:
     }
 
 
-def build_cash_flow_dashboard(rows: list[dict], today: date) -> dict:
+def build_cash_flow_dashboard(rows: list[dict], today: date | str) -> dict:
+    if isinstance(today, str):
+        today = date.fromisoformat(today)
     summary = empty_cash_flow_dashboard()["summary"]
     due_this_week_total = 0.0
     for row in rows:

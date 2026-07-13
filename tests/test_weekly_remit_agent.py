@@ -285,7 +285,7 @@ class FakeCashFlow:
         self.notion = self
 
     def ensure_foundation(self) -> dict:
-        return {"data_source_id": "cash-source-id"}
+        raise AssertionError("ICR import must not run Cash Flow HQ provisioning.")
 
     def create_manual_expense_payload(self, **kwargs) -> dict:
         return {
