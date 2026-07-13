@@ -20,6 +20,7 @@ from agents.cash_flow_hq.parser import extract_amount, extract_due_date, is_bill
 from agents.cash_flow_hq.payment_scan import (
     CashFlowPaymentScanner,
     match_payment_confirmation,
+    normalize_payment_confirmation_vendor,
     parse_payment_confirmation,
 )
 from agents.cash_flow_hq.schema import (
@@ -1287,6 +1288,35 @@ class CashFlowHQPaymentScannerTests(unittest.TestCase):
 
         self.assertEqual(match.confidence, "High")
         self.assertEqual(match.reason, "Matched by amount/date")
+
+    def test_vendor_rules_normalize_payment_confirmation_vendor_before_matching(self) -> None:
+        email = build_email(
+            sender_name="Bitwarden Inc.",
+            subject="Your receipt from Bitwarden Inc.",
+            body="Payment received $10.00.",
+        )
+        confirmation = parse_payment_confirmation(email)
+        rule = VendorRule("Bitwarden", "Bitwarden", "Software", "Annual", None, "Auto Pay", "Upcoming", True)
+
+        normalized = normalize_payment_confirmation_vendor(confirmation, email, [rule])
+        match = match_payment_confirmation(
+            normalized,
+            [payment_bill(vendor="Bitwarden", amount=Decimal("10.00"), due_date=date(2026, 7, 1))],
+            [rule],
+        )
+
+        self.assertEqual(normalized.vendor_payee, "Bitwarden")
+        self.assertEqual(match.confidence, "High")
+        self.assertEqual(match.payment_method, "Auto Pay")
+
+    def test_inactive_vendor_rule_does_not_normalize_payment_confirmation(self) -> None:
+        email = build_email(sender_name="OFR", subject="Your FLOFR Payment Receipt", body="Payment received $205.00.")
+        confirmation = parse_payment_confirmation(email)
+        rule = VendorRule("OFR", "FLOFR", "Licensing", "Annual", None, "Manual", "Upcoming", False, display_name="Florida OFR")
+
+        normalized = normalize_payment_confirmation_vendor(confirmation, email, [rule])
+
+        self.assertEqual(normalized.vendor_payee, "OFR")
 
     def test_duplicate_and_already_paid_bills_are_not_marked_again(self) -> None:
         confirmation = parse_payment_confirmation(

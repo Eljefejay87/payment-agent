@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from .graph_client import CashFlowGraphClient
@@ -60,6 +60,7 @@ class CashFlowPaymentScanner:
         for message in messages:
             try:
                 confirmation = parse_payment_confirmation(message)
+                confirmation = normalize_payment_confirmation_vendor(confirmation, message, vendor_rules)
                 match = match_payment_confirmation(confirmation, bills, vendor_rules)
                 if debug:
                     LOGGER.info(
@@ -116,6 +117,21 @@ def parse_payment_confirmation(message: BillEmail) -> PaymentConfirmation:
     )
 
 
+def normalize_payment_confirmation_vendor(
+    confirmation: PaymentConfirmation,
+    message: BillEmail,
+    vendor_rules: list[VendorRule],
+) -> PaymentConfirmation:
+    rule = match_payment_vendor_rule(confirmation, message, vendor_rules)
+    if not rule:
+        return confirmation
+    display_name = rule.display_name or rule.vendor_name
+    if not display_name or display_name == confirmation.vendor_payee:
+        return confirmation
+    LOGGER.info("Vendor Rules matched payment confirmation: %s", rule.vendor_name)
+    return replace(confirmation, vendor_payee=display_name)
+
+
 def extract_payment_amount(text: str) -> Decimal | None:
     match = PAYMENT_AMOUNT_PATTERN.search(text)
     if match:
@@ -168,6 +184,31 @@ def match_payment_confirmation(
         return PaymentMatch(confirmation, None, "Low", "Needs Review because multiple matches")
 
     return PaymentMatch(confirmation, None, "Low", "Needs Review because no matching bill")
+
+
+def match_payment_vendor_rule(
+    confirmation: PaymentConfirmation,
+    message: BillEmail,
+    vendor_rules: list[VendorRule],
+) -> VendorRule | None:
+    vendor = confirmation.vendor_payee.strip().lower()
+    haystack = " ".join(
+        [
+            confirmation.vendor_payee,
+            confirmation.subject,
+            message.sender_name,
+            message.sender_email,
+            message.body_text,
+        ]
+    ).lower()
+    for rule in vendor_rules:
+        if rule.active and rule.vendor_name.strip().lower() == vendor:
+            return rule
+    for rule in vendor_rules:
+        match_text = rule.match_text.strip().lower()
+        if rule.active and match_text and match_text in haystack:
+            return rule
+    return None
 
 
 def already_paid_or_linked(bill: CashFlowBillRecord, confirmation: PaymentConfirmation) -> bool:
