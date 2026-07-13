@@ -4,9 +4,13 @@
 
 The Payment Agent is stable end-to-end: it detects real payment emails, parses them, prevents duplicates, saves them to SQLite, posts professional Teams notifications to the UCM Leadership chat, and cleans up processed/duplicate emails.
 
-The Weekly Remit Agent V1 build has started for ICR weekly remit delivery.
+The Weekly Remit Agent V1 supports ICR weekly remit delivery, file archiving, duplicate prevention, and owner notification.
 
 The local UCM Admin Dashboard V1 has been added for browser-based agent status and simple owner actions.
+
+The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
+
+Automated verification is passing: 41 focused ICR import and Notion formula tests pass, followed by all 137 repository tests.
 
 ## Completed Work
 
@@ -75,14 +79,20 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 - Updated Weekly Remit Agent to recognize `.csv` exports in addition to `.xlsx/.xls`.
 - Added a professional ICR broker email template for weekly remit delivery.
 - Fixed UCM Admin Dashboard remit status so a remit sent for the current week shows `Sent` after files are archived, instead of falling back to `Waiting` because the drop folder is empty.
+- Added `icr-remit-import` with `.xlsx`/`.csv` parsing, totals, SQLite duplicate prevention, Cash Flow HQ obligation creation, Outlook draft creation, and a non-destructive `--dry-run` mode.
+- Added `cash-flow-debug-action-required`, `cash-flow-diagnose-action-required`, and `cash-flow-patch-action-required` for inspecting, diagnosing, and updating the Notion `Action Required` formula.
+- Live Notion debug verification succeeded against the configured Cash Flow HQ data source on July 12, 2026.
+- Live Notion patch verification found that Notion rejected the full formula with a `400 validation_error` (`Type error with formula`); the command then successfully installed its tested fallback formula.
+- A non-destructive ICR import dry-run was attempted against the only archived `United Remit` export. It created no records and stopped because that file does not contain the required `Due to Agency` and `Due to Client` headers.
+- Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-Weekly Remit Agent sent the current week remit. The Admin Dashboard now reads the remit database first and reports `Sent` for the current week even when the drop folder is empty.
+Documentation and verification for the ICR import and Cash Flow HQ Notion formula tools are complete. Automated tests pass, the live Notion fallback formula patch succeeded, and no production ICR records were created during verification.
 
 ## Next Recommended Task
 
-Restart or refresh the local dashboard server so the browser picks up the dashboard remit status fix.
+Obtain a real ICR import export containing the exact `Due to Agency` and `Due to Client` headers, run `icr-remit-import --dry-run`, review the calculated totals, and only then authorize a live import that creates the Cash Flow HQ obligation and Outlook draft.
 
 ## Known Issues
 
@@ -97,6 +107,10 @@ Restart or refresh the local dashboard server so the browser picks up the dashbo
 - Tailscale URL may show `Unavailable` if the local Tailscale CLI is not running or cannot return an IPv4 address.
 - Codex sandbox cannot reach Microsoft login, so the live voicemail Outlook scan must be run from the Mac/network environment rather than inside Codex.
 - Operations Intelligence corrected OCR now passes the quality gate for the clear July 2 SCollect screenshot, but values should still be reviewed because OCR may read some table totals imperfectly.
+- The full Cash Flow HQ `Action Required` formula is not accepted by the live Notion API; the tested fallback formula is installed and should be reviewed in the live database for the intended business behavior.
+- The available archived `United Remit 7-6-26.xlsx` is not a valid ICR import input because it lacks the required `Due to Agency` and `Due to Client` headers. Live ICR import verification remains pending a compatible export.
+- Live Graph draft creation and broader live network behavior remain unverified. Confirm the configured Graph permissions and admin consent before a production ICR import; do not bypass duplicate protection.
+- The project virtual environment uses Python 3.9.6 with LibreSSL 2.8.3, which triggers the `urllib3` v2 warning. Rebuild the virtual environment later with a supported Python 3.12+ distribution linked to current OpenSSL; no rebuild is required for the passing test suite.
 
 ## Session Update Rule
 

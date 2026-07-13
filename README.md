@@ -408,6 +408,24 @@ python3 main.py remit-run
 
 Duplicate protection is by broker and week start date. If an ICR remit for that week has already been sent, the agent will not send another email.
 
+### ICR Remit Import
+
+Import an ICR `.xlsx` or `.csv` export that contains `Due to Agency` and `Due to Client` columns. The importer totals both columns, prevents duplicate imports by broker, week, and filename, creates the Cash Flow HQ obligation, and creates an Outlook draft with the source file attached.
+
+Preview and validate an export without creating a Notion row, import-history record, or Outlook draft:
+
+```bash
+python main.py icr-remit-import --file "path/to/icr-remit.xlsx" --dry-run
+```
+
+Important flags:
+
+- `--file` is required and accepts an `.xlsx` or `.csv` export.
+- `--dry-run` parses and totals the file without creating Notion or Outlook records.
+- `--env-file` loads an alternate environment file.
+
+The command uses the existing Cash Flow HQ Notion settings: `NOTION_API_KEY`, `CASH_FLOW_HQ_PARENT_PAGE_ID`, `CASH_FLOW_HQ_DATABASE_NAME`, and `NOTION_VERSION`. The API key and parent page ID must be configured; the database name and Notion version have the defaults shown in the Cash Flow HQ configuration section. A live import also requires the Weekly Remit Microsoft Graph and broker settings validated by the application, including `MAILBOX_USER_ID`, `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET`, `REMIT_BROKER_NAME`, and `REMIT_BROKER_EMAIL`. If owner Teams updates remain enabled, the existing `REMIT_OWNER_TEAMS_CHAT_ID` and `TEAMS_GRAPH_*` settings are also required. The Graph application needs permission to create the mailbox draft and attach the export.
+
 ## UCM Admin Dashboard
 
 The local UCM Admin Dashboard gives you one browser page for the current and future UCM agents.
@@ -884,6 +902,22 @@ python main.py cash-flow-init
 ```
 
 The script creates the requested properties, including `Week` and `Month` formulas based on `Due Date`, then creates the requested table views: Dashboard, This Week, This Month, Paid, Auto Pay, Manual Entries, Payroll, Jim Remit, Needs Review, and Past Due.
+
+### Action Required Formula Tools
+
+Inspect the live Cash Flow HQ property types, safety report, and proposed formula without changing the formula:
+
+```bash
+python main.py cash-flow-debug-action-required
+```
+
+Apply the supported `Action Required` formula patch:
+
+```bash
+python main.py cash-flow-patch-action-required
+```
+
+For step-by-step Notion API troubleshooting, `python main.py cash-flow-diagnose-action-required` attempts each diagnostic formula patch and reports whether Notion accepted it. Unlike the debug command, both `patch` and `diagnose` modify the live `Action Required` property. All three commands accept `--env-file` and require the Cash Flow HQ Notion settings listed above, plus access to the existing Cash Flow HQ data source.
 
 ### Scan Outlook Email
 
