@@ -242,7 +242,6 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         <strong>{_e(remit['status'])}</strong>
       </div>
     </section>
-    {cash_flow_dashboard}
     <section class="agent-grid">
       <article class="agent-card">
         <div class="card-head">
@@ -305,7 +304,10 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
           {checklist_sheet_link}
         </div>
       </article>
+    </section>
+    <section class="intelligence-grid">
       {operations_card}
+      {cash_flow_dashboard}
     </section>
     <section>
       <h2 class="section-title">Future Agents</h2>
@@ -1372,6 +1374,16 @@ button:disabled {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
 }
+.intelligence-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.75fr) minmax(0, 2.25fr);
+  gap: 14px;
+  align-items: start;
+  margin-top: 14px;
+}
+.intelligence-grid .cash-flow-dashboard {
+  margin-bottom: 0;
+}
 .agent-card {
   padding: 18px;
 }
@@ -1757,7 +1769,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   min-height: 110px;
 }
 @media (max-width: 860px) {
-  .summary-grid, .agent-grid, .future-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections {
+  .summary-grid, .agent-grid, .future-grid, .intelligence-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections {
     grid-template-columns: 1fr;
   }
   .cash-flow-summary {

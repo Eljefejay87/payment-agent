@@ -144,6 +144,10 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Placement Agent", html)
         self.assertIn("Operations Intelligence", html)
         self.assertIn("View Full Operations Report", html)
+        self.assertIn('<section class="intelligence-grid">', html)
+        intelligence_grid = html.split('<section class="intelligence-grid">', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Operations Intelligence", intelligence_grid)
+        self.assertIn("Cash Flow Forecast", intelligence_grid)
 
     def test_cash_flow_dashboard_summary_lists_and_sorting(self) -> None:
         rows = [
