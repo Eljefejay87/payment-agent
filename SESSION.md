@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: 22 combined dashboard/Needs Review tests, 9 shared-data tests, 64 Cash Flow HQ tests, 6 focused ICR import tests, and all 155 repository tests pass.
+Automated verification is passing: 39 focused dashboard/shared/review-action tests and all 163 repository tests pass.
 
 ## Completed Work
 
@@ -98,16 +98,17 @@ Automated verification is passing: 22 combined dashboard/Needs Review tests, 9 s
 - Added the read-only Cash Flow Forecast section to the existing UCM Dashboard. It calculates Past Due, Due Today, Next 7 Days, Next 30 Days, This Month, AutoPay, and Manual totals from Cash Flow HQ; shows proportional horizon bars, status badges, filters, and the next 10 unpaid obligations. No Outlook scan, Notion write, or new route was added.
 - Added the shared UCM data layer compatibility foundation under `shared/data_layer/`: typed shared records and enums, Decimal-safe serialization, deterministic idempotency helpers, a storage-agnostic repository contract, an in-memory test repository, agent-run records, and normalization adapters for Cash Flow HQ and ICR Remit. Existing production writes, storage, schemas, schedules, and notification behavior are unchanged.
 - Connected the shared foundation to a dependency-injected, read-only dashboard data service and centralized Needs Review queue. Added Decimal-safe financial summaries, review rules/filters/pagination, safe metadata filtering, failed-agent-run review projection, read-only HTTP endpoints, and a matching dashboard section. The default repository remains empty and in-memory; no production storage or write path changed.
+- Added controlled local approve, reject, and resolve actions for shared Needs Review records. Added reviewer/confirmation requirements, CSRF protection, stale-write detection, idempotent request IDs, terminal-state guards, append-only review audit events, and read-only audit history. Failed agent-run projections remain non-actionable, and no external or agent-specific write path is connected.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The read-only shared dashboard service and centralized Needs Review queue are implemented for normalized Cash Flow HQ, ICR Remit, and agent-run records. They are connected to the existing dashboard through an empty in-memory repository by default and remain separate from production agent write paths.
+The shared dashboard and centralized Needs Review queue now support controlled local review decisions with audit history. They still use an empty in-memory repository by default, do not survive restart, and remain separate from production agent write paths.
 
 ## Next Recommended Task
 
-Add controlled human approval actions for the Needs Review queue with audit logging and strict write safeguards.
+Add durable SQLite persistence for normalized records, review decisions, and agent-run history, with explicit migration and reconciliation tooling.
 
 ## Known Issues
 

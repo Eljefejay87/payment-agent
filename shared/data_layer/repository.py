@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import date
 
-from .models import AgentRunRecord, RecordType, ReviewStatus, SharedRecord, SourceSystem, Status, utc_now
+from .models import AgentRunRecord, RecordType, ReviewAuditEvent, ReviewStatus, SharedRecord, SourceSystem, Status, utc_now
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,12 @@ class SharedRecordRepository(ABC):
     @abstractmethod
     def list_agent_runs(self) -> list[AgentRunRecord]: ...
 
+    @abstractmethod
+    def append_review_audit(self, event: ReviewAuditEvent) -> ReviewAuditEvent: ...
+
+    @abstractmethod
+    def list_review_audits(self, record_id: str | None = None) -> list[ReviewAuditEvent]: ...
+
 
 class InMemorySharedRecordRepository(SharedRecordRepository):
     def __init__(self) -> None:
@@ -59,6 +65,7 @@ class InMemorySharedRecordRepository(SharedRecordRepository):
         self._source_index: dict[tuple[SourceSystem, str], str] = {}
         self._idempotency_index: dict[str, str] = {}
         self._agent_runs: dict[str, AgentRunRecord] = {}
+        self._review_audits: list[ReviewAuditEvent] = []
 
     def upsert(self, record: SharedRecord) -> SharedRecord:
         existing = None
@@ -120,6 +127,21 @@ class InMemorySharedRecordRepository(SharedRecordRepository):
 
     def list_agent_runs(self) -> list[AgentRunRecord]:
         return list(self._agent_runs.values())
+
+    def append_review_audit(self, event: ReviewAuditEvent) -> ReviewAuditEvent:
+        existing = next(
+            (item for item in self._review_audits if item.request_id == event.request_id),
+            None,
+        )
+        if existing is not None:
+            return existing
+        self._review_audits.append(event)
+        return event
+
+    def list_review_audits(self, record_id: str | None = None) -> list[ReviewAuditEvent]:
+        if record_id is None:
+            return list(self._review_audits)
+        return [event for event in self._review_audits if event.record_id == record_id]
 
     def _required(self, record_id: str) -> SharedRecord:
         record = self.get(record_id)

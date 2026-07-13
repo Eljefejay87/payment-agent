@@ -199,6 +199,12 @@ class ReadOnlyDashboardDataService:
 
 
 def _review_reasons(record: SharedRecord) -> list[str]:
+    if record.review_status in {
+        ReviewStatus.APPROVED,
+        ReviewStatus.REJECTED,
+        ReviewStatus.RESOLVED,
+    }:
+        return []
     reasons = []
     if record.status == Status.NEEDS_REVIEW:
         reasons.append("Status requires review")

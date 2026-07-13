@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import secrets
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 from shared.data_layer.repository import InMemorySharedRecordRepository, SharedRecordRepository
 
 from .shared_data import ReadOnlyDashboardDataService
+from .review_actions import ReviewActionService
 
 from agents.cash_flow_hq.config import load_cash_flow_settings
 from agents.cash_flow_hq.service import CashFlowHQService, plain_rich_text, plain_title
@@ -257,9 +259,10 @@ class DashboardService:
         self.payment_settings = payment_settings
         self.remit_settings = remit_settings
         self.dashboard_settings = dashboard_settings
-        self.shared_data = ReadOnlyDashboardDataService(
-            shared_repository or InMemorySharedRecordRepository()
-        )
+        repository = shared_repository or InMemorySharedRecordRepository()
+        self.shared_data = ReadOnlyDashboardDataService(repository)
+        self.review_actions = ReviewActionService(repository)
+        self.review_csrf_token = secrets.token_urlsafe(32)
 
     def snapshot(self) -> dict:
         return {

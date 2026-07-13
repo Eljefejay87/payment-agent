@@ -1003,4 +1003,15 @@ GET /api/agent-health
 
 Open `GET /needs-review` for the read-only filtered list view.
 
-The service currently supports fixture/in-memory normalized Cash Flow HQ, ICR Remit, and agent-run records. The running dashboard defaults to an empty in-memory shared repository because no production shared-record migration has occurred. These routes do not call Notion, Outlook, Teams, or Google Sheets and expose no approval, rejection, update, send, delete, or payment action.
+The service currently supports fixture/in-memory normalized Cash Flow HQ, ICR Remit, and agent-run records. The running dashboard defaults to an empty in-memory shared repository because no production shared-record migration has occurred.
+
+The Needs Review page supports controlled local Approve, Reject, and Resolve decisions for shared records. Each action requires a reviewer, explicit confirmation, a current record timestamp, a unique request ID, and a valid process-local CSRF token. Reject also requires a reason. Successful decisions append an audit event and remove the item from the open queue. Failed agent-run projections are not actionable.
+
+```text
+POST /api/needs-review/<shared-record-id>/approve
+POST /api/needs-review/<shared-record-id>/reject
+POST /api/needs-review/<shared-record-id>/resolve
+GET  /api/needs-review/<shared-record-id>/audit
+```
+
+These actions only change the injected shared repository. They do not call Notion, Outlook, Teams, Google Sheets, payment services, or existing agent storage. With the default in-memory repository, decisions and audits disappear when the dashboard restarts; treat this as a controlled local foundation, not a durable production approval system.

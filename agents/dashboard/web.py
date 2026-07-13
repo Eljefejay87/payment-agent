@@ -10,9 +10,11 @@ from urllib.parse import parse_qs, quote, urlparse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+from uuid import uuid4
 
 from .service import DashboardService
 from .shared_data import ReviewQueueFilters
+from .review_actions import ReviewActionError, ReviewConflictError
 from shared.data_layer.models import Priority, RecordType, ReviewStatus, SourceSystem
 
 
@@ -44,7 +46,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_html(render_operations_page(self.dashboard_service.snapshot()["operations"]))
             return
         if parsed.path == "/needs-review":
-            self._send_html(render_needs_review_page(self._review_items(parsed.query), parsed.query))
+            self._send_html(
+                render_needs_review_page(
+                    self._review_items(parsed.query),
+                    parsed.query,
+                    csrf_token=self.dashboard_service.review_csrf_token,
+                )
+            )
             return
         review_match = re.fullmatch(r"/operations/review/(\d+)", parsed.path)
         if review_match:
@@ -68,6 +76,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/needs-review":
             self._send_json({"items": self._review_items(parsed.query)})
+            return
+        audit_match = re.fullmatch(r"/api/needs-review/([^/]+)/audit", parsed.path)
+        if audit_match:
+            self._send_json({"events": self.dashboard_service.review_actions.audit_history(audit_match.group(1))})
             return
         review_item_match = re.fullmatch(r"/api/needs-review/([^/]+)", parsed.path)
         if review_item_match:
@@ -103,6 +115,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        review_action_match = re.fullmatch(
+            r"/api/needs-review/([^/]+)/(approve|reject|resolve)", parsed.path
+        )
+        if review_action_match:
+            self._handle_review_action(review_action_match.group(1), review_action_match.group(2))
+            return
         actions: dict[str, Callable[[], object]] = {
             "/api/payment-scan": self.dashboard_service.scan_payments,
             "/api/remit-send": self.dashboard_service.send_weekly_remit,
@@ -114,7 +133,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": result.ok, "message": result.message})
             return
 
-        parsed = urlparse(self.path)
         match = re.fullmatch(r"/operations/review/(\d+)/(save|approve|reprocess)", parsed.path)
         if not match:
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -136,6 +154,33 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             self._send_html(render_operations_review_page(report, error=result.message))
+
+    def _handle_review_action(self, record_id: str, action: str) -> None:
+        form = self._read_form()
+        if form.get("csrf_token") != self.dashboard_service.review_csrf_token:
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid review action token")
+            return
+        if form.get("confirmation") != "CONFIRM":
+            self._redirect("/needs-review?error=" + quote("Explicit confirmation is required."))
+            return
+        try:
+            result = self.dashboard_service.review_actions.apply(
+                record_id,
+                action=action,
+                reviewer=form.get("reviewer", ""),
+                reason=form.get("reason"),
+                expected_updated_at=form.get("expected_updated_at", ""),
+                request_id=form.get("request_id", ""),
+            )
+        except ReviewConflictError as exc:
+            self._redirect("/needs-review?error=" + quote(str(exc)))
+            return
+        except ReviewActionError as exc:
+            self._redirect("/needs-review?error=" + quote(str(exc)))
+            return
+        suffix = " (duplicate request; no second change)" if result.duplicate_request else ""
+        action_label = {"approve": "approved", "reject": "rejected", "resolve": "resolved"}[action]
+        self._redirect("/needs-review?message=" + quote(f"Review item {action_label}{suffix}."))
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -611,8 +656,15 @@ def _render_needs_review(shared_dashboard: dict) -> str:
     """
 
 
-def render_needs_review_page(items: list[dict], query: str = "") -> str:
+def render_needs_review_page(items: list[dict], query: str = "", *, csrf_token: str = "") -> str:
     params = {key: values[-1] for key, values in parse_qs(query).items() if values}
+    message = params.get("message")
+    error = params.get("error")
+    banner = ""
+    if message:
+        banner = f'<div class="banner ok">{_e(message)}</div>'
+    elif error:
+        banner = f'<div class="banner error">{_e(error)}</div>'
     rows = "".join(
         "<tr>"
         f"<td>{_e(item.get('title') or '')}<br><small>{_e(item.get('summary') or '')}</small></td>"
@@ -622,6 +674,7 @@ def render_needs_review_page(items: list[dict], query: str = "") -> str:
         f"<td>{_e(item.get('review_status') or '')}</td>"
         f"<td>{_e(item.get('review_reason') or '')}</td>"
         f"<td>{_e(item.get('effective_date') or '')}</td>"
+        f"<td>{_review_action_form(item, csrf_token)}</td>"
         "</tr>"
         for item in items
     ) or "<tr><td colspan='7' class='muted'>No review items match these filters.</td></tr>"
@@ -630,6 +683,7 @@ def render_needs_review_page(items: list[dict], query: str = "") -> str:
 <title>Needs Review - UCM Admin Dashboard</title><style>{CSS}</style></head>
 <body><main>
   <header class="topbar"><div><h1>Needs Review</h1><p class="detail">Read-only normalized action queue</p></div><a class="button-link secondary" href="/">Dashboard</a></header>
+  {banner}
   <section class="agent-card">
     <form class="forecast-filters" method="get" action="/needs-review">
       {_filter_select('record_type', params.get('record_type'), ['bill', 'remit', 'agent_run'], 'All record types')}
@@ -641,7 +695,7 @@ def render_needs_review_page(items: list[dict], query: str = "") -> str:
       <label><span>To</span><input type="date" name="date_to" value="{_e(params.get('date_to', ''))}"></label>
       <button type="submit">Apply filters</button>
     </form>
-    <table><thead><tr><th>Item</th><th>Type</th><th>Source</th><th>Priority</th><th>Review</th><th>Reason</th><th>Date</th></tr></thead><tbody>{rows}</tbody></table>
+    <table><thead><tr><th>Item</th><th>Type</th><th>Source</th><th>Priority</th><th>Review</th><th>Reason</th><th>Date</th><th>Controlled action</th></tr></thead><tbody>{rows}</tbody></table>
   </section>
 </main></body></html>"""
 
@@ -653,6 +707,26 @@ def _filter_select(name: str, selected: str | None, values: list[str], all_label
         for value in values
     )
     return f'<label><span>{_e(name.replace("_", " ").title())}</span><select name="{_e(name)}">{"".join(options)}</select></label>'
+
+
+def _review_action_form(item: dict, csrf_token: str) -> str:
+    if item.get("record_type") == "agent_run":
+        return "<span class='muted'>Read-only alert</span>"
+    record_id = _e(item.get("id") or "")
+    return f"""
+    <form method="post" class="review-action-form">
+      <input type="hidden" name="csrf_token" value="{_e(csrf_token)}">
+      <input type="hidden" name="expected_updated_at" value="{_e(item.get('updated_at') or '')}">
+      <input type="hidden" name="request_id" value="{uuid4()}">
+      <label><span>Reviewer</span><input name="reviewer" maxlength="100" required></label>
+      <label><span>Reason (required for reject)</span><input name="reason" maxlength="500"></label>
+      <label><input type="checkbox" name="confirmation" value="CONFIRM" required> Confirm this local review decision</label>
+      <div class="actions">
+        <button formaction="/api/needs-review/{record_id}/approve" type="submit">Approve</button>
+        <button formaction="/api/needs-review/{record_id}/resolve" class="secondary" type="submit">Resolve</button>
+        <button formaction="/api/needs-review/{record_id}/reject" class="danger" type="submit">Reject</button>
+      </div>
+    </form>"""
 
 
 def _cash_amount(value: object) -> str:
@@ -1344,6 +1418,11 @@ button.secondary, a.button-link.secondary {
   background: #e8eef2;
   color: var(--ink);
 }
+button.danger { background: #9f2f2f; }
+button.danger:hover { background: #7f1d1d; }
+.review-action-form { min-width: 260px; display: grid; gap: 8px; }
+.review-action-form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.review-action-form input[type="text"], .review-action-form input:not([type]) { width: 100%; }
 a.button-link:hover { background: var(--brand-strong); }
 button.secondary:hover, a.button-link.secondary:hover { background: #d7e1e7; }
 a.button-link.small {

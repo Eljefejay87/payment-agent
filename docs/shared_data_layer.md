@@ -104,7 +104,32 @@ Review-list filters are `record_type`, `source_system`, `priority`, `review_stat
 
 The dashboard home page includes a `Needs Review` section with unresolved, critical/high, past-due, failed-run, oldest-age, and top-item summaries. It also makes normalized upcoming bills, past-due bills, recent remits, and agent health available through the shared dashboard payload. Existing Cash Flow HQ and Operations cards are unchanged.
 
-`GET /needs-review` renders the matching read-only list view and supports the same filters without adding approval or write controls.
+`GET /needs-review` renders the matching list view and supports the same filters. The page now exposes controlled local approve, reject, and resolve actions for real shared records. Failed agent-run projections remain read-only.
+
+## Controlled Review Actions
+
+`agents/dashboard/review_actions.py` provides `ReviewActionService`. Review decisions are deliberately limited to the injected shared repository and never call Notion, Outlook, Teams, Google Sheets, payment services, or agent-specific storage.
+
+Safeguards:
+
+- a reviewer name and explicit confirmation are required;
+- rejection requires a reason;
+- a process-local CSRF token protects dashboard form submissions;
+- the submitted `updated_at` value must match the current record to prevent stale decisions;
+- unique request IDs make retries idempotent and cannot be reused for a different action;
+- approved, rejected, or resolved records cannot receive a second decision;
+- failed agent-run projections cannot be approved or resolved;
+- reviewer/reason lengths are bounded;
+- each successful transition appends an immutable `ReviewAuditEvent` containing prior/new status, reviewer, reason, request ID, and timestamps.
+
+Controlled routes are:
+
+- `POST /api/needs-review/<shared-record-id>/approve`
+- `POST /api/needs-review/<shared-record-id>/reject`
+- `POST /api/needs-review/<shared-record-id>/resolve`
+- `GET /api/needs-review/<shared-record-id>/audit`
+
+Terminal decisions remove the item from the open queue without changing agent-specific status fields or writing back to its source system. Because this phase still uses the in-memory repository, decisions and audit events do not survive a dashboard restart and are not production approvals.
 
 ### Needs Review inclusion and ordering
 
@@ -112,7 +137,7 @@ A normalized record is included when its status is `needs_review`, its review st
 
 Items sort by critical priority, high priority, past-due/failed state, then oldest creation time. Dashboard metadata is allowlisted; source-file paths, raw email bodies, credentials, tokens, and unknown metadata fields are omitted.
 
-This phase supports normalized Cash Flow HQ bills, ICR remit records, and agent-run records through dependency-injected fixture/in-memory loading. It does not migrate history, add persistent shared storage, read live Notion/Outlook/Teams data, or expose approval, rejection, update, delete, send, or payment actions.
+This phase supports normalized Cash Flow HQ bills, ICR remit records, and agent-run records through dependency-injected fixture/in-memory loading. It does not migrate history, add persistent shared storage, read live Notion/Outlook/Teams data, or expose external update, delete, send, or payment actions.
 
 ## Adapter Contracts
 
@@ -153,4 +178,4 @@ This is an operational compliance review, not legal advice.
 
 ## Next Recommended Step
 
-Add controlled human approval actions for the Needs Review queue with audit logging and strict write safeguards.
+Add durable SQLite persistence for normalized records, review decisions, and agent-run history, with explicit migration and reconciliation tooling.

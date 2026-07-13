@@ -214,6 +214,45 @@ class AgentRunRecord:
         }
 
 
+@dataclass(frozen=True)
+class ReviewAuditEvent:
+    event_id: str
+    record_id: str
+    action: str
+    reviewer: str
+    reason: str | None
+    request_id: str
+    previous_review_status: ReviewStatus
+    new_review_status: ReviewStatus
+    record_updated_at: datetime
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        for field_name in ("event_id", "record_id", "action", "reviewer", "request_id"):
+            if not getattr(self, field_name).strip():
+                raise ValueError(f"{field_name} is required.")
+        if self.action not in {"approve", "reject", "resolve"}:
+            raise ValueError("action must be approve, reject, or resolve.")
+        _validate_enum(self.previous_review_status, ReviewStatus, "previous_review_status")
+        _validate_enum(self.new_review_status, ReviewStatus, "new_review_status")
+        _validate_aware(self.record_updated_at, "record_updated_at")
+        _validate_aware(self.created_at, "created_at")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "record_id": self.record_id,
+            "action": self.action,
+            "reviewer": self.reviewer,
+            "reason": self.reason,
+            "request_id": self.request_id,
+            "previous_review_status": self.previous_review_status.value,
+            "new_review_status": self.new_review_status.value,
+            "record_updated_at": self.record_updated_at.isoformat(),
+            "created_at": self.created_at.isoformat(),
+        }
+
+
 def _validate_enum(value: object, enum_type: type[Enum], field_name: str) -> None:
     if not isinstance(value, enum_type):
         raise TypeError(f"{field_name} must be {enum_type.__name__}.")
