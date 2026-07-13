@@ -13,6 +13,7 @@ class DashboardSettings:
     log_level: str
     manager_checklist_url: str
     manager_checklist_sheet_url: str
+    logo_path: str = ""
 
 
 def load_dashboard_settings(env_file: str | None = None) -> DashboardSettings:
@@ -26,4 +27,5 @@ def load_dashboard_settings(env_file: str | None = None) -> DashboardSettings:
             "MANAGER_CHECKLIST_SHEET_URL",
             "https://docs.google.com/spreadsheets/d/1jiKKhZmqTnVRiO9Mi8UicB9xda_MNwPQrDsPNaVOWq0/edit",
         ),
+        logo_path=os.getenv("DASHBOARD_LOGO_PATH", ""),
     )

@@ -56,6 +56,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             self._send_json(self.dashboard_service.snapshot())
             return
+        if parsed.path == "/dashboard-logo":
+            self._send_dashboard_logo()
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
@@ -152,6 +155,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _send_dashboard_logo(self) -> None:
+        logo_path = Path(getattr(self.dashboard_service.dashboard_settings, "logo_path", ""))
+        if not logo_path.is_file() or logo_path.suffix.lower() != ".png":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        content = logo_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(content)
+
 
 def render_dashboard(snapshot: dict, banner: str = "") -> str:
     payment = snapshot["payment"]
@@ -220,9 +236,12 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
 <body>
   <main>
     <header class="topbar">
-      <div>
-        <h1>UCM Admin Dashboard</h1>
-        <p>Local Agent Control Center</p>
+      <div class="brand-lockup">
+        <div class="brand-logo-crop"><img src="/dashboard-logo" alt="United Capital Management"></div>
+        <div>
+          <h1>UCM Admin Dashboard</h1>
+          <p>Local Agent Control Center</p>
+        </div>
       </div>
       <button class="secondary" onclick="location.reload()">Refresh</button>
     </header>
@@ -1126,6 +1145,25 @@ main {
   gap: 16px;
   margin-bottom: 18px;
 }
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.brand-logo-crop {
+  position: relative;
+  flex: 0 0 164px;
+  width: 164px;
+  height: 82px;
+  overflow: hidden;
+}
+.brand-logo-crop img {
+  position: absolute;
+  width: 240px;
+  max-width: none;
+  height: auto;
+  transform: translate(-38px, -73px);
+}
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 30px; letter-spacing: 0; }
 .topbar p, .detail, .muted { color: var(--muted); }
@@ -1793,6 +1831,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .brand-logo-crop {
+    flex-basis: 132px;
+    width: 132px;
+    height: 66px;
+  }
+  .brand-logo-crop img {
+    width: 194px;
+    transform: translate(-31px, -59px);
   }
 }
 @media (max-width: 520px) {

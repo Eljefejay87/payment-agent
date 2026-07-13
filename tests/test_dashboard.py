@@ -144,6 +144,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Placement Agent", html)
         self.assertIn("Operations Intelligence", html)
         self.assertIn("View Full Operations Report", html)
+        self.assertIn('src="/dashboard-logo"', html)
+        self.assertIn('alt="United Capital Management"', html)
         self.assertIn('<section class="intelligence-grid">', html)
         intelligence_grid = html.split('<section class="intelligence-grid">', 1)[1].split("</section>", 1)[0]
         self.assertIn("Operations Intelligence", intelligence_grid)
