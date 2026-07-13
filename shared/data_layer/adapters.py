@@ -136,7 +136,9 @@ def normalize_cash_flow_notion_page(page: dict) -> SharedRecord:
     due_date = _notion_date(properties.get("Due Date"))
     existing_status = _notion_select(properties.get("Status"))
     due_status = _notion_formula_string(properties.get("Due Status"))
-    action_required = _notion_formula_string(properties.get("Action Required")) or None
+    action_required = _normalize_action_required(
+        _notion_formula_string(properties.get("Action Required"))
+    )
     status = CASH_FLOW_STATUS_MAP.get(existing_status.casefold(), Status.NEW)
     if status not in {Status.PAID, Status.CANCELLED}:
         if due_status.casefold().startswith("past due"):
@@ -217,6 +219,16 @@ def _notion_select(prop: dict | None) -> str:
 def _notion_formula_string(prop: dict | None) -> str:
     formula = (prop or {}).get("formula") or {}
     return str(formula.get("string") or "").strip() if formula.get("type") == "string" else ""
+
+
+def _normalize_action_required(value: str) -> str | None:
+    cleaned = value.strip()
+    normalized = cleaned.casefold()
+    if normalized in {"", "no", "none", "n/a", "not required", "no action", "false", "0", "-", "—"}:
+        return None
+    if normalized in {"yes", "true", "1"}:
+        return "Action required"
+    return cleaned
 
 
 def _notion_date(prop: dict | None) -> date | None:

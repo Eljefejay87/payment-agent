@@ -132,6 +132,8 @@ The plan reports `create`, `update`, `skip`, `conflict`, and `error` counts plus
 
 Apply is blocked as a whole when any source record fails normalization, duplicate source identities appear, or source-owned fields changed after an approved/rejected/resolved human decision. Unchanged terminal decisions are preserved and skipped. Repeated syncs are idempotent.
 
+Cash Flow HQ `Action Required` formula values are interpreted semantically: `No`, blank, false, none, and equivalent negative values mean no action; `Yes` becomes `Action required`; specific instruction text is preserved. This prevents negative formula results from entering the Needs Review queue.
+
 ## Read-Only Dashboard Service
 
 `agents/dashboard/shared_data.py` provides `ReadOnlyDashboardDataService`. It accepts the storage-agnostic repository interface and exposes record/status counts, action and review records, upcoming and past-due bills, recent remits, recent/failed agent runs, source-system queries, date-range queries, and Decimal-safe financial aggregates.

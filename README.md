@@ -1050,3 +1050,5 @@ python main.py shared-data-sync --source all --apply --confirm APPLY_SHARED_SYNC
 ```
 
 Apply is all-or-nothing at the plan level: source errors or human-review conflicts block every create/update. Approved, rejected, and resolved decisions are preserved. Repeated runs skip unchanged records.
+
+Cash Flow HQ `Action Required = No` and equivalent negative values do not enter Needs Review. `Yes` becomes a clear action, while specific formula instructions remain unchanged.

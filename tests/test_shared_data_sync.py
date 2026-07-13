@@ -39,6 +39,30 @@ class SharedDataSyncTests(unittest.TestCase):
         self.assertEqual(record.review_status, ReviewStatus.PENDING)
         self.assertEqual(record.metadata["vendor"], "Phone Vendor")
 
+    def test_cash_flow_notion_adapter_treats_no_as_no_action(self) -> None:
+        record = normalize_cash_flow_notion_page(
+            notion_page(status="Upcoming", action_required="No")
+        )
+
+        self.assertIsNone(record.action_required)
+        self.assertEqual(record.review_status, ReviewStatus.NOT_REQUIRED)
+        self.assertEqual(record.priority.value, "normal")
+
+    def test_cash_flow_notion_adapter_normalizes_yes_to_clear_action(self) -> None:
+        record = normalize_cash_flow_notion_page(
+            notion_page(status="Upcoming", action_required="Yes")
+        )
+
+        self.assertEqual(record.action_required, "Action required")
+        self.assertEqual(record.review_status, ReviewStatus.PENDING)
+
+    def test_cash_flow_notion_adapter_preserves_specific_action_text(self) -> None:
+        record = normalize_cash_flow_notion_page(
+            notion_page(status="Upcoming", action_required="Confirm invoice amount")
+        )
+
+        self.assertEqual(record.action_required, "Confirm invoice amount")
+
     def test_dry_run_plans_create_without_writing(self) -> None:
         plan = self.service.plan([self.record])
 
@@ -135,7 +159,12 @@ class SharedDataSyncTests(unittest.TestCase):
         self.assertEqual(loaded.records[0].status.value, "completed")
 
 
-def notion_page(*, page_id: str = "page-1") -> dict:
+def notion_page(
+    *,
+    page_id: str = "page-1",
+    status: str = "Needs Review",
+    action_required: str = "Confirm amount",
+) -> dict:
     return {
         "id": page_id,
         "url": f"https://notion.so/{page_id}",
@@ -146,9 +175,9 @@ def notion_page(*, page_id: str = "page-1") -> dict:
             "Vendor / Payee": {"rich_text": [{"plain_text": "Phone Vendor"}]},
             "Amount": {"number": 125.5},
             "Due Date": {"date": {"start": "2026-07-15"}},
-            "Status": {"select": {"name": "Needs Review"}},
+            "Status": {"select": {"name": status}},
             "Due Status": {"formula": {"type": "string", "string": "Due Soon"}},
-            "Action Required": {"formula": {"type": "string", "string": "Confirm amount"}},
+            "Action Required": {"formula": {"type": "string", "string": action_required}},
             "Payment Type": {"select": {"name": "Auto Pay"}},
             "Category": {"select": {"name": "Phone"}},
             "Source": {"select": {"name": "Email"}},

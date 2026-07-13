@@ -10,7 +10,7 @@ The local UCM Admin Dashboard V1 has been added for browser-based agent status a
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: 63 focused dashboard/shared/review/SQLite/sync/ICR tests and all 181 repository tests pass.
+Automated verification is passing: all 184 repository tests pass, including focused Action Required normalization coverage.
 
 ## Completed Work
 
@@ -104,12 +104,13 @@ Automated verification is passing: 63 focused dashboard/shared/review/SQLite/syn
 - Added explicit `shared-data-sync` dry-run/apply reconciliation for Cash Flow HQ Notion pages and existing ICR import history. Dry-run is the default; apply requires `--apply --confirm APPLY_SHARED_SYNC`, writes only shared SQLite, is idempotent, preserves terminal human decisions, and blocks the entire apply on source errors or review conflicts.
 - Ran live read-only previews with zero writes: Cash Flow HQ produced 9 creates, 0 updates/conflicts/errors; ICR history produced 1 create, 0 updates/conflicts/errors. The database remained empty until explicit authorization was received.
 - Applied the owner-authorized 10-record shared-data import in one transaction: 9 Cash Flow HQ Notion bills and 1 ICR remit history record. Post-import integrity and foreign-key checks pass, duplicate groups remain zero, and an immediate second dry-run returned 10 skips with 0 creates, updates, conflicts, or errors.
+- Corrected Cash Flow HQ Action Required normalization after dashboard verification showed `No` values entering the queue. Negative values now mean no action, `Yes` becomes `Action required`, and specific instructions are preserved. Applied 9 reconciled record updates; the queue now contains 4 genuine unresolved items, and the follow-up dry-run returned 10 skips with no conflicts or errors.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The durable shared database contains 10 reconciled source records. The first controlled import and idempotency verification are complete.
+The durable shared database contains 10 reconciled source records. Needs Review now contains 4 genuine unresolved records after correcting the Action Required Yes/No interpretation.
 
 ## Next Recommended Task
 
