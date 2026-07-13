@@ -107,12 +107,13 @@ Automated verification is passing: all 186 repository tests pass, including sche
 - Corrected Cash Flow HQ Action Required normalization after dashboard verification showed `No` values entering the queue. Negative values now mean no action, `Yes` becomes `Action required`, and specific instructions are preserved. Applied 9 reconciled record updates; the queue now contains 4 genuine unresolved items, and the follow-up dry-run returned 10 skips with no conflicts or errors.
 - Added scheduled shared-data synchronization with configurable interval/source/limit, run-at-start behavior, durable success/failure agent-run history, dashboard health reporting, a confirmed manual Sync Now action, and independent macOS LaunchAgent install/status/uninstall helpers. Sync continues to write only shared SQLite and remains all-or-nothing on conflicts or source errors.
 - Live scheduled-style verification completed successfully: 10 records found, 10 unchanged skips, 0 creates/updates/conflicts/errors, and the completed run was persisted in shared agent-run history for dashboard health display.
+- Copied the scheduled-sync runtime and valid `com.ucm.shared-data-sync` plist into the durable macOS locations. The worker runs successfully from that runtime, but launchd activation from the Codex sandbox returned `Bootstrap failed: 5: Input/output error`; run `scripts/install_shared_data_agent.sh` once from a normal Terminal session to complete registration.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
 
 ## Current Task
 
-The durable shared database contains 10 reconciled source records and the scheduled synchronization worker is ready for live installation. Needs Review contains 4 genuine unresolved records.
+The durable shared database contains 10 reconciled source records. Scheduled sync code, runtime, plist, run history, and dashboard health are ready; only launchd registration remains. Needs Review contains 4 genuine unresolved records.
 
 ## Next Recommended Task
 
