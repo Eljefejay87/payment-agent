@@ -143,9 +143,35 @@ VOICEMAIL_MAILBOX_USER_ID=voicemail@example.com
 VOICEMAIL_SENDER_EMAIL=voicemail@vaspian.com
 VOICEMAIL_SUBJECT_CONTAINS=voicemail
 VOICEMAIL_LOOKBACK_HOURS=48
+VOICEMAIL_STATUS_PATH=~/Library/Application Support/UCM/payment-agent/voicemail_status.json
+VOICEMAIL_RUNTIME_STATE_PATH=~/Library/Application Support/UCM/payment-agent/voicemail_runtime_state.json
+VOICEMAIL_HEALTH_PATH=~/Library/Application Support/UCM/payment-agent/voicemail_health.json
+VOICEMAIL_SCAN_INTERVAL_MINUTES=15
+VOICEMAIL_SUMMARY_TIME=08:50
 ```
 
-The voicemail agent uses Outlook message ID / internet message ID as the source identifier for duplicate protection in the next phase. Duplicate protection and Google Sheet appending will be added in Phase 2.
+Each normal live scan atomically replaces this small local status snapshot with
+timestamps, outcome, record/callback counts, and a non-sensitive error summary.
+It stores no voicemail audio, transcript, phone number, account number, message
+identifier, or debtor data. Phase 1 has no callback-resolution workflow, so the
+pending callback count is the number of voicemail records found by the latest
+successful scan.
+
+The voicemail agent uses Outlook message ID / internet message ID as the source identifier for duplicate protection. The runtime state file stores processed voicemail IDs, the last successful scan timestamp, pending callback IDs, callback completion status, and the last Teams-summary guard date so redeploys cannot reprocess the same Outlook voicemail. Phase 1 still does not write to Google Sheets, move emails, delete emails, contact consumers, or add SCollect integration.
+
+Check voicemail health:
+
+```bash
+python main.py voicemail-health
+```
+
+Run the long-lived Railway-ready worker locally:
+
+```bash
+python main.py voicemail-run
+```
+
+The Railway-only start helper is `scripts/railway_voicemail_tracker_start.sh`, with matching deployment config in `railway.voicemail.json`. For Railway, mount a persistent volume at `/data` and use the voicemail variables in `.env.railway.example`. The existing weekday Teams summary time remains `08:50` via `VOICEMAIL_SUMMARY_TIME`; this readiness pass does not add or change Teams posting behavior.
 
 ## Files
 
@@ -538,6 +564,45 @@ REPORT_MODE=daily
 - `daily`
 - `realtime`
 - `both`
+
+## Railway Cloud Deployment Preparation
+
+The Payment Agent can be run on Railway with the existing business behavior preserved. The Railway start command is:
+
+```bash
+scripts/railway_payment_agent_start.sh
+```
+
+That script runs `python main.py init-db` and then `python main.py run`.
+
+Railway-specific files:
+
+- `Dockerfile`
+- `railway.json`
+- `.dockerignore`
+- `.env.railway.example`
+- `scripts/railway_payment_agent_start.sh`
+- `docs/payment_agent_railway.md`
+
+Use a Railway volume mounted at `/data` and set:
+
+```dotenv
+DATABASE_PATH=/data/payment_agent.sqlite3
+PAYMENT_AGENT_HEALTH_PATH=/data/payment_agent_health.json
+LOG_FORMAT=json
+```
+
+The Payment Agent health check is available with:
+
+```bash
+python main.py health
+```
+
+Outlook mailbox scanning can run unattended in Railway with the existing app-only Microsoft Graph credentials. The email app registration needs application `Mail.Read` and `Mail.ReadWrite` with admin consent.
+
+Teams `graph_chat` posting uses delegated Microsoft Graph auth and needs a persistent token cache at `TEAMS_GRAPH_TOKEN_CACHE_PATH`, such as `/data/.graph_teams_token_cache.bin`. If delegated Teams refresh is not reliable in Railway, use `TEAMS_POST_METHOD=webhook` for unattended posting or plan a later channel/app-only notification design.
+
+See `docs/payment_agent_railway.md` for the complete Railway variable list, auth notes, local safe-validation steps, and deployment checklist.
 
 ## Scheduler Options
 

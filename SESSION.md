@@ -8,9 +8,11 @@ The Weekly Remit Agent V1 supports ICR weekly remit delivery, file archiving, du
 
 The local UCM Admin Dashboard V1 has been added for browser-based agent status and simple owner actions.
 
+The Payment Agent repository is prepared for Railway deployment, pending Railway service setup, a persistent volume, and final Microsoft auth confirmation.
+
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 189 repository tests pass after the SCollect rule correction.
+Automated verification is passing: all 226 repository tests pass, including the Voicemail status persistence and Chief of Staff adapter tests.
 
 ## Completed Work
 
@@ -116,14 +118,30 @@ Automated verification is passing: all 189 repository tests pass after the SColl
 - Improved dashboard readability without changing data or actions: Cash Flow Forecast and Needs Review now use separate full-width sections, the main canvas is wider, cards have more breathing room and clearer hierarchy, tables are easier to scan, and keyboard focus is more visible. Dashboard-focused tests pass.
 - Documented the current agent data flows, identifiers, duplicate controls, status mappings, dashboard dependencies, and external/not-found Attendance and Manager Monitoring systems in `docs/shared_data_layer.md`.
 - Verified Python `3.9.6` is linked to `LibreSSL 2.8.3`; tests pass despite the `urllib3` compatibility warning.
+- Added the local, read-only Chief of Staff Phase 1 scaffold under `agents/chief_of_staff/`. The static registry inventories eight local components plus the external/not-found Attendance Tracker and Manager Monitoring systems. `python main.py chief-of-staff status` performs no agent actions, configuration loading, network calls, or production writes. The audit is documented in `docs/chief_of_staff_inventory.md` with focused tests in `tests/test_chief_of_staff.py`.
+- Verified the Chief of Staff command directly, ran its 2 focused tests, and ran the full 211-test repository suite successfully. The existing Python 3.9/LibreSSL `urllib3` warning remains unchanged.
+- Added side-effect-free `get_status()` adapters for Cash Flow HQ and Voicemail Tracker. Both use a typed four-field status contract. Cash Flow reads existing normalized bill metrics and shared-sync history through a SQLite `mode=ro`/`query_only` source; Voicemail reports unavailable run/callback data without scanning Outlook or inventing metrics. The existing `chief-of-staff status` command now aggregates both results above the unchanged inventory.
+- Verified all 7 focused Chief of Staff tests, including aggregation output and a byte-for-byte database immutability check, and the full 216-test offline repository suite. The local status command reports current persisted values without executing either agent.
+- Added the smallest Voicemail Tracker status persistence layer: an atomic, private JSON snapshot written only when the existing live `voicemail-scan-once` workflow succeeds or raises a caught error. It stores attempted/success timestamps, outcome, latest-scan callback/record counts, and a generic non-sensitive error message only. Chief of Staff reads the file without side effects and reports `Not Yet Run`, `Healthy`, or `Error` without triggering a scan.
+- Verified 20 focused Voicemail/Chief of Staff tests and the full 226-test offline repository suite. Coverage includes missing/corrupt state, success/failure snapshots, pending counts, atomic replacement failure, sensitive-data exclusion, read-only status access, sample-mode isolation, status-write failure containment, and proof that status does not trigger a scan.
+- Prepared Payment Agent for Railway cloud deployment without changing payment parsing, scanning, database duplicate protection, Teams formatting, or cleanup business behavior.
+- Added Railway packaging files: `Dockerfile`, `railway.json`, `.dockerignore`, `.env.railway.example`, and `scripts/railway_payment_agent_start.sh`.
+- Added `python main.py health` and a private JSON Payment Agent health file with status, last successful run, and last error.
+- Added structured JSON logging support via `LOG_FORMAT=json` while keeping local text logs as the default.
+- Added graceful shutdown support to the shared scheduler and Payment Agent runner.
+- Added bounded retry wrappers for long-running Payment Agent jobs and transient Microsoft Graph request failures.
+- Documented Railway environment variables, persistent `/data` volume requirements, Microsoft Graph permissions, and Teams delegated-token limitations in `docs/payment_agent_railway.md`.
+- Verified Railway prep with 17 focused Payment Agent tests, the full 228-test repository suite, a compile check using a sandbox-safe bytecode cache, and two safe local Railway-entrypoint restart cycles with live scanning disabled.
+- Prepared the Voicemail Tracker Agent for future Railway deployment only, without deploying or changing production behavior. Added durable runtime state for processed voicemail IDs, last successful scan, pending callbacks, callback completion status, and future Teams summary guard data; added `DRY_RUN`, `voicemail-health`, `voicemail-run`, `/data` Railway placeholders, `railway.voicemail.json`, and `scripts/railway_voicemail_tracker_start.sh`.
+- Added restart-safety coverage proving repeated Outlook voicemail IDs are skipped across agent instances and within a single scan. Focused Voicemail tests pass locally.
 
 ## Current Task
 
-The dashboard layout refinement is complete and remains read-only. The durable shared database and all agent behavior are unchanged.
+Voicemail Tracker Railway readiness is prepared locally. No deployment has been performed and the existing Payment Agent Railway configuration remains unchanged.
 
 ## Next Recommended Task
 
-Collect and configure the missing UCM cash-flow business data, then connect it to the existing read-only Cash Flow HQ dashboard calculations.
+Review `docs/voicemail_tracker_railway.md`, create a separate Railway service when ready, attach a persistent `/data` volume, add the documented environment variables, and run with `DRY_RUN=true` before considering live behavior.
 
 ## Known Issues
 
@@ -133,6 +151,11 @@ Collect and configure the missing UCM cash-flow business data, then connect it t
 - The scheduler currently uses the lightweight `schedule` package; `APScheduler` is recommended for stronger production scheduling later.
 - Database migrations are not yet formalized.
 - Weekly Remit Agent requires Microsoft Graph `Mail.Send` application permission before live broker email sending will work.
+- Railway deployment is not complete until a persistent `/data` volume is attached. Without it, SQLite duplicate history and delegated Teams token cache can be lost on redeploy.
+- Outlook mailbox scanning can run unattended in Railway with app-only Microsoft Graph credentials, but cleanup requires application `Mail.ReadWrite` in addition to `Mail.Read`.
+- Teams `graph_chat` posting remains delegated and needs a persistent `TEAMS_GRAPH_TOKEN_CACHE_PATH` plus an initial Teams tenant sign-in. Use webhook posting if unattended delegated refresh is not reliable in Railway.
+- Voicemail Tracker Railway deployment is blocked until a Railway service and persistent `/data` volume are created and Microsoft Graph variables are configured.
+- The current Voicemail Tracker Phase 1 does not implement actual Teams summary posting; this Railway pass preserves the configured weekday `08:50` slot and does not add Teams behavior.
 - Old macOS LaunchAgent failed with a permission error reading `.venv/pyvenv.cfg` under `Documents`; fixed installer now uses an Application Support runtime copy.
 - Codex sandbox cannot bind the local dashboard port, so live LAN reachability must be verified from the Mac after starting `Start UCM Dashboard.command` or `python main.py dashboard`.
 - Tailscale URL may show `Unavailable` if the local Tailscale CLI is not running or cannot return an IPv4 address.
