@@ -11,10 +11,13 @@ from unittest.mock import patch
 from agents.payment_agent.config import load_settings, validate_settings
 from agents.payment_agent.database import PaymentDatabase
 from agents.payment_agent.graph_client import is_payment_subject
+from agents.payment_agent.health import PaymentAgentHealth
 from agents.payment_agent.models import PaymentRecord
 from agents.payment_agent.parser import cents_to_currency, parse_payment_email
 from agents.payment_agent.reports import build_daily_report, build_realtime_alert
 from agents.payment_agent.service import PaymentAgent
+from agents.payment_agent.main import run_with_retry
+from shared.integrations.microsoft_graph import GraphAuthenticationError
 
 
 class PaymentParserTests(unittest.TestCase):
@@ -155,6 +158,89 @@ class PaymentConfigTests(unittest.TestCase):
         self.assertIn("MAILBOX_USER_ID is required.", errors)
         self.assertIn("SENDER_EMAIL is required.", errors)
         self.assertIn("MS_GRAPH_TENANT_ID is required.", errors)
+
+    def test_cloud_runtime_config_values_are_loaded_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health_path = Path(temp_dir) / "health.json"
+            env = {
+                "DRY_RUN": "true",
+                "PAYMENT_AGENT_HEALTH_PATH": str(health_path),
+                "PAYMENT_AGENT_RUN_STARTUP_SCAN": "false",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                settings = load_settings(env_file="/tmp/ucm-payment-agent-test-cloud.env")
+
+        self.assertEqual(settings.health_path, health_path)
+        self.assertFalse(settings.run_startup_scan)
+
+
+class PaymentHealthTests(unittest.TestCase):
+    def test_health_file_tracks_success_and_errors_without_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health = PaymentAgentHealth(Path(temp_dir) / "health.json")
+
+            health.mark_starting()
+            health.mark_success("scan_once")
+            health.mark_error("scan_once", RuntimeError("temporary graph failure with token-value"))
+            payload = health.read()
+
+        self.assertEqual(payload["service"], "payment_agent")
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["last_successful_job"], "scan_once")
+        self.assertEqual(payload["last_failed_job"], "scan_once")
+        self.assertEqual(payload["last_error"], "RuntimeError: job failed.")
+        self.assertNotIn("token-value", payload["last_error"])
+
+    def test_graph_authentication_failure_reports_running_service_and_attention(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health = PaymentAgentHealth(Path(temp_dir) / "health.json")
+            health.mark_running()
+            health.mark_graph_authentication_error("scan_once")
+            payload = health.read()
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["service_status"], "running")
+        self.assertEqual(payload["graph_status"], "unavailable")
+        self.assertTrue(payload["attention_required"])
+        self.assertEqual(
+            payload["attention_message"],
+            "Microsoft Graph authentication requires attention.",
+        )
+
+    def test_graph_authentication_failure_does_not_escape_scheduled_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health = PaymentAgentHealth(Path(temp_dir) / "health.json")
+            attempts = 0
+
+            def graph_failure() -> None:
+                nonlocal attempts
+                attempts += 1
+                raise GraphAuthenticationError("token-value")
+
+            run_with_retry(
+                "scan_once",
+                graph_failure,
+                health,
+            )
+            payload = health.read()
+
+        self.assertEqual(attempts, 1)
+        self.assertEqual(payload["graph_status"], "unavailable")
+        self.assertNotIn("token-value", payload["last_error"])
+
+    def test_health_persistence_failure_does_not_escape_scheduled_job(self) -> None:
+        class BrokenHealth:
+            def mark_graph_authentication_error(self, _job_name: str) -> None:
+                raise OSError("storage unavailable")
+
+            def mark_error(self, _job_name: str, _error: Exception) -> None:
+                raise OSError("storage unavailable")
+
+        run_with_retry(
+            "scan_once",
+            lambda: (_ for _ in ()).throw(GraphAuthenticationError("token-value")),
+            BrokenHealth(),  # type: ignore[arg-type]
+        )
 
 
 class PaymentReportTests(unittest.TestCase):

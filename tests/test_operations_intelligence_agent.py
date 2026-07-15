@@ -54,6 +54,22 @@ class OperationsOcrTests(unittest.TestCase):
         self.assertIn("accounts_worked", report.missing_fields)
         self.assertTrue(report.needs_manual_review)
 
+    def test_accounts_label_counts_as_accounts_worked(self) -> None:
+        extractor = FakeExtractor(
+            """
+            Accounts: 101
+            Attempts: 604
+            Live Contacts: 7
+            Contact Rate: 1.16%
+            """
+        )
+
+        report = extractor.extract(Path("sample.png"), "2026-07-13", "hash-1")
+
+        self.assertEqual(report.metric_value("accounts_worked"), 101)
+        self.assertEqual(report.metric_value("attempts"), 604)
+        self.assertEqual(report.metric_value("contact_rate"), 1.16)
+
     def test_required_fields_from_region_ocr_pass_quality_gate(self) -> None:
         extractor = RegionFakeExtractor(
             {

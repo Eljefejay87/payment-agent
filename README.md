@@ -473,6 +473,46 @@ Important flags:
 
 The command uses the existing Cash Flow HQ Notion settings: `NOTION_API_KEY`, `CASH_FLOW_HQ_PARENT_PAGE_ID`, `CASH_FLOW_HQ_DATABASE_NAME`, and `NOTION_VERSION`. The API key and parent page ID must be configured; the database name and Notion version have the defaults shown in the Cash Flow HQ configuration section. A live import also requires the Weekly Remit Microsoft Graph and broker settings validated by the application, including `MAILBOX_USER_ID`, `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET`, `REMIT_BROKER_NAME`, and `REMIT_BROKER_EMAIL`. If owner Teams updates remain enabled, the existing `REMIT_OWNER_TEAMS_CHAT_ID` and `TEAMS_GRAPH_*` settings are also required. The Graph application needs permission to create the mailbox draft and attach the export.
 
+## Chargeback Tracker Phase 1
+
+The existing shared `United Charge Back Tracker` Google Sheet remains the official source of truth. The importer reads `.csv`, `.xlsx`, `.png`, `.jpg`, and `.jpeg` reports, preserves financial values as extracted, uses the existing Account ID + Chargeback Date + Amount duplicate match, and appends new rows only.
+
+Imports populate only Account ID, Consumer Name, Chargeback Date, Amount, Client Name, Due Client, and Notes when manual review is necessary. Collector Name, Bonus Paid, Date Recon w/ Agent, and Date Recon w/ Client remain blank. No Source column is used. Client Name defaults to `NDH`; a case-insensitive `NOT US` marker on that record maps Client Name to `ICR`, and the marker is removed from imported data. One report may contain both clients. `--source NDH` or `--source Jim` remains available as an explicit full-file override; `Jim` maps to Client Name `ICR` for compatibility.
+
+Screenshot OCR reuses the project's Tesseract execution pattern. One screenshot may produce multiple rows, including separate chargebacks for the same consumer. Configure `CHARGEBACK_OCR_COMMAND` if Tesseract is not on `PATH`; `CHARGEBACK_OCR_MIN_CONFIDENCE` defaults to `0.80`. Any field below that threshold is left blank and Notes identifies the record for manual review. OCR never determines Collector Name or recalculates Amount or Due Client.
+
+The production spreadsheet and worksheet are pinned to the existing artifact:
+
+```dotenv
+CHARGEBACK_SPREADSHEET_ID=1i89CMRBpbi_hEi6GCGtYne7Y6q_e8GgJbREVET0njuU
+CHARGEBACK_SHEET_NAME=Sample_Chargeback_Tracker
+CHARGEBACK_GOOGLE_SERVICE_ACCOUNT_FILE=/absolute/path/to/google-service-account.json
+CHARGEBACK_OCR_COMMAND=tesseract
+CHARGEBACK_OCR_MIN_CONFIDENCE=0.80
+```
+
+`CHARGEBACK_GOOGLE_SERVICE_ACCOUNT_FILE` must point to the existing Google service-account JSON file. Do not copy the credential into the repository. Share the existing `United Charge Back Tracker` spreadsheet with that service-account email as an editor. The integration uses the existing `google-auth` service-account flow with the narrow Sheets and Drive metadata scopes.
+
+Verify authentication, the exact spreadsheet and worksheet, and append capability without reading row data or performing a write:
+
+```bash
+python main.py chargeback-verify-connection
+```
+
+The verification command calls Google Sheets metadata to open the spreadsheet and locate the worksheet, then checks the service account's Drive `canEdit` and `canModifyContent` capabilities. It never appends, inserts, updates, or deletes cells or rows.
+
+After connection verification succeeds, preview is the default for report imports:
+
+```bash
+python main.py chargeback-import --file "path/to/chargebacks.csv"
+```
+
+After reviewing the counts, explicitly append new records:
+
+```bash
+python main.py chargeback-import --file "path/to/chargebacks.csv" --apply --confirm APPEND_CHARGEBACKS
+```
+
 ## UCM Admin Dashboard
 
 The local UCM Admin Dashboard gives you one browser page for the current and future UCM agents.

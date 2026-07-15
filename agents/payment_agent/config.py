@@ -35,6 +35,8 @@ class Settings:
     teams_channel_id: str
     save_email_html: bool
     email_snapshot_dir: Path
+    health_path: Path
+    run_startup_scan: bool
 
     @property
     def realtime_enabled(self) -> bool:
@@ -74,6 +76,8 @@ def load_settings(env_file: str | None = None) -> Settings:
         teams_channel_id=os.getenv("TEAMS_CHANNEL_ID", ""),
         save_email_html=get_bool("SAVE_EMAIL_HTML", False),
         email_snapshot_dir=Path(os.getenv("EMAIL_SNAPSHOT_DIR", "email_snapshots")),
+        health_path=Path(os.getenv("PAYMENT_AGENT_HEALTH_PATH", "payment_agent_health.json")),
+        run_startup_scan=get_bool("PAYMENT_AGENT_RUN_STARTUP_SCAN", True),
     )
 
 

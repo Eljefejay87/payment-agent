@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import signal
 import sys
+import time
+from collections.abc import Callable
 from typing import Any
 
 from shared.logging import configure_logging
 from shared.scheduler import AgentScheduler
+from shared.integrations.microsoft_graph import GraphAuthenticationError
 
 from .config import Settings, load_settings, validate_settings
 from .database import PaymentDatabase
+from .health import PaymentAgentHealth
 
 
 def main() -> int:
@@ -21,6 +27,7 @@ def main() -> int:
             "scan-once",
             "send-daily-report",
             "run",
+            "health",
             "debug-mail-search",
             "debug-teams-message",
             "debug-list-teams-chats",
@@ -32,6 +39,10 @@ def main() -> int:
 
     settings = load_settings(args.env_file)
     configure_logging(settings.log_level)
+
+    if args.command == "health":
+        print(json.dumps(PaymentAgentHealth(settings.health_path).read(), indent=2, sort_keys=True))
+        return 0
 
     if args.command == "init-db":
         PaymentDatabase(settings.database_path).initialize()
@@ -102,20 +113,92 @@ def main() -> int:
 
     if args.command == "run":
         scheduler = AgentScheduler()
+        health = PaymentAgentHealth(settings.health_path)
+        health.mark_starting()
         agent.initialize()
+        health.mark_running()
         logging.info(
             "Payment Agent running. Scan every %s minute(s); daily report at %s; dry_run=%s",
             settings.scan_interval_minutes,
             settings.daily_report_time,
             settings.dry_run,
         )
-        scheduler.every_minutes(settings.scan_interval_minutes, agent.scan_once)
+
+        def stop_agent(signum: int, _frame: Any) -> None:
+            logging.info("Payment Agent shutdown requested by signal %s", signum)
+            scheduler.stop()
+
+        signal.signal(signal.SIGTERM, stop_agent)
+        signal.signal(signal.SIGINT, stop_agent)
+
+        scan_job = lambda: run_with_retry("scan_once", agent.scan_once, health)
+        daily_report_job = lambda: run_with_retry(
+            "send_daily_report",
+            agent.send_daily_report,
+            health,
+        )
+
+        scheduler.every_minutes(settings.scan_interval_minutes, scan_job)
         if settings.daily_enabled:
-            scheduler.every_day_at(settings.daily_report_time, agent.send_daily_report)
-        agent.scan_once()
-        scheduler.run_forever()
+            scheduler.every_day_at(settings.daily_report_time, daily_report_job)
+        if settings.run_startup_scan:
+            scan_job()
+        else:
+            logging.info("Startup scan skipped by PAYMENT_AGENT_RUN_STARTUP_SCAN=false")
+        try:
+            scheduler.run_forever()
+        finally:
+            health.mark_stopped()
 
     return 0
+
+
+def run_with_retry(
+    job_name: str,
+    job: Callable[[], object],
+    health: PaymentAgentHealth,
+    attempts: int = 3,
+    base_delay_seconds: int = 5,
+) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            job()
+            health.mark_success(job_name)
+            return
+        except Exception as exc:
+            _record_job_failure(health, job_name, exc)
+            if isinstance(exc, GraphAuthenticationError):
+                logging.warning(
+                    "%s is unavailable because Microsoft Graph authentication requires attention; waiting for the next scheduled run.",
+                    job_name,
+                )
+                return
+            if attempt >= attempts:
+                logging.error("%s failed after %s attempt(s); the service remains running.", job_name, attempt)
+                return
+            delay = base_delay_seconds * attempt
+            logging.warning(
+                "%s failed on attempt %s/%s; retrying in %s second(s).",
+                job_name,
+                attempt,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
+
+
+def _record_job_failure(
+    health: PaymentAgentHealth,
+    job_name: str,
+    error: Exception,
+) -> None:
+    try:
+        if isinstance(error, GraphAuthenticationError):
+            health.mark_graph_authentication_error(job_name)
+        else:
+            health.mark_error(job_name, error)
+    except Exception:
+        logging.error("Could not persist the Payment Agent failure status for %s.", job_name)
 
 
 def debug_mail_search(settings: Settings, graph: Any) -> int:

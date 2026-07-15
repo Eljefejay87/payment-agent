@@ -17,7 +17,7 @@ from .models import METRIC_FIELDS, MetricValue, ExtractedReport
 LOGGER = logging.getLogger(__name__)
 
 LABELS: dict[str, tuple[str, ...]] = {
-    "accounts_worked": ("accounts worked", "acct worked", "worked"),
+    "accounts_worked": ("accounts worked", "accounts", "acct worked", "worked"),
     "attempts": ("attempts", "attempt"),
     "rpc": ("rpc", "right party contacts"),
     "contact_rate": ("contact rate", "contact %"),
@@ -177,11 +177,18 @@ class ScreenshotOcrExtractor:
         modes = ("6", "11", "12") if region_name != "whiteboard" else ("6", "11")
         best_text = ""
         best_confidence = -1.0
+        results: list[tuple[str, float]] = []
         for mode in modes:
             text, confidence = self._run_tesseract(image_path, output_base.with_name(f"{output_base.name}-psm{mode}"), mode)
+            results.append((text, confidence))
             if confidence > best_confidence or (confidence == best_confidence and len(text) > len(best_text)):
                 best_text = text
                 best_confidence = confidence
+        if region_name in {"overview_cards", "activity_section", "performance_section"}:
+            numeric_text, numeric_confidence = max(results, key=lambda item: len(NUMBER_RE.findall(item[0])))
+            if len(NUMBER_RE.findall(numeric_text)) > len(NUMBER_RE.findall(best_text)):
+                best_text = f"{best_text}\n{numeric_text}".strip()
+                best_confidence = max(best_confidence, numeric_confidence)
         return best_text, max(best_confidence, 0.0)
 
     def _run_tesseract(self, image_path: Path, output_base: Path, page_segmentation_mode: str) -> tuple[str, float]:
@@ -354,12 +361,41 @@ class ScreenshotOcrExtractor:
             return round(value, 2)
         return int(value)
 
+    def _parse_overview_value_row(self, region: OcrRegion) -> dict[str, MetricValue]:
+        parsed: dict[str, MetricValue] = {}
+        for line in region.text.splitlines():
+            values = NUMBER_RE.findall(line)
+            if len(values) < 4:
+                continue
+            accounts = self._parse_value(values[0], "accounts_worked")
+            attempts = self._parse_value(values[1], "attempts")
+            contact_index = next((index for index, value in enumerate(values[2:], start=2) if "%" in value), None)
+            contact_rate = self._parse_value(values[contact_index], "contact_rate") if contact_index is not None else None
+            close_rate = self._parse_value(values[contact_index + 1], "close_rate") if contact_index is not None and len(values) > contact_index + 1 else None
+            dollars_per_contact = self._parse_value(values[contact_index + 2], "dollars_per_contact") if contact_index is not None and len(values) > contact_index + 2 else None
+            rpc = self._parse_value(values[2], "rpc") if contact_index == 3 else None
+            if accounts is not None:
+                parsed["accounts_worked"] = MetricValue(accounts, f"{region.name} values: {values[0]}", region.confidence)
+            if attempts is not None:
+                parsed["attempts"] = MetricValue(attempts, f"{region.name} values: {values[1]}", region.confidence)
+            if rpc is not None:
+                parsed["rpc"] = MetricValue(rpc, f"{region.name} values: {values[2]}", region.confidence)
+            if contact_rate is not None:
+                parsed["contact_rate"] = MetricValue(contact_rate, f"{region.name} values: {values[contact_index]}", region.confidence)
+            if close_rate is not None:
+                parsed["close_rate"] = MetricValue(close_rate, f"{region.name} values: {values[contact_index + 1]}", region.confidence)
+            if dollars_per_contact is not None:
+                parsed["dollars_per_contact"] = MetricValue(dollars_per_contact, f"{region.name} values: {values[contact_index + 2]}", region.confidence)
+            if parsed:
+                return parsed
+        return parsed
+
     def _apply_region_metrics(self, metrics: dict[str, MetricValue], region: OcrRegion) -> None:
         lines = [line.strip() for line in region.text.splitlines() if line.strip()]
         region_metrics: dict[str, MetricValue] = {}
         if region.name == "overview_cards":
             fields = ("accounts_worked", "attempts", "rpc", "contact_rate", "close_rate", "dollars_per_contact")
-            region_metrics.update(self._parse_sequence(region, fields))
+            region_metrics.update(self._parse_overview_value_row(region) or self._parse_sequence(region, fields))
         elif region.name == "activity_section":
             fields = ("activated", "moved_to_hot", "live_contacts", "no_answer", "left_message", "average_agent")
             region_metrics.update(self._parse_sequence(region, fields))

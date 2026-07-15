@@ -1,5 +1,7 @@
 msal==1.30.0
 python-dotenv==1.0.1
 requests==2.32.3
+google-auth==2.35.0
 schedule==1.2.2
 pillow==10.4.0
+pypdf==5.0.1

@@ -9,9 +9,11 @@ import secrets
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from agents.cash_flow_hq.schema import CATEGORY_OPTIONS, FREQUENCY_OPTIONS, PAYMENT_TYPE_OPTIONS, STATUS_OPTIONS
 from shared.data_layer.repository import InMemorySharedRecordRepository, SharedRecordRepository
 from shared.data_layer.sqlite_repository import SQLiteSharedRecordRepository
 from shared.data_layer.config import load_shared_data_sync_settings
@@ -205,6 +207,7 @@ def cash_flow_notion_rows(pages: list[dict]) -> list[dict]:
 def cash_flow_row_from_page(page: dict) -> dict:
     properties = page.get("properties", {})
     return {
+        "page_id": page.get("id", ""),
         "vendor": plain_rich_text(properties.get("Vendor / Payee", {})),
         "expense_name": plain_title(properties.get("Expense Name", {}).get("title", [])),
         "amount": number_property(properties.get("Amount", {})),
@@ -214,6 +217,7 @@ def cash_flow_row_from_page(page: dict) -> dict:
         "status": select_property_name(properties.get("Status", {})),
         "category": select_property_name(properties.get("Category", {})),
         "payment_type": select_property_name(properties.get("Payment Type", {})),
+        "frequency": select_property_name(properties.get("Frequency", {})),
         "action_required": formula_string(properties.get("Action Required", {})),
     }
 
@@ -250,6 +254,40 @@ def format_cash_flow_money(value: float | None) -> str:
 
 def format_cash_flow_date(value: date | None) -> str:
     return "" if value is None else value.isoformat()
+
+
+def _text_or_none(value: str) -> str | None:
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _decimal_or_none(value: str) -> Decimal | None:
+    cleaned = value.strip().replace(",", "").replace("$", "")
+    if not cleaned:
+        return None
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation as exc:
+        raise ValueError("Amount must be a valid number.") from exc
+
+
+def _date_or_none(value: str) -> date | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return date.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError("Due date must use YYYY-MM-DD.") from exc
+
+
+def _choice_or_none(value: str, allowed: list[str]) -> str | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned not in allowed:
+        raise ValueError(f"Unsupported value: {cleaned}")
+    return cleaned
 
 
 class DashboardService:
@@ -491,6 +529,45 @@ class DashboardService:
         except Exception as exc:
             return empty_cash_flow_dashboard(f"Unavailable: {exc}")
         return build_cash_flow_dashboard(rows, today_in_timezone(self.payment_settings.timezone))
+
+    def update_cash_flow_bill(self, page_id: str, form: dict[str, str]) -> ActionResult:
+        if not page_id:
+            return ActionResult(False, "Missing Cash Flow HQ page ID.")
+        try:
+            amount = _decimal_or_none(form.get("amount", ""))
+            due_date_value = _date_or_none(form.get("due_date", ""))
+            status = _choice_or_none(form.get("status", ""), STATUS_OPTIONS)
+            category = _choice_or_none(form.get("category", ""), CATEGORY_OPTIONS)
+            payment_type = _choice_or_none(form.get("payment_type", ""), PAYMENT_TYPE_OPTIONS)
+            frequency = _choice_or_none(form.get("frequency", ""), FREQUENCY_OPTIONS)
+            CashFlowHQService(load_cash_flow_settings()).update_bill_fields(
+                page_id,
+                expense_name=_text_or_none(form.get("expense_name", "")),
+                vendor_payee=_text_or_none(form.get("vendor", "")),
+                amount=amount,
+                due_date_value=due_date_value,
+                status=status,
+                category=category,
+                payment_type=payment_type,
+                frequency=frequency,
+                notes=form.get("notes"),
+            )
+        except ValueError as exc:
+            return ActionResult(False, str(exc))
+        except Exception as exc:
+            return ActionResult(False, f"Cash Flow HQ update failed: {exc}")
+        return ActionResult(True, "Cash Flow HQ bill saved to Notion.")
+
+    def approve_cash_flow_bill(self, page_id: str, form: dict[str, str]) -> ActionResult:
+        if not form.get("amount") or not form.get("due_date") or not form.get("category"):
+            return ActionResult(False, "Amount, due date, and category are required before approval.")
+        approved = dict(form)
+        approved["status"] = "Upcoming"
+        approved["notes"] = "✓ Ready for Payment"
+        result = self.update_cash_flow_bill(page_id, approved)
+        if result.ok:
+            return ActionResult(True, "Cash Flow HQ bill approved and saved to Notion.")
+        return result
 
     def _operations_reports(self) -> list[dict]:
         try:

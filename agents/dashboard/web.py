@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -15,6 +15,7 @@ from uuid import uuid4
 from .service import DashboardService
 from .shared_data import ReviewQueueFilters
 from .review_actions import ReviewActionError, ReviewConflictError
+from agents.cash_flow_hq.schema import CATEGORY_OPTIONS, FREQUENCY_OPTIONS, PAYMENT_TYPE_OPTIONS, STATUS_OPTIONS
 from shared.data_layer.models import Priority, RecordType, ReviewStatus, SourceSystem
 
 
@@ -116,6 +117,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        cash_flow_match = re.fullmatch(r"/api/cash-flow/bills/([^/]+)/(save|approve)", parsed.path)
+        if cash_flow_match:
+            form = self._read_form()
+            if cash_flow_match.group(2) == "approve":
+                result = self.dashboard_service.approve_cash_flow_bill(cash_flow_match.group(1), form)
+            else:
+                result = self.dashboard_service.update_cash_flow_bill(cash_flow_match.group(1), form)
+            self._send_json({"ok": result.ok, "message": result.message})
+            return
         review_action_match = re.fullmatch(
             r"/api/needs-review/([^/]+)/(approve|reject|resolve)", parsed.path
         )
@@ -288,6 +298,23 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         for row in payment["recent"]
     ) or "<tr><td colspan='4' class='muted'>No recent payments found.</td></tr>"
     remit_files = "".join(f"<li>{_e(name)}</li>" for name in remit["files"]) or "<li>No files ready yet</li>"
+    review = shared_dashboard.get("needs_review", {})
+    needs_review_count = review.get("unresolved_count", 0)
+    cash_summary = cash_flow["summary"]
+    ready_count = sum(
+        1
+        for ready in (
+            payment.get("status") == "Ready",
+            remit.get("status") in {"Ready", "Sent"},
+            checklist.get("status") in {"Ready", "Complete"},
+            operations.get("status") == "Ready",
+        )
+        if ready
+    )
+    now = datetime.now()
+    greeting = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
+    current_date = now.strftime("%a, %b %d, %Y")
+    current_time = now.strftime("%I:%M %p").lstrip("0")
     future_cards = "".join(
         f"""
         <article class="agent-card muted-card">
@@ -315,6 +342,12 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         f"<a class='button-link secondary' href='{_e(checklist['sheet_url'])}' target='_blank' rel='noopener'>Open Sheet</a>"
     )
     checklist_status_url = json.dumps(checklist["url"] + "?dashboard=1&callback=renderChecklistStatus")
+    cash_due_label = cash_summary.get("due_this_week_total", "$0.00")
+    priority_remit_action = (
+        f"<button {remit_send_disabled} onclick=\"postAction('/api/remit-send', true)\">Send Remit</button>"
+        if remit["status"] == "Ready"
+        else "<button class='secondary' onclick=\"postAction('/api/open-remit-folder', false)\">Open Drop Folder</button>"
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -324,39 +357,149 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
   <title>UCM Admin Dashboard</title>
   <style>{CSS}</style>
 </head>
-<body>
-  <main>
-    <header class="topbar">
-      <div class="brand-lockup">
-        <div class="brand-logo-crop"><img src="/dashboard-logo" alt="United Capital Management"></div>
+<body class="dashboard-body">
+  <div class="dashboard-shell">
+    <aside class="dashboard-sidebar" aria-label="UCM dashboard navigation">
+      <div class="sidebar-brand">
+        <img src="/dashboard-logo" alt="United Capital Management">
+        <strong>UCM</strong>
+        <span>United Capital<br>Management</span>
+      </div>
+      <nav class="sidebar-nav">
+        <a class="active" href="/"><span>⌂</span>Dashboard</a>
+        <a href="/operations"><span>◎</span>Operations Intelligence</a>
+        <a href="{_e(checklist['url'])}" target="_blank" rel="noopener"><span>☑</span>Daily Checklist</a>
+        <a href="#cash-flow"><span>$</span>Cash Flow HQ</a>
+        <a href="#payment-agent"><span>↗</span>Payments</a>
+        <a href="#weekly-remit"><span>→</span>Weekly Remits</a>
+        <a href="#payment-agent"><span>●</span>Payment Agent</a>
+        <a href="#daily-checklist"><span>◷</span>Attendance</a>
+        <a href="#future-agents"><span>☎</span>Voicemail</a>
+        <a href="/operations"><span>▥</span>Reports</a>
+        <a href="#shared-sync"><span>⚙</span>Settings</a>
+      </nav>
+      <div class="sidebar-user">
+        <div class="user-avatar">JC</div>
+        <div><strong>Janise Collins</strong><span>Admin</span></div>
+      </div>
+    </aside>
+    <main class="dashboard-main">
+      <header class="topbar dashboard-hero">
         <div>
-          <h1>UCM Admin Dashboard</h1>
-          <p>Local Agent Control Center</p>
+          <h1>{greeting}, Janise</h1>
+          <p>Here's what's happening with UCM today.</p>
         </div>
-      </div>
-      <button class="secondary" onclick="location.reload()">Refresh</button>
-    </header>
-    {banner_html}
-    <div id="scheduledOffTodayAlert" class="scheduled-off-banner" hidden></div>
-    <section class="summary-grid">
-      <div class="metric">
-        <span>Payments Today</span>
-        <strong>{payment['today_count']}</strong>
-      </div>
-      <div class="metric">
-        <span>Collected Today</span>
-        <strong>{_e(payment['today_total'])}</strong>
-      </div>
-      <div class="metric">
-        <span>Remit Status</span>
-        <strong>{_e(remit['status'])}</strong>
-      </div>
-    </section>
-    <section class="agent-grid">
-      <article class="agent-card">
+        <div class="dashboard-controls">
+          <span>{_e(current_date)}</span>
+          <span>{_e(current_time)}</span>
+          <a class="icon-control secondary" href="#command-center" aria-label="Search dashboard sections">⌕</a>
+          <a class="icon-control secondary" href="/needs-review" aria-label="View notifications">!</a>
+          <button class="icon-control secondary" onclick="location.reload()" aria-label="Refresh">↻</button>
+        </div>
+      </header>
+      {banner_html}
+      <div id="scheduledOffTodayAlert" class="scheduled-off-banner" hidden></div>
+
+      <section class="summary-grid executive-metrics" aria-label="Executive metrics">
+        <div class="metric metric-green">
+          <span>Payments Today</span>
+          <strong>{payment['today_count']}</strong>
+          <small>{_e(payment.get('status', 'Ready'))}</small>
+        </div>
+        <div class="metric metric-blue">
+          <span>Collected Today</span>
+          <strong>{_e(payment['today_total'])}</strong>
+          <small>Payment Agent</small>
+        </div>
+        <div class="metric metric-amber">
+          <span>Needs Review</span>
+          <strong>{needs_review_count}</strong>
+          <small>{cash_summary.get('needs_review_count', 0)} Cash Flow</small>
+        </div>
+        <div class="metric metric-purple">
+          <span>Systems Ready</span>
+          <strong>{ready_count} / 4</strong>
+          <small>Core agents</small>
+        </div>
+        <div class="metric metric-green">
+          <span>Remit Status</span>
+          <strong>{_e(remit['status'])}</strong>
+          <small>{_e(remit['send_deadline'])}</small>
+        </div>
+      </section>
+
+      <section class="agent-card priorities-panel">
         <div class="card-head">
-          <h2>Payment Agent</h2>
-          <span class="badge ready">{_e(payment['status'])}</span>
+          <div><h2>Today's Priorities</h2><p class="detail">Focus on what matters most.</p></div>
+        </div>
+        <div class="priority-grid">
+          <a class="priority-item" href="#cash-flow"><span class="priority-icon green">$</span><strong>Review cash flow</strong><small>{_e(cash_due_label)} due this week</small></a>
+          <a class="priority-item" href="/needs-review"><span class="priority-icon amber">!</span><strong>Needs review</strong><small>{needs_review_count} unresolved</small></a>
+          <div class="priority-item"><span class="priority-icon blue">→</span><strong>Weekly remit</strong><small>{_e(remit['detail'])}</small>{priority_remit_action}</div>
+          <a class="priority-item" href="{_e(checklist['url'])}" target="_blank" rel="noopener"><span class="priority-icon purple">☑</span><strong>Daily checklist</strong><small>{_e(checklist['status'])}</small></a>
+        </div>
+      </section>
+
+      <section class="agent-card command-center" id="command-center">
+        <div class="card-head">
+          <div><h2>Your Command Center</h2><p class="detail">Access all systems and agents.</p></div>
+          <a class="button-link small secondary" href="#future-agents">View all apps</a>
+        </div>
+        <div class="command-grid">
+          <article class="command-card command-green">
+            <span class="command-icon">$</span>
+            <h3>Cash Flow HQ</h3>
+            <p>Manage bills, payments, and forecasts.</p>
+            <ul><li>{_e(cash_summary.get('due_this_week_total', '$0.00'))} due this week</li><li>{cash_summary.get('needs_review_count', 0)} need review</li></ul>
+            <a class="button-link" href="#cash-flow">Open Cash Flow</a>
+          </article>
+          <article class="command-card command-blue">
+            <span class="command-icon">◎</span>
+            <h3>Operations Intelligence</h3>
+            <p>Performance, collections, and team insights.</p>
+            <ul><li>{_e(operations.get('status', 'Waiting'))}</li><li>Reports and reviews</li></ul>
+            <a class="button-link" href="/operations">Open Operations</a>
+          </article>
+          <article id="payment-agent" class="command-card command-purple">
+            <span class="command-icon">↗</span>
+            <h3>Payment Agent</h3>
+            <p>Automated payment processing and posting.</p>
+            <ul><li>{payment['today_count']} payments today</li><li>{_e(payment['today_total'])} collected</li></ul>
+            <button onclick="postAction('/api/payment-scan', true)">Scan Payments</button>
+          </article>
+          <article id="weekly-remit" class="command-card command-orange">
+            <span class="command-icon">→</span>
+            <h3>Weekly Remit</h3>
+            <p>Manage ICR remits and submissions.</p>
+            <ul><li>{_e(remit['status'])}</li><li>{_e(remit['last_sent'])}</li></ul>
+            <div class="command-actions">
+              <button class="secondary" onclick="postAction('/api/open-remit-folder', false)">Open Folder</button>
+              <button {remit_send_disabled} onclick="postAction('/api/remit-send', true)">Send Remit</button>
+            </div>
+          </article>
+          <article id="daily-checklist" class="command-card command-teal">
+            <span class="command-icon">☑</span>
+            <h3>Daily Checklist</h3>
+            <p>Checklist, attendance, and alerts.</p>
+            <ul><li id="commandChecklistPct">Checklist loading</li><li id="commandAttendance">Attendance loading</li></ul>
+            <div class="command-actions">{checklist_open_link}{checklist_sheet_link}</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="cash-review-grid">
+        <div id="cash-flow"></div>
+        {cash_flow_dashboard}
+      </section>
+      <section class="intelligence-grid operations-only-grid">
+        {operations_card}
+        {needs_review_card}
+      </section>
+      <section class="legacy-agent-row">
+        <article class="agent-card compact-agent-card">
+          <div class="card-head">
+            <h2>Payment Agent</h2>
+            <span class="badge ready">{_e(payment['status'])}</span>
         </div>
         <p class="detail">{_e(payment['detail'])}</p>
         <div class="actions">
@@ -367,7 +510,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
           <tbody>{payment_rows}</tbody>
         </table>
       </article>
-      <article class="agent-card">
+      <article class="agent-card compact-agent-card">
         <div class="card-head">
           <h2>Weekly Remit Agent</h2>
           <span class="badge {remit_badge_class}">{_e(remit['status'])}</span>
@@ -384,7 +527,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
           <button {remit_send_disabled} onclick="postAction('/api/remit-send', true)">Send Weekly Remit</button>
         </div>
       </article>
-      <article class="agent-card">
+      <article class="agent-card compact-agent-card">
         <div class="card-head">
           <h2>Daily Checklist</h2>
           <span id="checklistStatusBadge" class="badge {'ready' if checklist['url'] else 'warn'}">{_e(checklist['status'])}</span>
@@ -414,20 +557,15 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
           {checklist_sheet_link}
         </div>
       </article>
-    </section>
-    <section class="intelligence-grid operations-only-grid">
-      {operations_card}
-    </section>
-    <section class="cash-review-grid">
-      {cash_flow_dashboard}
-      {needs_review_card}
-    </section>
-    {sync_health_card}
-    <section>
+      </section>
+      {sync_health_card}
+    <section id="future-agents">
       <h2 class="section-title">Future Agents</h2>
       <div class="future-grid">{future_cards}</div>
     </section>
+    <footer class="dashboard-footer">© 2026 United Capital Management. All rights reserved.</footer>
   </main>
+  </div>
   <script>
     async function postAction(path, confirmFirst) {{
       if (confirmFirst && !confirm('Run this action now?')) return;
@@ -439,6 +577,21 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       banner.className = data.ok ? 'banner ok' : 'banner error';
       banner.textContent = data.message;
       if (data.ok) setTimeout(() => location.reload(), 1200);
+    }}
+    async function submitCashFlowBill(form, action) {{
+      const banner = document.getElementById('banner');
+      banner.className = 'banner';
+      banner.textContent = action === 'approve' ? 'Approving Cash Flow bill...' : 'Saving Cash Flow bill...';
+      const body = new URLSearchParams(new FormData(form));
+      const response = await fetch(form.dataset[action + 'Path'], {{
+        method: 'POST',
+        body
+      }});
+      const data = await response.json();
+      banner.className = data.ok ? 'banner ok' : 'banner error';
+      banner.textContent = data.message;
+      if (data.ok && action === 'approve') setTimeout(() => location.reload(), 700);
+      return false;
     }}
     function renderList(id, items, emptyText) {{
       const list = document.getElementById(id);
@@ -466,6 +619,10 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       }});
       const empty = document.getElementById('forecastEmptyRow');
       if (empty) empty.hidden = visible !== 0;
+    }}
+    function toggleCashFlowEdit(rowId) {{
+      const row = document.getElementById(rowId);
+      if (row) row.hidden = !row.hidden;
     }}
     function renderScheduledOffToday(items) {{
       const alert = document.getElementById('scheduledOffTodayAlert');
@@ -497,8 +654,14 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
       }}
       const completed = data.checklistCompleted || 0;
       const total = data.checklistTotal || 0;
-      document.getElementById('checklistPct').textContent = total ? completed + ' / ' + total + ' (' + (data.checklistPercent || 0) + '%)' : (data.checklistPercent || 0) + '%';
-      document.getElementById('attendanceSubmitted').textContent = data.morningAttendanceSaved ? 'Morning Saved' : data.attendanceSubmitted ? 'Submitted' : 'Not Submitted';
+      const checklistText = total ? completed + ' / ' + total + ' (' + (data.checklistPercent || 0) + '%)' : (data.checklistPercent || 0) + '%';
+      const attendanceText = data.morningAttendanceSaved ? 'Morning Saved' : data.attendanceSubmitted ? 'Submitted' : 'Not Submitted';
+      document.getElementById('checklistPct').textContent = checklistText;
+      document.getElementById('attendanceSubmitted').textContent = attendanceText;
+      const commandChecklist = document.getElementById('commandChecklistPct');
+      const commandAttendance = document.getElementById('commandAttendance');
+      if (commandChecklist) commandChecklist.textContent = checklistText;
+      if (commandAttendance) commandAttendance.textContent = attendanceText;
       document.getElementById('attendanceSubmittedAt').textContent = data.submittedAt || '-';
       renderList('atWorkList', data.atWork, 'None submitted');
       renderList('notAtWorkList', data.notAtWork, 'None submitted');
@@ -537,14 +700,7 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
     payment_types = forecast.get("payment_types") or {}
     filters = forecast.get("filters") or {}
     needs_attention = "".join(
-        f"""
-        <div class="cash-flow-attention-item">
-          <strong>{_e(item.get('vendor') or item.get('expense_name') or 'Unknown vendor')}</strong>
-          <span>{_e(_cash_amount(item.get('amount')))}</span>
-          <span>{_e(item.get('due_status') or 'No due date')}</span>
-          <p>{_e(item.get('notes') or '')}</p>
-        </div>
-        """
+        _render_cash_flow_review_item(item)
         for item in cash_flow.get("needs_attention", [])
     ) or "<p class='muted'>No bills need attention.</p>"
     period_specs = (
@@ -566,21 +722,10 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
         for key, label, tone in period_specs
     )
     top_rows = "".join(
-        "<tr class='forecast-row' "
-        f"data-category='{_e(_cash_filter_value(item.get('category')))}' "
-        f"data-vendor='{_e(_cash_filter_value(item.get('vendor') or item.get('expense_name')))}' "
-        f"data-status='{_e(_cash_filter_value(item.get('forecast_status')))}' "
-        f"data-payment='{_e(_cash_payment_filter(item.get('payment_type')))}'>"
-        f"<td>{_e(item.get('vendor') or item.get('expense_name') or 'Unknown vendor')}</td>"
-        f"<td>{_e(_cash_date(item.get('due_date')))}</td>"
-        f"<td>{_e(_cash_amount(item.get('amount')))}</td>"
-        f"<td>{_e(item.get('category') or '')}</td>"
-        f"<td><span class='badge forecast-{_cash_badge_class(item.get('forecast_status'))}'>{_e(item.get('forecast_status') or 'Upcoming')}</span></td>"
-        f"<td>{_e(item.get('action_required') or '—')}</td>"
-        "</tr>"
-        for item in forecast.get("top_upcoming", [])
+        _render_cash_flow_top_row(item, index)
+        for index, item in enumerate(forecast.get("top_upcoming", []))
     )
-    top_rows += "<tr id='forecastEmptyRow' hidden><td colspan='6' class='muted'>No upcoming bills match these filters.</td></tr>"
+    top_rows += "<tr id='forecastEmptyRow' hidden><td colspan='7' class='muted'>No upcoming bills match these filters.</td></tr>"
     category_options = _cash_filter_options(filters.get("categories", []), "All categories")
     vendor_options = _cash_filter_options(filters.get("vendors", []), "All vendors")
     status_options = _cash_filter_options(filters.get("statuses", []), "All statuses", forecast_status=True)
@@ -590,7 +735,7 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
       <div class="card-head">
         <div>
           <h2>Cash Flow Forecast</h2>
-          <p class="detail">Read-only forecast from Cash Flow HQ</p>
+          <p class="detail">Forecast and review controls from Cash Flow HQ</p>
         </div>
         <span class="badge {'ready' if cash_flow.get('status') == 'Ready' else 'warn'}">{_e(cash_flow.get('status', 'Ready'))}</span>
       </div>
@@ -621,12 +766,72 @@ def _render_cash_flow_dashboard(cash_flow: dict) -> str:
             <label><span>Payment</span><select id="forecastPayment" onchange="filterCashFlowForecast()"><option value="">All payments</option><option value="autopay">AutoPay only</option><option value="manual">Manual only</option></select></label>
           </div>
           <table>
-            <thead><tr><th>Vendor</th><th>Due Date</th><th>Amount</th><th>Category</th><th>Status</th><th>Action Required</th></tr></thead>
+            <thead><tr><th>Vendor</th><th>Due Date</th><th>Amount</th><th>Category</th><th>Status</th><th>Action Required</th><th>Actions</th></tr></thead>
             <tbody>{top_rows}</tbody>
           </table>
         </section>
       </div>
     </section>
+    """
+
+
+def _render_cash_flow_top_row(item: dict, index: int) -> str:
+    edit_id = f"cashFlowEdit{index}"
+    disabled = "" if item.get("page_id") else "disabled"
+    return (
+        "<tr class='forecast-row' "
+        f"data-category='{_e(_cash_filter_value(item.get('category')))}' "
+        f"data-vendor='{_e(_cash_filter_value(item.get('vendor') or item.get('expense_name')))}' "
+        f"data-status='{_e(_cash_filter_value(item.get('forecast_status')))}' "
+        f"data-payment='{_e(_cash_payment_filter(item.get('payment_type')))}'>"
+        f"<td>{_e(item.get('vendor') or item.get('expense_name') or 'Unknown vendor')}</td>"
+        f"<td>{_e(_cash_date(item.get('due_date')))}</td>"
+        f"<td>{_e(_cash_amount(item.get('amount')))}</td>"
+        f"<td>{_e(item.get('category') or '')}</td>"
+        f"<td><span class='badge forecast-{_cash_badge_class(item.get('forecast_status'))}'>{_e(item.get('forecast_status') or 'Upcoming')}</span></td>"
+        f"<td>{_e(item.get('action_required') or '—')}</td>"
+        f"<td><button type='button' class='secondary small-action' onclick=\"toggleCashFlowEdit('{edit_id}')\" {disabled}>Edit</button></td>"
+        "</tr>"
+        f"<tr id='{edit_id}' class='forecast-edit-row' hidden><td colspan='7'>{_render_cash_flow_review_item(item)}</td></tr>"
+    )
+
+
+def _render_cash_flow_review_item(item: dict) -> str:
+    page_id = _e(item.get("page_id") or "")
+    title = item.get("vendor") or item.get("expense_name") or "Unknown vendor"
+    amount = "" if item.get("amount") is None else str(item.get("amount"))
+    due_date = _cash_date(item.get("due_date"))
+    disabled = "" if page_id else "disabled"
+    action = _e(item.get("action_required") or item.get("status") or "")
+    return f"""
+    <form class="cash-flow-attention-item cash-flow-edit-card"
+      data-save-path="/api/cash-flow/bills/{page_id}/save"
+      data-approve-path="/api/cash-flow/bills/{page_id}/approve"
+      onsubmit="return submitCashFlowBill(this, 'save')">
+      <div class="cash-flow-edit-head">
+        <strong>{_e(title)}</strong>
+        <span>{_e(item.get('due_status') or action or 'Needs Review')}</span>
+      </div>
+      <label><span>Vendor</span><input name="vendor" value="{_e(item.get('vendor') or '')}" onchange="submitCashFlowBill(this.form, 'save')" {disabled}></label>
+      <label><span>Expense</span><input name="expense_name" value="{_e(item.get('expense_name') or '')}" onchange="submitCashFlowBill(this.form, 'save')" {disabled}></label>
+      <div class="cash-flow-edit-row">
+        <label><span>Amount</span><input name="amount" inputmode="decimal" value="{_e(amount)}" onchange="submitCashFlowBill(this.form, 'save')" {disabled}></label>
+        <label><span>Due Date</span><input type="date" name="due_date" value="{_e(due_date)}" onchange="submitCashFlowBill(this.form, 'save')" {disabled}></label>
+      </div>
+      <div class="cash-flow-edit-row">
+        <label><span>Status</span><select name="status" onchange="submitCashFlowBill(this.form, 'save')" {disabled}>{_select_options(STATUS_OPTIONS, item.get('status'))}</select></label>
+        <label><span>Category</span><select name="category" onchange="submitCashFlowBill(this.form, 'save')" {disabled}>{_select_options(CATEGORY_OPTIONS, item.get('category'), 'Select category')}</select></label>
+      </div>
+      <div class="cash-flow-edit-row">
+        <label><span>Payment</span><select name="payment_type" onchange="submitCashFlowBill(this.form, 'save')" {disabled}>{_select_options(PAYMENT_TYPE_OPTIONS, item.get('payment_type'), 'Select payment')}</select></label>
+        <label><span>Frequency</span><select name="frequency" onchange="submitCashFlowBill(this.form, 'save')" {disabled}>{_select_options(FREQUENCY_OPTIONS, item.get('frequency'), 'Select frequency')}</select></label>
+      </div>
+      <label><span>Notes</span><textarea name="notes" rows="3" onchange="submitCashFlowBill(this.form, 'save')" {disabled}>{_e(item.get('notes') or '')}</textarea></label>
+      <div class="actions">
+        <button type="submit" class="secondary" {disabled}>Save</button>
+        <button type="button" onclick="submitCashFlowBill(this.form, 'approve')" {disabled}>Approve</button>
+      </div>
+    </form>
     """
 
 
@@ -671,7 +876,7 @@ def _render_sync_health(health: dict) -> str:
         else "No scheduled sync has run yet."
     )
     return f"""
-    <section class="agent-card sync-health-card">
+    <section class="agent-card sync-health-card" id="shared-sync">
       <div class="card-head">
         <div><h2>Shared Data Sync</h2><p class="detail">Cash Flow HQ and ICR synchronization health</p></div>
         <span class="badge {'ready' if status == 'completed' else 'warn'}">{_e(status.replace('_', ' ').title())}</span>
@@ -739,6 +944,16 @@ def _filter_select(name: str, selected: str | None, values: list[str], all_label
         for value in values
     )
     return f'<label><span>{_e(name.replace("_", " ").title())}</span><select name="{_e(name)}">{"".join(options)}</select></label>'
+
+
+def _select_options(values: list[str], selected: object, empty_label: str = "") -> str:
+    selected_text = str(selected or "")
+    options = []
+    if empty_label:
+        options.append(f'<option value="">{_e(empty_label)}</option>')
+    for value in values:
+        options.append(f'<option value="{_e(value)}"{" selected" if value == selected_text else ""}>{_e(value)}</option>')
+    return "".join(options)
 
 
 def _review_action_form(item: dict, csrf_token: str) -> str:
@@ -1386,10 +1601,118 @@ body {
   font-size: 15px;
   line-height: 1.5;
 }
+.dashboard-body {
+  background:
+    radial-gradient(circle at 78% 4%, rgba(58, 115, 255, 0.08), transparent 26%),
+    linear-gradient(180deg, #f7f9fb 0%, #eef3f7 100%);
+}
+.dashboard-shell {
+  min-height: 100vh;
+}
 main {
   width: min(1380px, calc(100vw - 40px));
   margin: 0 auto;
   padding: 28px 0 56px;
+}
+.dashboard-main {
+  width: min(1440px, calc(100vw - 300px));
+  margin-left: 260px;
+  margin-right: auto;
+  padding: 42px 32px 56px;
+}
+.dashboard-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 16px;
+  color: #eff6ff;
+  background:
+    radial-gradient(circle at 25% 10%, rgba(42, 118, 255, 0.32), transparent 30%),
+    linear-gradient(180deg, #071b3a 0%, #021329 100%);
+  box-shadow: 18px 0 45px rgba(6, 22, 46, 0.18);
+  z-index: 10;
+}
+.sidebar-brand {
+  display: grid;
+  gap: 4px;
+  padding: 0 10px 28px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.sidebar-brand img {
+  width: 86px;
+  max-height: 56px;
+  object-fit: contain;
+  object-position: left center;
+  margin-bottom: 4px;
+  filter: brightness(0) invert(1);
+}
+.sidebar-brand strong {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1;
+}
+.sidebar-brand span {
+  font-size: 13px;
+  color: #ffffff;
+}
+.sidebar-nav {
+  display: grid;
+  gap: 8px;
+}
+.sidebar-nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: 10px;
+  color: #dbeafe;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 650;
+}
+.sidebar-nav a:hover,
+.sidebar-nav a.active {
+  color: #ffffff;
+  background: rgba(49, 118, 255, 0.32);
+}
+.sidebar-nav span {
+  width: 20px;
+  text-align: center;
+  color: #cce1ff;
+}
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 12px;
+  border: 1px solid rgba(222, 235, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.user-avatar {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #08234a;
+  font-weight: 800;
+}
+.sidebar-user strong,
+.sidebar-user span {
+  display: block;
+  line-height: 1.2;
+}
+.sidebar-user span {
+  color: #c7d8ef;
+  font-size: 12px;
 }
 .topbar {
   display: flex;
@@ -1397,6 +1720,32 @@ main {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
+}
+.dashboard-hero {
+  margin-bottom: 28px;
+}
+.dashboard-hero h1 {
+  font-size: 31px;
+}
+.dashboard-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.icon-control {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  min-height: 48px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  text-decoration: none;
 }
 .brand-lockup {
   display: flex;
@@ -1460,6 +1809,11 @@ button.secondary, a.button-link.secondary {
   background: #e8eef2;
   color: var(--ink);
 }
+button.small-action {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
 button.danger { background: #9f2f2f; }
 button.danger:hover { background: #7f1d1d; }
 .review-action-form { min-width: 260px; display: grid; gap: 8px; }
@@ -1499,6 +1853,157 @@ button:disabled {
 .scheduled-off-banner ul {
   margin: 8px 0 0;
   padding-left: 20px;
+}
+.dashboard-two-column,
+.legacy-agent-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+  align-items: start;
+  margin-top: 24px;
+}
+.legacy-agent-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.executive-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  margin-bottom: 26px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.executive-metrics .metric {
+  min-height: 170px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+.executive-metrics .metric:last-child {
+  border-right: 0;
+}
+.executive-metrics .metric::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 22px;
+  border-radius: 999px;
+  background: var(--soft-ok);
+}
+.executive-metrics .metric-blue::before { background: #e9f1ff; }
+.executive-metrics .metric-amber::before { background: var(--soft-warn); }
+.executive-metrics .metric-purple::before { background: #efe9ff; }
+.executive-metrics small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.priorities-panel,
+.command-center,
+.sync-health-card {
+  margin-top: 24px;
+}
+.priority-grid,
+.command-grid {
+  display: grid;
+  gap: 16px;
+}
+.priority-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.priority-item {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+  min-height: 76px;
+  padding: 12px;
+  border-radius: 12px;
+  color: var(--ink);
+  text-decoration: none;
+  background: #fbfcfd;
+}
+.priority-item strong,
+.priority-item small {
+  display: block;
+}
+.priority-item small {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.priority-item button {
+  grid-column: 2;
+  width: max-content;
+  min-height: 30px;
+  margin-top: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.priority-icon,
+.command-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  font-weight: 800;
+}
+.priority-icon.green,
+.command-green .command-icon { color: var(--ok); background: var(--soft-ok); }
+.priority-icon.amber { color: var(--warn); background: var(--soft-warn); }
+.priority-icon.blue,
+.command-blue .command-icon { color: #1c5fd7; background: #e9f1ff; }
+.priority-icon.purple,
+.command-purple .command-icon { color: #6d38d9; background: #efe9ff; }
+.command-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.command-card {
+  display: flex;
+  min-height: 292px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 10px 26px rgba(20, 45, 66, 0.05);
+}
+.command-card h3 {
+  font-size: 18px;
+}
+.command-card p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.command-card ul {
+  margin: 0 0 4px;
+  padding-left: 17px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.command-card .button-link,
+.command-card button {
+  width: 100%;
+  margin-top: auto;
+}
+.command-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+}
+.command-orange .command-icon { color: #c45514; background: #fff0e5; }
+.command-teal .command-icon { color: #08766e; background: #e5f5f3; }
+.compact-agent-card {
+  min-height: 100%;
 }
 .summary-grid, .agent-grid, .future-grid {
   display: grid;
@@ -1696,6 +2201,14 @@ button:disabled {
 .badge.forecast-paid { color: var(--muted); background: #edf1f4; }
 .forecast-row[hidden] { display: none; }
 .forecast-row td:last-child { min-width: 130px; }
+.forecast-edit-row[hidden] { display: none; }
+.forecast-edit-row td {
+  padding: 0 10px 12px;
+  background: #f8fafb;
+}
+.forecast-edit-row .cash-flow-edit-card {
+  margin-top: 8px;
+}
 .cash-flow-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1755,6 +2268,42 @@ button:disabled {
   font-size: 13px;
   line-height: 1.35;
 }
+.cash-flow-edit-card {
+  display: grid;
+  gap: 8px;
+}
+.cash-flow-edit-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cash-flow-edit-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.cash-flow-edit-card label > span {
+  display: block;
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.cash-flow-edit-card input,
+.cash-flow-edit-card select,
+.cash-flow-edit-card textarea {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+}
+.cash-flow-edit-card textarea {
+  min-height: 66px;
+  resize: vertical;
+}
 .agent-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
@@ -1770,7 +2319,7 @@ button:disabled {
   margin-bottom: 0;
 }
 .operations-only-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .agent-card {
   padding: 22px;
@@ -2161,12 +2710,79 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .muted-card {
   min-height: 110px;
 }
+.dashboard-footer {
+  padding: 42px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+@media (max-width: 1180px) {
+  .dashboard-sidebar {
+    width: 84px;
+    padding: 18px 10px;
+  }
+  .sidebar-brand {
+    padding: 0 4px 18px;
+  }
+  .sidebar-brand img,
+  .sidebar-brand span,
+  .sidebar-nav a:not(.active),
+  .sidebar-user div:not(.user-avatar) {
+    display: none;
+  }
+  .sidebar-brand strong {
+    font-size: 22px;
+  }
+  .sidebar-nav a {
+    justify-content: center;
+    padding: 0;
+  }
+  .sidebar-nav a span {
+    width: auto;
+  }
+  .sidebar-user {
+    justify-content: center;
+    padding: 8px;
+  }
+  .dashboard-main {
+    width: min(1440px, calc(100vw - 116px));
+    margin-left: 84px;
+    padding-inline: 24px;
+  }
+  .executive-metrics,
+  .command-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .priority-grid,
+  .legacy-agent-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 @media (max-width: 1020px) {
   .needs-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 860px) {
-  .summary-grid, .agent-grid, .future-grid, .intelligence-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections {
+  .summary-grid, .agent-grid, .future-grid, .intelligence-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections, .command-grid, .priority-grid, .legacy-agent-row {
     grid-template-columns: 1fr;
+  }
+  .dashboard-sidebar {
+    position: static;
+    width: auto;
+    min-height: auto;
+    margin: 12px;
+    border-radius: 16px;
+  }
+  .sidebar-brand,
+  .sidebar-nav {
+    display: none;
+  }
+  .dashboard-main {
+    width: min(100vw - 24px, 1440px);
+    margin: 0 auto;
+    padding: 20px 0 48px;
+  }
+  .dashboard-controls {
+    flex-wrap: wrap;
   }
   .cash-flow-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));

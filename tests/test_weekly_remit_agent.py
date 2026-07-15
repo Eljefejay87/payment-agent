@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -184,9 +184,10 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertEqual(payload["Vendor / Payee"]["rich_text"][0]["text"]["content"], "ICR")
             self.assertEqual(payload["Category"]["select"]["name"], "Broker Remit")
             self.assertEqual(payload["Amount"]["number"], 20.0)
+            self.assertEqual(payload["Due Date"]["date"]["start"], (result.remit_week + timedelta(days=3)).isoformat())
             self.assertEqual(
                 payload["Notes"]["rich_text"][0]["text"]["content"],
-                "Due to Agency: $10.00 | Due to Client (owed to Jim): $20.00 | Total Collected: $30.00",
+                "Due to Agency: $10.00 | Due to Client (owed to Jim): $20.00 | Total Collected: $30.00 | ACH should be sent by Wednesday for Thursday arrival.",
             )
             self.assertEqual(len(service.graph.drafts), 1)
             self.assertIn("Weekly ICR Remit", service.graph.drafts[0]["subject"])

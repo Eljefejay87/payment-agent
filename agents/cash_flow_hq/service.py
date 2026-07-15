@@ -493,6 +493,8 @@ class CashFlowHQService:
     def update_bill_fields(
         self,
         page_id: str,
+        expense_name: str | None = None,
+        vendor_payee: str | None = None,
         amount: Decimal | None = None,
         due_date_value: date | None = None,
         status: str | None = None,
@@ -502,6 +504,10 @@ class CashFlowHQService:
         notes: str | None = None,
     ) -> None:
         properties: dict[str, Any] = {}
+        if expense_name:
+            properties["Expense Name"] = title_property(expense_name)
+        if vendor_payee:
+            properties["Vendor / Payee"] = rich_text_property(vendor_payee)
         if amount is not None:
             properties["Amount"] = {"number": float(amount)}
         if due_date_value is not None:

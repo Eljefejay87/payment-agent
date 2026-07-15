@@ -3,13 +3,20 @@ from __future__ import annotations
 import logging
 import base64
 import mimetypes
+import time
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 LOGGER = logging.getLogger(__name__)
+TOKEN_REFRESH_SKEW_SECONDS = 60
+FALLBACK_TOKEN_LIFETIME_SECONDS = 300
+
+
+class GraphAuthenticationError(RuntimeError):
+    """A sanitized Microsoft Graph authentication failure."""
 
 
 def chat_member_bind(user_id_or_email: str) -> dict[str, Any]:
@@ -21,6 +28,16 @@ def chat_member_bind(user_id_or_email: str) -> dict[str, Any]:
     }
 
 
+def _retry_delay_seconds(response: Any, attempt: int) -> int:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(1, min(int(retry_after), 60))
+        except ValueError:
+            pass
+    return min(2**attempt, 30)
+
+
 class GraphClient:
     def __init__(
         self,
@@ -28,12 +45,15 @@ class GraphClient:
         client_id: str,
         client_secret: str,
         delegated_token_cache_path: Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.client_secret = client_secret
         self.delegated_token_cache_path = delegated_token_cache_path
+        self._clock = clock
         self._token: str | None = None
+        self._token_expires_at: float | None = None
         self._mail_folder_cache: dict[tuple[str, str], str] = {}
 
     @cached_property
@@ -48,28 +68,46 @@ class GraphClient:
 
         return requests
 
-    def token(self) -> str:
-        if self._token:
+    def token(self, *, force_refresh: bool = False) -> str:
+        if (
+            not force_refresh
+            and self._token
+            and self._token_expires_at is not None
+            and self._clock() < self._token_expires_at
+        ):
             return self._token
-        app = self._msal.ConfidentialClientApplication(
-            client_id=self.client_id,
-            authority=f"https://login.microsoftonline.com/{self.tenant_id}",
-            client_credential=self.client_secret,
-        )
-        result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+        try:
+            app = self._msal.ConfidentialClientApplication(
+                client_id=self.client_id,
+                authority=f"https://login.microsoftonline.com/{self.tenant_id}",
+                client_credential=self.client_secret,
+            )
+            result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+        except Exception:
+            raise GraphAuthenticationError(
+                "Microsoft Graph authentication is unavailable. Check application credentials."
+            ) from None
         if "access_token" not in result:
-            raise RuntimeError(f"Could not get Microsoft Graph token: {result.get('error_description', result)}")
-        self._token = result["access_token"]
+            raise GraphAuthenticationError(
+                "Microsoft Graph authentication is unavailable. Check application credentials."
+            )
+        self._token = str(result["access_token"])
+        try:
+            expires_in = float(result.get("expires_in", FALLBACK_TOKEN_LIFETIME_SECONDS))
+        except (TypeError, ValueError):
+            expires_in = FALLBACK_TOKEN_LIFETIME_SECONDS
+        self._token_expires_at = self._clock() + max(
+            0,
+            expires_in - TOKEN_REFRESH_SKEW_SECONDS,
+        )
         return self._token
 
     def request(self, method: str, path: str, **kwargs: Any) -> Any:
         url = path if path.startswith("https://") else f"{GRAPH_ROOT}{path}"
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"Bearer {self.token()}"
+        headers = dict(kwargs.pop("headers", {}))
         headers.setdefault("Accept", "application/json")
-        response = self._requests.request(method, url, headers=headers, timeout=30, **kwargs)
-        if response.status_code >= 400:
-            raise RuntimeError(f"Graph {method} {url} failed: {response.status_code} {response.text[:500]}")
+        response = self._request_with_client_token(method, url, headers, **kwargs)
+        self._raise_for_response(response)
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
@@ -79,12 +117,45 @@ class GraphClient:
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self.delegated_token(scopes)}"
         headers.setdefault("Accept", "application/json")
-        response = self._requests.request(method, url, headers=headers, timeout=30, **kwargs)
-        if response.status_code >= 400:
-            raise RuntimeError(f"Graph delegated {method} {url} failed: {response.status_code} {response.text[:500]}")
+        response = self._request_with_retry(method, url, headers=headers, **kwargs)
+        self._raise_for_response(response)
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
+
+    def _request_with_client_token(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        **kwargs: Any,
+    ) -> Any:
+        response = self._request_with_retry(
+            method,
+            url,
+            headers={**headers, "Authorization": f"Bearer {self.token()}"},
+            **kwargs,
+        )
+        if response.status_code != 401:
+            return response
+        LOGGER.warning("Microsoft Graph rejected an access token; reacquiring once.")
+        self._token = None
+        self._token_expires_at = None
+        return self._request_with_retry(
+            method,
+            url,
+            headers={**headers, "Authorization": f"Bearer {self.token(force_refresh=True)}"},
+            **kwargs,
+        )
+
+    @staticmethod
+    def _raise_for_response(response: Any) -> None:
+        if response.status_code == 401:
+            raise GraphAuthenticationError(
+                "Microsoft Graph authentication is unavailable. Check application credentials."
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Microsoft Graph request failed with status {response.status_code}.")
 
     def delegated_token(self, scopes: list[str]) -> str:
         cache = self._msal.SerializableTokenCache()
@@ -114,8 +185,37 @@ class GraphClient:
             cache_path.chmod(0o600)
 
         if "access_token" not in result:
-            raise RuntimeError(f"Could not get delegated Microsoft Graph token: {result.get('error_description', result)}")
+            raise GraphAuthenticationError(
+                "Microsoft Graph authentication is unavailable. Check application credentials."
+            )
         return result["access_token"]
+
+    def _request_with_retry(self, method: str, url: str, headers: dict[str, str], **kwargs: Any) -> Any:
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self._requests.request(method, url, headers=headers, timeout=30, **kwargs)
+            except Exception:
+                if attempt == max_attempts:
+                    raise
+                delay = min(2**attempt, 30)
+                LOGGER.warning(
+                    "Microsoft Graph request failed temporarily; retrying in %s second(s)",
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                return response
+            if attempt == max_attempts:
+                return response
+            delay = _retry_delay_seconds(response, attempt)
+            LOGGER.warning(
+                "Microsoft Graph request throttled or temporarily failed; retrying in %s second(s)",
+                delay,
+            )
+            time.sleep(delay)
+        return response
 
     def list_user_messages(
         self,

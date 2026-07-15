@@ -127,12 +127,20 @@ python main.py health
 It reports:
 
 - service status;
+- Graph availability;
+- whether Microsoft Graph authentication requires attention;
 - last successful run;
 - last failed job;
-- last error, if any;
+- a sanitized error category, if any;
 - update timestamp and process id.
 
-No secrets or payment payloads are stored in the health file.
+No secrets, tokens, Graph response bodies, mailbox details, or payment payloads are stored in the health file.
+
+### Microsoft Graph authentication recovery
+
+The mailbox client refreshes its app-only access token before expiry. If Microsoft Graph rejects a token with `401`, it invalidates the cached token, obtains one fresh client-credential token, and retries the request once. If authentication remains unavailable, the scheduled job records `service_status=running`, `graph_status=unavailable`, and `attention_required=true`, then waits for the next scheduled run instead of terminating the worker.
+
+This does not repair invalid or revoked application credentials. Correct the existing managed secret through the approved credential process, then verify the next scheduled scan or the read-only health command. Do not place token values or Graph response bodies in Railway logs.
 
 ## Local Safe Validation
 
@@ -177,7 +185,8 @@ Railway must persist `DATABASE_PATH` on a volume. If the database is stored insi
 
 1. Add a Railway volume mounted at `/data`.
 2. Confirm the email app registration has application `Mail.Read` and `Mail.ReadWrite` with admin consent.
-3. Decide the Teams cloud path:
+3. Validate Graph authentication recovery in a non-production Railway service with non-production credentials and no startup scan.
+4. Decide the Teams cloud path:
    - webhook for easiest unattended operation, or
    - delegated `graph_chat` with a persistent token cache and initial sign-in.
-4. Set `DRY_RUN=false` only after Railway env variables and auth are confirmed.
+5. Set `DRY_RUN=false` only after Railway env variables and auth are confirmed.

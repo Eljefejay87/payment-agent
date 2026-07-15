@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from pathlib import Path
 
 from agents.cash_flow_hq.config import CashFlowHQSettings
@@ -52,7 +53,7 @@ class ICRRemitImportService:
         payload = self.cash_flow.create_manual_expense_payload(
             expense_name=f"ICR Weekly Remit - {result.remit_week.isoformat()}",
             amount=float(result.due_to_client),
-            due_date=result.remit_week.isoformat(),
+            due_date=jim_remit_due_date(result).isoformat(),
             vendor_payee="ICR",
             category="Broker Remit",
             source="Jim Remit",
@@ -66,7 +67,8 @@ class ICRRemitImportService:
                         "content": (
                             f"Due to Agency: ${result.due_to_agency:,.2f} | "
                             f"Due to Client (owed to Jim): ${result.due_to_client:,.2f} | "
-                            f"Total Collected: ${result.total_collected:,.2f}"
+                            f"Total Collected: ${result.total_collected:,.2f} | "
+                            "ACH should be sent by Wednesday for Thursday arrival."
                         )
                     },
                 }
@@ -98,3 +100,7 @@ class ICRRemitImportService:
             html_content=body,
             attachments=[result.file_path, liquidation_file],
         )
+
+
+def jim_remit_due_date(result: ICRRemitResult) -> date:
+    return result.remit_week + timedelta(days=3)

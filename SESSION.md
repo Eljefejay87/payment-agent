@@ -1,5 +1,81 @@
 # UCM AI Operations Session
 
+## Current Milestone
+
+Jason Cloud Readiness Foundation
+
+## Completed
+
+### Jason Master Agent
+
+- Read-only operations briefing, daily briefing, and attention summary.
+- Calendar and email awareness from approved sanitized snapshots.
+- Deterministic routing and approval-gated Chargeback workflow.
+- Durable approval storage, sanitized logging, health endpoints, Docker and CI foundations.
+- Production hardening phases 1 and 2, cloud deployment documentation, and co-location deployment plan.
+
+### Payment Agent
+
+- Microsoft Graph token-expiry tracking, automatic refresh, and one-time 401 retry behavior.
+- Graceful Graph degradation and sanitized authentication-stage exception handling.
+- Python 3.12 compatibility and Docker validation.
+- Runtime/test dependency separation, including `pypdf` as a production dependency.
+- Disposable Railway recovery validation with persistent health reporting and a worker that survives authentication failures.
+
+### Validation
+
+- Payment Agent: 273/273 tests passing in the Python 3.12 Docker test image.
+- Master Agent: 47/47 tests passing.
+- Python 3.12 and Docker validated.
+- Railway authentication-recovery validation completed in a disposable environment, then removed.
+
+## Current Architecture
+
+```text
+Jason Master Agent (Node 20.9)
+        |
+        v
+Payment Agent Runtime (Python 3.12)
+        |
+        v
+Microsoft Graph | Chargeback Tracker | Cash Flow HQ | Voicemail | Shared Status
+```
+
+- Single Jason worker.
+- Single Payment Agent runtime.
+- No duplicate schedulers or Telegram workers.
+
+## Remaining Work
+
+### High Priority
+
+- Normal-authentication validation using approved non-production Graph credentials.
+- Combined Jason + Payment Agent deployment package.
+- First non-production combined cloud deployment.
+
+### Medium Priority
+
+- Cloud monitoring.
+- Managed secrets.
+- Backup verification.
+- Production rollout.
+
+### Future Roadmap
+
+- Natural-language intent expansion.
+- Overnight change summaries.
+- Email summarization.
+- Calendar summaries.
+- Bill reminders.
+- Read-only Outlook awareness.
+- Controlled action approvals.
+
+## Next Recommended Task
+
+Build and validate the combined Jason + Payment Agent cloud runtime for a non-production deployment.
+
+## Historical Session Notes
+
 ## Current Project Status
 
 The Payment Agent is stable end-to-end: it detects real payment emails, parses them, prevents duplicates, saves them to SQLite, posts professional Teams notifications to the UCM Leadership chat, and cleans up processed/duplicate emails.
@@ -12,7 +88,7 @@ The Payment Agent repository is prepared for Railway deployment, pending Railway
 
 The ICR remit import workflow now parses `.xlsx` and `.csv` exports, totals the `AgencyFee` and `ClientFee` columns as Due to Agency and Due to Client, blocks duplicate imports, creates the Cash Flow HQ obligation, and prepares an Outlook draft. Cash Flow HQ also has debug, diagnostic, and patch commands for the Notion `Action Required` formula.
 
-Automated verification is passing: all 226 repository tests pass, including the Voicemail status persistence and Chief of Staff adapter tests.
+Automated verification is passing: all 263 repository tests pass, including the Chargeback Tracker legacy-sheet mapping and screenshot OCR tests.
 
 ## Completed Work
 
@@ -134,14 +210,32 @@ Automated verification is passing: all 226 repository tests pass, including the 
 - Verified Railway prep with 17 focused Payment Agent tests, the full 228-test repository suite, a compile check using a sandbox-safe bytecode cache, and two safe local Railway-entrypoint restart cycles with live scanning disabled.
 - Prepared the Voicemail Tracker Agent for future Railway deployment only, without deploying or changing production behavior. Added durable runtime state for processed voicemail IDs, last successful scan, pending callbacks, callback completion status, and future Teams summary guard data; added `DRY_RUN`, `voicemail-health`, `voicemail-run`, `/data` Railway placeholders, `railway.voicemail.json`, and `scripts/railway_voicemail_tracker_start.sh`.
 - Added restart-safety coverage proving repeated Outlook voicemail IDs are skipped across agent instances and within a single scan. Focused Voicemail tests pass locally.
+- Added an explicit Chief of Staff callback-resolution action over the existing private Voicemail Tracker runtime state. `chief-of-staff callbacks` lists pending IDs only; `complete-callback --voicemail-id ID --confirm` marks one record complete and updates the non-sensitive pending count. It does not scan Outlook, contact consumers, post to Teams, or expose voicemail content.
+- Extended the existing shared `United Charge Back Tracker` in place for Phase 1. Preserved all 11 legacy columns and historical rows, appended only the seven missing canonical headers, and restricted Status to `New`, `Processed`, or `Closed`.
+- Added an append-only CSV/XLSX chargeback import command for NDH and Jim. It preserves report monetary text, defaults to preview, requires explicit confirmation to apply, uses Account Number + Payment Date + Payment Amount duplicate detection against legacy and canonical rows, and flags missing required fields for manual review without guessing or calculating values.
+- Added six focused Chargeback Tracker tests covering exact monetary text, missing-field review, legacy and same-file duplicates, dry-run safety, and non-destructive schema extension. All 241 repository tests pass.
+- Pinned the Chargeback Tracker configuration to the existing production spreadsheet ID and existing `Sample_Chargeback_Tracker` worksheet. Added `chargeback-verify-connection`, which authenticates with the existing service-account flow, opens only spreadsheet metadata, confirms the exact worksheet, and checks Drive `canEdit` plus `canModifyContent` capabilities without reading row data or making any write request.
+- Configured the production spreadsheet ID and worksheet name in local `.env`, documented the external service-account path in `.env.example` and `README.md`, installed the declared `google-auth` dependency, and added three connection-safety tests. All 244 repository tests pass.
+- Re-verified through the connected Google Workspace account that `United Charge Back Tracker` exists with the expected worksheet. No report was imported and no spreadsheet cells, rows, tabs, formatting, formulas, filters, or validation were changed during the connection task.
+- Finalized Chargeback source classification before the first real import: each record defaults to `NDH`; a case-insensitive `NOT US` marker on that record's account-information row, including extra surrounding or internal spaces, classifies only that record as `Jim`. Mixed-source reports are supported, the marker is removed from every imported field, financial values remain unchanged, and optional `--source NDH|Jim` remains an explicit full-file override.
+- Expanded dry-run preview output to list the detected Source for each record using non-sensitive record numbers and to total NDH, Jim, duplicates, and manual-review records. Added the seven requested detection cases plus preview-output assertions. All 17 focused Chargeback tests and all 252 repository tests pass; no Google Sheet call or write was made during development or testing.
+- Updated the existing Chargeback importer to match the real legacy Google Sheet workflow without changing the Sheet: new rows populate only Account ID, Consumer Name, Chargeback Date, Amount, Client Name, Due Client, and manual-review Notes. Collector Name, Bonus Paid, Date Recon w/ Agent, and Date Recon w/ Client remain blank. Client Name defaults to `NDH`; record-level `NOT US` maps it to `ICR`. The separate Source field is no longer populated, and apply now validates the existing headers read-only instead of adding or changing columns.
+- Added PNG/JPG/JPEG screenshot input through the existing Tesseract execution pattern. OCR extracts Account ID, Consumer Name, Chargeback Date, Amount, and Due Client; multiple chargebacks, including repeated consumers, remain separate rows. Values below the configurable confidence threshold are left blank and flagged in Notes rather than guessed. CSV/XLSX inputs continue through the existing row reader and financial strings are never recalculated.
+- Verified 22 focused Chargeback tests and all 257 repository tests. Coverage includes all three image extensions, multiple screenshot records for one consumer, low-confidence blanking, NDH/ICR mapping, legacy CSV/XLSX compatibility, preview no-write safety, exact legacy-column placement, blank manual fields, and read-only Google structure validation. No Google Sheet call or write was made.
+- Added record-level exclusion for chargebacks marked as refunded or entered/processed in error. The parser now skips those records before duplicate detection or append selection, reports their non-sensitive record numbers and an aggregate skipped count in preview, and continues processing valid NDH and `NOT US` to ICR records from the same screenshot. OCR-only status wording is retained as transient parser context and is never mapped to a Google Sheet column.
+- Verified all 25 focused Chargeback Tracker tests, including mixed valid/refunded/error screenshot rows, skipped-row preview reporting, valid-row continuation, unchanged NDH/ICR classification, and proof that preview makes no Sheet writes. No Google Sheet call or production write was made.
+- Diagnosed the first real Chargeback screenshot's zero-record preview without changing importer logic. Tesseract successfully extracted all three financial rows at grouped line confidence scores of approximately 0.89, 0.88, and 0.88, above the configured 0.80 threshold. The failure is parser recognition: the image is a compact, unlabeled table, while the existing OCR parser accepts labeled lines such as `Account ID`, `Chargeback Date`, and `Amount`. The account ID appears only on the first visual row and is implicitly shared by the following rows, so `_match_field` recognized none of the extracted lines and returned only the synthetic header row. No Google Sheet access or write was performed during diagnosis.
+- Extended the existing OCR parser for the partner's unlabeled table format without redesigning the import workflow. A row is recognized from its consumer/account prefix followed by payment date, Amount, UCM %, and Due Client; each payment-date row becomes its own chargeback, and rows without an Account ID inherit the last detected Account ID. Extracted UCM % is retained in the parsed record but is not added to or written into the legacy Google Sheet structure.
+- Preserved default NDH classification, inherited `NOT US` to ICR classification with marker removal, refunded/error exclusions, duplicate detection, preview-by-default behavior, labeled screenshot support, and CSV/XLSX parsing. The real screenshot now produces three separate NDH records locally with the Account ID inherited and the original date, Amount, UCM %, and Due Client strings preserved.
+- Verified all 28 focused Chargeback Tracker tests and all 263 repository tests. No Google authentication, Google Sheet read/write, or Telegram integration was used during implementation or testing.
 
 ## Current Task
 
-Voicemail Tracker Railway readiness is prepared locally. No deployment has been performed and the existing Payment Agent Railway configuration remains unchanged.
+The Chargeback Tracker now retains partially readable unlabeled screenshot rows as manual-review candidates instead of dropping them. It preserves only OCR-confirmed fields, defaults/identifies NDH or ICR using the existing `NOT US` rule, and never appends a candidate missing required fields—even after explicit apply. Preview exposes the available field names locally without logging consumer values; Master Agent reports that required information could not be confirmed. No Google Sheet write was performed during development or testing.
 
 ## Next Recommended Task
 
-Review `docs/voicemail_tracker_railway.md`, create a separate Railway service when ready, attach a persistent `/data` volume, add the documented environment variables, and run with `DRY_RUN=true` before considering live behavior.
+Run the real screenshot through the normal preview command, review valid records plus any manual-review candidates, and do not use `--apply` until the preview is explicitly approved.
 
 ## Known Issues
 
@@ -164,6 +258,7 @@ Review `docs/voicemail_tracker_railway.md`, create a separate Railway service wh
 - The full Cash Flow HQ `Action Required` formula is not accepted by the live Notion API; the tested fallback formula is installed and should be reviewed in the live database for the intended business behavior.
 - The current ICR remit import is complete and duplicate-protected. The corrected Outlook item remains an unsent draft pending owner review; the incorrect archived-file draft and obligation were removed.
 - The project virtual environment uses Python 3.9.6 with LibreSSL 2.8.3, which triggers the `urllib3` v2 warning. Rebuild the virtual environment later with a supported Python 3.12+ distribution linked to current OpenSSL; no rebuild is required for the passing test suite.
+- Chargeback Google authentication is not yet live because no existing service-account JSON file was found in the repository, standard credential folders, Documents, Desktop, or Downloads. `CHARGEBACK_GOOGLE_SERVICE_ACCOUNT_FILE` remains blank rather than guessing a credential. The production spreadsheet and worksheet are confirmed accessible through the connected Workspace account, but service-account append capability cannot be confirmed until that path is supplied and the Sheet is shared with the account as an editor.
 
 ## Session Update Rule
 

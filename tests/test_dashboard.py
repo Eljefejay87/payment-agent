@@ -279,6 +279,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Needs Attention", html)
         self.assertIn("Upcoming Bills", html)
         self.assertIn("$425.00", html)
+        self.assertIn("cash-flow-edit-card", html)
+        self.assertIn("/api/cash-flow/bills/", html)
+        self.assertIn("submitCashFlowBill", html)
 
     def test_cash_flow_forecast_totals_payment_types_and_filters(self) -> None:
         rows = [
@@ -392,6 +395,80 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("filterCashFlowForecast", html)
         self.assertIn("forecast-due-soon", html)
         self.assertIn("forecast-past-due", html)
+        self.assertIn("submitCashFlowBill", html)
+        self.assertIn("new URLSearchParams(new FormData(form))", html)
+        self.assertIn("toggleCashFlowEdit", html)
+        self.assertIn(">Edit</button>", html)
+        self.assertIn("forecast-edit-row", html)
+
+    def test_cash_flow_dashboard_update_saves_to_notion_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            service = DashboardService(
+                build_payment_settings(base),
+                build_remit_settings(base),
+                build_dashboard_settings(),
+            )
+
+            with patch("agents.dashboard.service.CashFlowHQService") as cash_flow_service:
+                result = service.update_cash_flow_bill(
+                    "page-1",
+                    {
+                        "vendor": "ADP",
+                        "expense_name": "ADP Payroll",
+                        "amount": "125.50",
+                        "due_date": "2026-07-20",
+                        "status": "Needs Review",
+                        "category": "Payroll",
+                        "payment_type": "Manual",
+                        "frequency": "Biweekly",
+                        "notes": "Needs Review\n• Missing amount",
+                    },
+                )
+
+            self.assertTrue(result.ok)
+            cash_flow_service.return_value.update_bill_fields.assert_called_once()
+            _, kwargs = cash_flow_service.return_value.update_bill_fields.call_args
+            self.assertEqual(kwargs["expense_name"], "ADP Payroll")
+            self.assertEqual(kwargs["vendor_payee"], "ADP")
+            self.assertEqual(str(kwargs["amount"]), "125.50")
+            self.assertEqual(kwargs["due_date_value"], date(2026, 7, 20))
+            self.assertEqual(kwargs["status"], "Needs Review")
+            self.assertEqual(kwargs["category"], "Payroll")
+
+    def test_cash_flow_dashboard_approve_requires_review_fields_and_sets_upcoming(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            service = DashboardService(
+                build_payment_settings(base),
+                build_remit_settings(base),
+                build_dashboard_settings(),
+            )
+
+            missing = service.approve_cash_flow_bill(
+                "page-1",
+                {"vendor": "ADP", "amount": "", "due_date": "2026-07-20", "category": "Payroll"},
+            )
+
+            self.assertFalse(missing.ok)
+            with patch("agents.dashboard.service.CashFlowHQService") as cash_flow_service:
+                approved = service.approve_cash_flow_bill(
+                    "page-1",
+                    {
+                        "vendor": "ADP",
+                        "expense_name": "ADP Payroll",
+                        "amount": "125.50",
+                        "due_date": "2026-07-20",
+                        "category": "Payroll",
+                        "payment_type": "Manual",
+                        "frequency": "Biweekly",
+                    },
+                )
+
+            self.assertTrue(approved.ok)
+            _, kwargs = cash_flow_service.return_value.update_bill_fields.call_args
+            self.assertEqual(kwargs["status"], "Upcoming")
+            self.assertEqual(kwargs["notes"], "✓ Ready for Payment")
 
     def test_operations_snapshot_reads_latest_processed_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
