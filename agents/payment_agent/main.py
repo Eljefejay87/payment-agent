@@ -16,6 +16,7 @@ from shared.integrations.microsoft_graph import GraphAuthenticationError
 from .config import Settings, load_settings, validate_settings
 from .database import PaymentDatabase
 from .health import PaymentAgentHealth
+from .status_bridge import from_environment as status_bridge_from_environment
 
 
 def main() -> int:
@@ -114,9 +115,12 @@ def main() -> int:
     if args.command == "run":
         scheduler = AgentScheduler()
         health = PaymentAgentHealth(settings.health_path)
+        status_bridge = status_bridge_from_environment(settings.health_path)
         health.mark_starting()
         agent.initialize()
         health.mark_running()
+        if status_bridge:
+            status_bridge.start()
         logging.info(
             "Payment Agent running. Scan every %s minute(s); daily report at %s; dry_run=%s",
             settings.scan_interval_minutes,
@@ -148,6 +152,8 @@ def main() -> int:
         try:
             scheduler.run_forever()
         finally:
+            if status_bridge:
+                status_bridge.stop()
             health.mark_stopped()
 
     return 0
