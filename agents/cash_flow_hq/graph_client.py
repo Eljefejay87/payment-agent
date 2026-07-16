@@ -72,6 +72,8 @@ class CashFlowGraphClient(MicrosoftGraphClient):
             message = message_from_graph(raw)
             if is_payment_confirmation_related(message):
                 full = self.get_message_detail(raw.get("id", ""))
+                if full.get("hasAttachments"):
+                    full["attachments"] = self.list_message_attachments(raw.get("id", ""))
                 message = message_from_graph(full)
                 candidates.append(message)
         return candidates

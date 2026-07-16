@@ -235,16 +235,18 @@ Automated verification is passing: all 263 repository tests pass, including the 
 - Improved Cash Flow HQ billing parsing for validated Vaspian and Zoom cases. Vaspian payment confirmations now extract colon-spaced amounts, successful-payment language, Auto Pay, Paid status, and invoice numbers. Zoom payment-processed emails now extract amount, attachment-derived invoice number, Paid/Auto Pay, and Vendor Rules category/frequency without assuming Auto Pay from vendor name alone.
 - Preserved confirmed paid receipts during Vendor Rules enrichment so missing due dates do not downgrade paid confirmations to Needs Review. Live Zoom diagnostics confirmed the existing duplicate protection found the already-imported record and would not create a duplicate.
 - Final validation for this Cash Flow HQ pass: `PYTHONPYCACHEPREFIX=work/pycache .venv/bin/python -m unittest discover tests` ran 281 tests successfully with 1 skipped test.
+- Fixed Cash Flow HQ payment reconciliation for paid receipts that already exist as bill records. Payment matching now treats the original Email Link as the same source, reads payment invoice numbers from attachment metadata, matches vendor+amount without requiring a due date, and lets the bill scan repair exact email-linked duplicate records without creating a new Notion row.
+- Live dry-run validation after the repair showed the Zoom payment confirmation, Bitwarden, and Intuit payment confirmations all skipped as `Already Paid`; payment Needs Review was 0, duplicates were not created, and the run completed with 0 errors.
 
 ## Current Task
 
-Cash Flow HQ Vaspian and Zoom billing parsing fixes are validated and ready to commit together. The commit must include only the intended Cash Flow HQ parser/service/schema/Graph changes, focused tests, and this session note.
+Cash Flow HQ payment reconciliation now recognizes paid receipt emails that already have an email-linked bill row, preventing duplicate payment Needs Review items for Zoom, Vaspian-style receipts, Bitwarden, and Intuit when the existing source email is already represented.
 
 - Added a narrowly scoped Weekly Remit executive Teams status update. Every unique broker/week/outcome now produces one structured status notification (or a dry-run preview) covering United Remit and United Liq availability, recipient, attachment count, send time, processing duration, archive outcome, and an allowlisted final status. SQLite notification reservations prevent repeated scheduler checks from posting duplicate Teams messages. Remit parsing, broker email generation, duplicate batch detection, scheduling, folder movement, and broker logic remain unchanged.
 
 ## Next Recommended Task
 
-Commit the validated Cash Flow HQ Vaspian and Zoom parsing fixes, then run the normal Cash Flow scan/dry-run cadence over the next few days to watch for additional vendor-specific misses before broadening parser rules again.
+Run one live Cash Flow pass when ready so the exact email-linked duplicate repair can update incomplete existing records in Notion; continue using dry-run first for any new vendor or payment-matching concern.
 
 ## Known Issues
 

@@ -65,6 +65,17 @@ class CashFlowEmailScanner:
                         candidate.status,
                         candidate.review_reason_text or "none",
                     )
+                existing_email_bill = (
+                    self.cash_flow.find_bill_by_email_link(data_source_id, candidate.email_link)
+                    if candidate.email_link
+                    else None
+                )
+                if existing_email_bill:
+                    if not dry_run and self.cash_flow.repair_email_bill_from_candidate(existing_email_bill, candidate):
+                        LOGGER.info("Updated duplicate bill email from parsed fields: %s", candidate.expense_name)
+                    result.skipped.append(candidate)
+                    LOGGER.info("Skipped duplicate bill email: %s", candidate.expense_name)
+                    continue
                 if self.cash_flow.email_bill_exists(data_source_id, candidate):
                     result.skipped.append(candidate)
                     LOGGER.info("Skipped duplicate bill email: %s", candidate.expense_name)

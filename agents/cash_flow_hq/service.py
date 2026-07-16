@@ -634,7 +634,7 @@ class CashFlowHQService:
         return views
 
     def email_bill_exists(self, data_source_id: str, candidate: BillCandidate) -> bool:
-        if candidate.email_link and self._query_by_email_link(data_source_id, candidate.email_link):
+        if candidate.email_link and self.find_bill_by_email_link(data_source_id, candidate.email_link):
             return True
         if not candidate.has_duplicate_key:
             return False
@@ -659,7 +659,7 @@ class CashFlowHQService:
                 return True
         return False
 
-    def _query_by_email_link(self, data_source_id: str, email_link: str) -> bool:
+    def find_bill_by_email_link(self, data_source_id: str, email_link: str) -> CashFlowBillRecord | None:
         response = self.notion.request(
             "POST",
             f"/data_sources/{data_source_id}/query",
@@ -668,7 +668,31 @@ class CashFlowHQService:
                 "page_size": 1,
             },
         )
-        return bool(response.get("results"))
+        results = response.get("results", [])
+        if not results:
+            return None
+        return cash_flow_bill_from_page(results[0])
+
+    def repair_email_bill_from_candidate(self, bill: CashFlowBillRecord, candidate: BillCandidate) -> bool:
+        properties: dict[str, Any] = {}
+        if candidate.vendor_payee and bill.vendor_payee != candidate.vendor_payee:
+            properties["Vendor / Payee"] = rich_text_property(candidate.vendor_payee)
+        if candidate.amount is not None and bill.amount != candidate.amount:
+            properties["Amount"] = {"number": float(candidate.amount)}
+        if candidate.invoice_number and bill.invoice_number != candidate.invoice_number:
+            properties["Invoice Number"] = rich_text_property(candidate.invoice_number)
+        if candidate.status and bill.status != candidate.status:
+            properties["Status"] = {"select": {"name": candidate.status}}
+        if candidate.payment_type and bill.payment_type != candidate.payment_type:
+            properties["Payment Type"] = {"select": {"name": candidate.payment_type}}
+        if candidate.category and bill.category != candidate.category:
+            properties["Category"] = {"select": {"name": candidate.category}}
+        if candidate.frequency and bill.frequency != candidate.frequency:
+            properties["Frequency"] = {"select": {"name": candidate.frequency}}
+        if not properties:
+            return False
+        self.notion.request("PATCH", f"/pages/{bill.page_id}", json={"properties": properties})
+        return True
 
     def create_email_bill(self, data_source_id: str, candidate: BillCandidate) -> dict[str, Any]:
         return self.notion.request(

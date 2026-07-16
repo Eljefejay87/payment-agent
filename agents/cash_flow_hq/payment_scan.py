@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from .graph_client import CashFlowGraphClient
 from .models import BillEmail, CashFlowBillRecord, PaymentConfirmation, VendorRule
-from .parser import extract_amount, extract_invoice_number, normalize_text, vendor_from_message
+from .parser import attachment_metadata_text, extract_amount, extract_invoice_number, normalize_text, vendor_from_message
 from .service import CashFlowHQService
 
 LOGGER = logging.getLogger(__name__)
@@ -103,7 +103,12 @@ class CashFlowPaymentScanner:
 
 
 def parse_payment_confirmation(message: BillEmail) -> PaymentConfirmation:
-    text = normalize_text(f"{message.subject}\n{message.sender_name} {message.sender_email}\n{message.body_text}")
+    text = normalize_text(
+        f"{message.subject}\n"
+        f"{message.sender_name} {message.sender_email}\n"
+        f"{message.body_text}\n"
+        f"{attachment_metadata_text(message.attachments)}"
+    )
     return PaymentConfirmation(
         vendor_payee=vendor_from_message(message),
         amount=extract_payment_amount(text),
@@ -164,11 +169,10 @@ def match_payment_confirmation(
         if vendor_matches(confirmation.vendor_payee, bill.vendor_payee)
         and confirmation.amount is not None
         and bill.amount == confirmation.amount
-        and date_proximity_matches(confirmation, bill)
     ]
     if len(vendor_amount_matches) == 1:
         bill = vendor_amount_matches[0]
-        return PaymentMatch(confirmation, bill, "High", "Matched by amount/date", payment_method_for_bill(bill, vendor_rules or []))
+        return PaymentMatch(confirmation, bill, "High", "Matched by vendor/amount", payment_method_for_bill(bill, vendor_rules or []))
     if len(vendor_amount_matches) > 1:
         return PaymentMatch(confirmation, None, "Low", "Needs Review because multiple matches")
 
@@ -216,10 +220,13 @@ def already_paid_or_linked(bill: CashFlowBillRecord, confirmation: PaymentConfir
         bill.status == "Paid"
         or bill.payment_date
         or (bill.confirmation_link and bill.confirmation_link == confirmation.email_link)
+        or (bill.email_link and bill.email_link == confirmation.email_link)
     )
 
 
 def confirmation_matches_bill(confirmation: PaymentConfirmation, bill: CashFlowBillRecord) -> bool:
+    if bill.email_link and bill.email_link == confirmation.email_link:
+        return True
     if bill.confirmation_link and bill.confirmation_link == confirmation.email_link:
         return True
     if confirmation.invoice_number and bill.invoice_number and bill.invoice_number.lower() == confirmation.invoice_number.lower():

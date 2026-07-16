@@ -1042,6 +1042,26 @@ class CashFlowHQParserTests(unittest.TestCase):
         self.assertEqual(properties["Payment Type"]["select"]["name"], "Auto Pay")
         self.assertEqual(properties["Invoice Number"]["rich_text"][0]["text"]["content"], "INV000000001")
 
+    def test_payment_confirmation_reads_invoice_number_from_attachment_metadata(self) -> None:
+        email = build_email(
+            sender_name="Zoom Communications, Inc.",
+            sender_email="billing@zoom.us",
+            subject="Payment Processed for ZOOM-ACCOUNT",
+            body="Your payment has been successfully processed. Amount: 16.99 US Dollar.",
+            attachments=(
+                AttachmentMetadata(
+                    name="INV000000001_A00000000_07152026.pdf",
+                    content_type="application/pdf",
+                    size=407887,
+                ),
+            ),
+        )
+
+        confirmation = parse_payment_confirmation(email)
+
+        self.assertEqual(confirmation.invoice_number, "INV000000001")
+        self.assertEqual(str(confirmation.amount), "16.99")
+
     def test_zoom_vendor_rule_does_not_force_autopay_without_payment_evidence(self) -> None:
         email = build_email(
             sender_name="Zoom Communications, Inc.",
@@ -1420,12 +1440,12 @@ class CashFlowHQPaymentScannerTests(unittest.TestCase):
         confirmation = parse_payment_confirmation(
             build_email(sender_name="D1AL", subject="Payment successful", body="Payment received $315.37.")
         )
-        bill = payment_bill(vendor="D1AL", amount=Decimal("315.37"), due_date=date(2026, 7, 1))
+        bill = payment_bill(vendor="D1AL", amount=Decimal("315.37"), due_date=None)
 
         match = match_payment_confirmation(confirmation, [bill], [])
 
         self.assertEqual(match.confidence, "High")
-        self.assertEqual(match.reason, "Matched by amount/date")
+        self.assertEqual(match.reason, "Matched by vendor/amount")
 
     def test_vendor_rules_normalize_payment_confirmation_vendor_before_matching(self) -> None:
         email = build_email(
@@ -1467,6 +1487,29 @@ class CashFlowHQPaymentScannerTests(unittest.TestCase):
 
         self.assertEqual(match.confidence, "Skip")
         self.assertEqual(match.reason, "Already Paid")
+
+    def test_source_email_link_skips_same_paid_receipt_without_review(self) -> None:
+        confirmation = parse_payment_confirmation(
+            build_email(
+                sender_name="Zoom Communications, Inc.",
+                sender_email="billing@zoom.us",
+                subject="Payment Processed for ZOOM-ACCOUNT",
+                body="Your payment has been successfully processed. Amount: 16.99 US Dollar.",
+            )
+        )
+        bill = payment_bill(
+            vendor="Zoom Communications, Inc.",
+            amount=Decimal("16.99"),
+            due_date=None,
+            status="Needs Review",
+            email_link=confirmation.email_link,
+        )
+
+        match = match_payment_confirmation(confirmation, [bill], [])
+
+        self.assertEqual(match.confidence, "Skip")
+        self.assertEqual(match.reason, "Already Paid")
+        self.assertEqual(match.bill, bill)
 
     def test_no_match_and_multiple_matches_need_review(self) -> None:
         confirmation = parse_payment_confirmation(
@@ -1598,6 +1641,41 @@ class CashFlowHQAutomationTests(unittest.TestCase):
 
         self.assertEqual(len(result.bill_scan.skipped), 1)
         self.assertEqual(len(result.payment_scan.would_mark_paid), 1)
+        self.assertEqual(notion.created_pages, 0)
+        self.assertEqual(notion.paid_bill_updates, [])
+
+    def test_zoom_duplicate_bill_is_repaired_and_not_duplicated(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        notion.query_results = [zoom_incomplete_bill_page()]
+        notion.vendor_rule_pages = [zoom_vendor_rule_page()]
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        result = CashFlowEmailScanner(service, FakeZoomGraph()).scan(days=7, limit=50, dry_run=False)
+
+        self.assertEqual(len(result.skipped), 1)
+        self.assertEqual(notion.created_pages, 0)
+        self.assertEqual(len(notion.paid_bill_updates), 1)
+        update = notion.paid_bill_updates[0]["properties"]
+        self.assertEqual(update["Vendor / Payee"]["rich_text"][0]["text"]["content"], "Zoom")
+        self.assertEqual(update["Amount"]["number"], 16.99)
+        self.assertEqual(update["Invoice Number"]["rich_text"][0]["text"]["content"], "INV000000001")
+        self.assertEqual(update["Status"]["select"]["name"], "Paid")
+        self.assertEqual(update["Payment Type"]["select"]["name"], "Auto Pay")
+        self.assertEqual(update["Category"]["select"]["name"], "Software")
+        self.assertEqual(update["Frequency"]["select"]["name"], "Monthly")
+
+    def test_zoom_same_source_receipt_does_not_create_payment_review(self) -> None:
+        notion = FakeNotion(existing_database=True, existing_vendor_rules=True)
+        notion.query_results = [zoom_incomplete_bill_page()]
+        notion.vendor_rule_pages = [zoom_vendor_rule_page()]
+        service = CashFlowHQService(build_settings(), notion=notion)
+
+        result = run_cash_flow_automation_once(service, FakeZoomGraph(), days=7, limit=50, dry_run=True)
+
+        self.assertEqual(len(result.bill_scan.skipped), 1)
+        self.assertEqual(len(result.payment_scan.skipped), 1)
+        self.assertEqual(len(result.payment_scan.needs_review), 0)
+        self.assertEqual(result.payment_scan.skipped[0].reason, "Already Paid")
         self.assertEqual(notion.created_pages, 0)
         self.assertEqual(notion.paid_bill_updates, [])
 
@@ -1773,16 +1851,25 @@ class FakeCombinedGraph(FakeGraph):
         return FakePaymentGraph().find_payment_confirmation_messages(days, limit)
 
 
+class FakeZoomGraph:
+    def find_bill_messages(self, days: int, limit: int):
+        return [zoom_payment_email()]
+
+    def find_payment_confirmation_messages(self, days: int, limit: int):
+        return [zoom_payment_email()]
+
+
 def payment_bill(
     page_id: str = "bill-id",
     vendor: str = "D1AL",
     amount: Decimal = Decimal("315.37"),
-    due_date: date = date(2026, 7, 1),
+    due_date: date | None = date(2026, 7, 1),
     status: str = "Upcoming",
     payment_date: date | None = None,
     payment_type: str = "Manual",
     invoice_number: str | None = None,
     confirmation_link: str | None = None,
+    email_link: str = "https://outlook.office.com/mail/id/original",
 ) -> CashFlowBillRecord:
     return CashFlowBillRecord(
         page_id=page_id,
@@ -1793,7 +1880,7 @@ def payment_bill(
         status=status,
         payment_date=payment_date,
         payment_type=payment_type,
-        email_link="https://outlook.office.com/mail/id/original",
+        email_link=email_link,
         invoice_number=invoice_number,
         confirmation_link=confirmation_link,
     )
@@ -1810,6 +1897,53 @@ def payment_bill_page() -> dict:
             "Status": {"select": {"name": "Upcoming"}},
             "Payment Type": {"select": {"name": "Manual"}},
             "Email Link": {"url": "https://outlook.office.com/mail/id/original"},
+        },
+    }
+
+
+def zoom_payment_email() -> BillEmail:
+    return build_email(
+        sender_name="Zoom Communications, Inc.",
+        sender_email="billing@zoom.us",
+        subject="Payment Processed for ZOOM-ACCOUNT",
+        body=(
+            "Your payment has been successfully processed and applied to your account. "
+            "Amount: 16.99 US Dollar."
+        ),
+        attachments=(
+            AttachmentMetadata(
+                name="INV000000001_A00000000_07152026.pdf",
+                content_type="application/pdf",
+                size=407887,
+            ),
+        ),
+    )
+
+
+def zoom_incomplete_bill_page() -> dict:
+    return {
+        "id": "zoom-bill-id",
+        "properties": {
+            "Expense Name": {"title": [{"plain_text": "Payment Processed for ZOOM-ACCOUNT"}]},
+            "Vendor / Payee": {"rich_text": [{"plain_text": "Zoom Communications, Inc."}]},
+            "Status": {"select": {"name": "Needs Review"}},
+            "Email Link": {"url": "https://outlook.office.com/mail/id/message-id"},
+        },
+    }
+
+
+def zoom_vendor_rule_page() -> dict:
+    return {
+        "id": "zoom-rule-id",
+        "properties": {
+            "Vendor Name": {"title": [{"plain_text": "Zoom"}]},
+            "Match Text": {"rich_text": [{"plain_text": "zoom"}]},
+            "Display Name": {"rich_text": [{"plain_text": "Zoom"}]},
+            "Category": {"select": {"name": "Software"}},
+            "Frequency": {"select": {"name": "Monthly"}},
+            "Payment Type": {"select": {"name": "Card / Unknown"}},
+            "Default Status": {"select": {"name": "Upcoming"}},
+            "Active": {"checkbox": True},
         },
     }
 
