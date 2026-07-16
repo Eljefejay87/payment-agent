@@ -232,16 +232,19 @@ Automated verification is passing: all 263 repository tests pass, including the 
 - Extended the existing OCR parser for the partner's unlabeled table format without redesigning the import workflow. A row is recognized from its consumer/account prefix followed by payment date, Amount, UCM %, and Due Client; each payment-date row becomes its own chargeback, and rows without an Account ID inherit the last detected Account ID. Extracted UCM % is retained in the parsed record but is not added to or written into the legacy Google Sheet structure.
 - Preserved default NDH classification, inherited `NOT US` to ICR classification with marker removal, refunded/error exclusions, duplicate detection, preview-by-default behavior, labeled screenshot support, and CSV/XLSX parsing. The real screenshot now produces three separate NDH records locally with the Account ID inherited and the original date, Amount, UCM %, and Due Client strings preserved.
 - Verified all 28 focused Chargeback Tracker tests and all 263 repository tests. No Google authentication, Google Sheet read/write, or Telegram integration was used during implementation or testing.
+- Improved Cash Flow HQ billing parsing for validated Vaspian and Zoom cases. Vaspian payment confirmations now extract colon-spaced amounts, successful-payment language, Auto Pay, Paid status, and invoice numbers. Zoom payment-processed emails now extract amount, attachment-derived invoice number, Paid/Auto Pay, and Vendor Rules category/frequency without assuming Auto Pay from vendor name alone.
+- Preserved confirmed paid receipts during Vendor Rules enrichment so missing due dates do not downgrade paid confirmations to Needs Review. Live Zoom diagnostics confirmed the existing duplicate protection found the already-imported record and would not create a duplicate.
+- Final validation for this Cash Flow HQ pass: `PYTHONPYCACHEPREFIX=work/pycache .venv/bin/python -m unittest discover tests` ran 281 tests successfully with 1 skipped test.
 
 ## Current Task
 
-The Chargeback Tracker now retains partially readable unlabeled screenshot rows as manual-review candidates instead of dropping them. It preserves only OCR-confirmed fields, defaults/identifies NDH or ICR using the existing `NOT US` rule, and never appends a candidate missing required fields—even after explicit apply. Preview exposes the available field names locally without logging consumer values; Master Agent reports that required information could not be confirmed. No Google Sheet write was performed during development or testing.
+Cash Flow HQ Vaspian and Zoom billing parsing fixes are validated and ready to commit together. The commit must include only the intended Cash Flow HQ parser/service/schema/Graph changes, focused tests, and this session note.
 
 - Added a narrowly scoped Weekly Remit executive Teams status update. Every unique broker/week/outcome now produces one structured status notification (or a dry-run preview) covering United Remit and United Liq availability, recipient, attachment count, send time, processing duration, archive outcome, and an allowlisted final status. SQLite notification reservations prevent repeated scheduler checks from posting duplicate Teams messages. Remit parsing, broker email generation, duplicate batch detection, scheduling, folder movement, and broker logic remain unchanged.
 
 ## Next Recommended Task
 
-Run the real screenshot through the normal preview command, review valid records plus any manual-review candidates, and do not use `--apply` until the preview is explicitly approved.
+Commit the validated Cash Flow HQ Vaspian and Zoom parsing fixes, then run the normal Cash Flow scan/dry-run cadence over the next few days to watch for additional vendor-specific misses before broadening parser rules again.
 
 ## Known Issues
 

@@ -14,7 +14,9 @@ from .models import BillEmail
 PAYMENT_CONFIRMATION_TERMS = [
     "payment received",
     "payment successful",
+    "payment has been successful",
     "payment processed",
+    "payment completed",
     "autopay successful",
     "thank you for your payment",
     "receipt",
@@ -24,6 +26,10 @@ PAYMENT_CONFIRMATION_TERMS = [
     "payment confirmation",
     "ach processed",
     "payment posted",
+    "automatically charged",
+    "auto charged",
+    "charged successfully",
+    "your card has been charged",
 ]
 
 

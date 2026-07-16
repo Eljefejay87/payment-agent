@@ -568,10 +568,11 @@ class CashFlowHQService:
             expected_amount_for_rule(rule),
             review_reasons,
         )
-        status = "Upcoming" if candidate.amount is not None and (updates.get("due_date") or candidate.due_date) and not review_reasons else "Needs Review"
-        if status != candidate.status:
-            updates["status"] = status
-            updates["confidence"] = "high" if status == "Upcoming" else "low"
+        if candidate.status != "Paid":
+            status = "Upcoming" if candidate.amount is not None and (updates.get("due_date") or candidate.due_date) and not review_reasons else "Needs Review"
+            if status != candidate.status:
+                updates["status"] = status
+                updates["confidence"] = "high" if status == "Upcoming" else "low"
         if updates:
             updates["field_sources"] = field_sources
             updates["review_reasons"] = review_reasons
@@ -699,6 +700,8 @@ class CashFlowHQService:
             properties["Frequency"] = {"select": {"name": candidate.frequency}}
         if candidate.email_link:
             properties["Email Link"] = {"url": candidate.email_link}
+        if candidate.invoice_number:
+            properties["Invoice Number"] = rich_text_property(candidate.invoice_number)
         return properties
 
     def create_manual_expense_payload(

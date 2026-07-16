@@ -387,6 +387,21 @@ VENDOR_RULE_SEEDS = [
         "critical": True,
         "notes": "Due date and typical amount TBD.",
     },
+    {
+        "vendor_name": "Zoom",
+        "match_text": "zoom",
+        "display_name": "Zoom",
+        "service": "Video Conferencing",
+        "category": "Software",
+        "frequency": "Monthly",
+        "due_day": None,
+        "payment_type": "Card / Unknown",
+        "default_status": "Upcoming",
+        "active": True,
+        "critical": False,
+        "typical_amount": 16.99,
+        "notes": "Payment type comes from email evidence; do not infer Auto Pay from vendor name alone.",
+    },
 ]
 
 

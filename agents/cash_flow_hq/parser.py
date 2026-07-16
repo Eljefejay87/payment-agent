@@ -27,7 +27,7 @@ BILL_TERMS = [
 
 AMOUNT_PATTERNS = [
     re.compile(
-        r"(?:amount due|total due|balance due|invoice total|payment amount|scheduled payment)\D{0,40}\$?\s*([0-9][0-9,]*\.\d{2})",
+        r"(?:amount due|total due|balance due|invoice total|invoice amount|payment amount|scheduled payment|amount)\s*:?\s*\$?\s*([0-9][0-9,]*\.\d{2})",
         re.IGNORECASE,
     ),
 ]
@@ -65,6 +65,10 @@ CATEGORY_KEYWORDS = [
 
 INVOICE_NUMBER_PATTERNS = [
     re.compile(
+        r"\b(INV[0-9]{3,})(?:[_-][A-Z0-9]+)*\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"(?:invoice|inv|statement|receipt)\s*(?:number|no|id)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{2,})",
         re.IGNORECASE,
     ),
@@ -72,6 +76,24 @@ INVOICE_NUMBER_PATTERNS = [
         r"(?:invoice|inv|statement|receipt)\s*#\s*([A-Z0-9][A-Z0-9-]{2,})",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"(?:invoice|inv)\s+([A-Z]{2,}-[0-9][A-Z0-9-]*)",
+        re.IGNORECASE,
+    ),
+]
+PAYMENT_SUCCESS_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"payment\s+(?:for\s+the\s+invoice\s+[A-Z0-9-]+\s+)?has\s+been\s+successful",
+        r"payment\s+successful",
+        r"payment\s+received",
+        r"payment\s+completed",
+        r"payment\s+processed",
+        r"automatically\s+charged",
+        r"auto\s+charged",
+        r"charged\s+successfully",
+        r"your\s+card\s+has\s+been\s+charged",
+    )
 ]
 FALLBACK_DOLLAR_PATTERN = re.compile(r"\$\s*([0-9][0-9,]*\.\d{2})")
 UNRELATED_NUMBER_CONTEXT = ("invoice", "inv", "account", "acct", "phone", "tel", "previous balance")
@@ -108,17 +130,23 @@ def parse_bill_candidate(message: BillEmail) -> BillCandidate:
     )
     amount = amount_result.value
     due_date = date_result.value
+    payment_successful = is_payment_successful(email_text) or is_payment_successful(pdf_text)
     payment_type = extract_payment_type(email_text) or extract_payment_type(pdf_text)
+    if payment_successful and not payment_type:
+        payment_type = "Auto Pay"
     vendor = vendor_from_message(message)
     pdf_vendor = extract_vendor_from_pdf_text(pdf_text)
     if vendor in {message.sender_name, vendor_from_email_domain(message.sender_email)} and pdf_vendor:
         vendor = pdf_vendor
     category = extract_category(email_text) or extract_category(pdf_text)
     invoice_number = extract_invoice_number(email_text) or extract_invoice_number(pdf_text)
-    review_reasons = amount_result.reasons + date_result.reasons
+    review_reasons = amount_result.reasons + (() if payment_successful else date_result.reasons)
     if review_reasons and pdf_reason:
         review_reasons = review_reasons + (pdf_reason,)
-    status = "Upcoming" if amount is not None and due_date is not None and not review_reasons else "Needs Review"
+    if payment_successful and amount is not None and not review_reasons:
+        status = "Paid"
+    else:
+        status = "Upcoming" if amount is not None and due_date is not None and not review_reasons else "Needs Review"
     confidence = "high" if status == "Upcoming" else "low"
     notes = build_notes(message, amount, due_date, invoice_number, confidence, review_reasons)
     field_sources = {
@@ -259,6 +287,11 @@ def extract_payment_type(text: str) -> str | None:
     if "manual payment" in lowered or "pay manually" in lowered:
         return "Manual"
     return None
+
+
+def is_payment_successful(text: str) -> bool:
+    normalized = normalize_text(text)
+    return any(pattern.search(normalized) for pattern in PAYMENT_SUCCESS_PATTERNS)
 
 
 def extract_category(text: str) -> str | None:

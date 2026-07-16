@@ -138,6 +138,9 @@ class CashFlowHQSchemaTests(unittest.TestCase):
         self.assertEqual(seeds["OFR"]["display_name"], "Florida OFR")
         self.assertEqual(seeds["OFR"]["category"], "Licensing")
         self.assertIsNone(seeds["OFR"]["due_day"])
+        self.assertEqual(seeds["Zoom"]["display_name"], "Zoom")
+        self.assertEqual(seeds["Zoom"]["category"], "Software")
+        self.assertEqual(seeds["Zoom"]["payment_type"], "Card / Unknown")
 
     def test_action_required_fallback_formula_is_known_accepted_version(self) -> None:
         self.assertIn('"Yes"', ACTION_REQUIRED_FALLBACK_FORMULA)
@@ -952,6 +955,109 @@ class CashFlowHQParserTests(unittest.TestCase):
         self.assertEqual(candidate.invoice_number, "INV-2026-77")
         self.assertEqual(candidate.status, "Upcoming")
         self.assertEqual(candidate.review_reasons, ())
+
+    def test_vaspian_successful_payment_confirmation_extracts_amount_autopay_and_invoice(self) -> None:
+        email = message_from_graph(
+            {
+                "id": "vaspian-message",
+                "internetMessageId": "<vaspian@example.com>",
+                "subject": "Vaspian payment confirmation",
+                "receivedDateTime": "2026-07-06T12:00:00Z",
+                "from": {"emailAddress": {"name": "Vaspian", "address": "billing@vaspian.com"}},
+                "body": {
+                    "contentType": "html",
+                    "content": """
+                        <html><body>
+                        <p>Amount&nbsp; : &nbsp;$927.00</p>
+                        <p>Payment for the invoice INV-000000 has been successful.</p>
+                        </body></html>
+                    """,
+                },
+                "webLink": "https://outlook.office.com/mail/id/vaspian-message",
+            }
+        )
+
+        candidate = parse_bill_candidate(email)
+        properties = CashFlowHQService(build_settings(), notion=FakeNotion()).create_bill_properties(candidate)
+
+        self.assertEqual(candidate.vendor_payee, "Vaspian")
+        self.assertEqual(str(candidate.amount), "927.00")
+        self.assertEqual(candidate.invoice_number, "INV-000000")
+        self.assertEqual(candidate.status, "Paid")
+        self.assertEqual(candidate.payment_type, "Auto Pay")
+        self.assertEqual(candidate.review_reasons, ())
+        self.assertEqual(properties["Amount"]["number"], 927.0)
+        self.assertEqual(properties["Status"]["select"]["name"], "Paid")
+        self.assertEqual(properties["Payment Type"]["select"]["name"], "Auto Pay")
+        self.assertEqual(properties["Invoice Number"]["rich_text"][0]["text"]["content"], "INV-000000")
+
+    def test_zoom_payment_processed_email_is_discovered_and_parsed_from_real_shape(self) -> None:
+        email = message_from_graph(
+            {
+                "id": "zoom-message",
+                "internetMessageId": "<zoom@example.com>",
+                "subject": "Payment Processed for ZOOM-ACCOUNT",
+                "receivedDateTime": "2026-07-15T18:08:53Z",
+                "from": {"emailAddress": {"name": "Zoom Communications, Inc.", "address": "billing@zoom.us"}},
+                "body": {
+                    "contentType": "html",
+                    "content": """
+                        <html><body>
+                        <p>Your payment has been successfully processed and applied to your account.</p>
+                        <p>Please review your payment amount below. We have attached a PDF detailing your order and terms of your subscription.</p>
+                        <p>Account Number: 0000000000</p>
+                        <p>Payment Method: PayPal</p>
+                        <p>Payment Date: 07/15/2026</p>
+                        <p>Amount: 16.99 US Dollar</p>
+                        </body></html>
+                    """,
+                },
+                "webLink": "https://outlook.office.com/mail/id/zoom-message",
+                "attachments": [
+                    {
+                        "name": "INV000000001_A00000000_07152026.pdf",
+                        "contentType": "application/pdf",
+                        "size": 407887,
+                    }
+                ],
+            }
+        )
+
+        candidate = parse_bill_candidate(email)
+        zoom_rule = VendorRule("Zoom", "zoom", "Software", "Monthly", None, "Card / Unknown", "Upcoming", True, display_name="Zoom")
+        candidate = CashFlowHQService(build_settings(), notion=FakeNotion()).apply_vendor_rules(candidate, email, [zoom_rule])
+        properties = CashFlowHQService(build_settings(), notion=FakeNotion()).create_bill_properties(candidate)
+
+        self.assertTrue(is_bill_related(email))
+        self.assertEqual(candidate.vendor_payee, "Zoom")
+        self.assertEqual(str(candidate.amount), "16.99")
+        self.assertEqual(candidate.invoice_number, "INV000000001")
+        self.assertEqual(candidate.status, "Paid")
+        self.assertEqual(candidate.payment_type, "Auto Pay")
+        self.assertEqual(candidate.category, "Software")
+        self.assertEqual(candidate.frequency, "Monthly")
+        self.assertEqual(candidate.review_reasons, ())
+        self.assertEqual(properties["Amount"]["number"], 16.99)
+        self.assertEqual(properties["Status"]["select"]["name"], "Paid")
+        self.assertEqual(properties["Payment Type"]["select"]["name"], "Auto Pay")
+        self.assertEqual(properties["Invoice Number"]["rich_text"][0]["text"]["content"], "INV000000001")
+
+    def test_zoom_vendor_rule_does_not_force_autopay_without_payment_evidence(self) -> None:
+        email = build_email(
+            sender_name="Zoom Communications, Inc.",
+            sender_email="billing@zoom.us",
+            subject="Zoom invoice available",
+            body="Invoice Amount: 16.99. Due Date: July 20, 2026.",
+        )
+        candidate = parse_bill_candidate(email)
+        zoom_rule = VendorRule("Zoom", "zoom", "Software", "Monthly", None, "Card / Unknown", "Upcoming", True, display_name="Zoom")
+
+        updated = CashFlowHQService(build_settings(), notion=FakeNotion()).apply_vendor_rules(candidate, email, [zoom_rule])
+
+        self.assertEqual(updated.vendor_payee, "Zoom")
+        self.assertEqual(updated.payment_type, None)
+        self.assertEqual(updated.category, "Software")
+        self.assertEqual(updated.status, "Upcoming")
 
     def test_missing_amount_or_due_date_is_needs_review(self) -> None:
         email = build_email(subject="Payment reminder", body="Your bill is ready.")
