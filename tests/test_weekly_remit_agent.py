@@ -195,6 +195,98 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertIn("Attached files:", service.graph.drafts[0]["html_content"])
             self.assertEqual(service.graph.drafts[0]["attachments"], [csv_path, liquidation_path])
 
+
+class WeeklyRemitTeamsStatusTests(unittest.TestCase):
+    def test_successful_run_posts_one_complete_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            incoming = base / "incoming"
+            incoming.mkdir()
+            (incoming / "United Remit week.xlsx").write_bytes(b"remit")
+            (incoming / "United Liq week.xlsx").write_bytes(b"liq")
+            agent = build_agent(build_settings(base))
+
+            self.assertTrue(agent.scan_once(force=True))
+
+            self.assertEqual(len(agent.teams.messages), 1)
+            message = agent.teams.messages[0].text
+            self.assertIn("📬 Weekly Remit Status", message)
+            self.assertIn("**United Remit**\nFound", message)
+            self.assertIn("**United Liq**\nFound", message)
+            self.assertIn("**Attachments sent**\n2", message)
+            self.assertIn("**Archive result**\nArchived", message)
+            self.assertIn("**Final Status**\nSuccess", message)
+
+    def test_missing_file_posts_one_missing_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            incoming = base / "incoming"
+            incoming.mkdir()
+            (incoming / "United Remit week.xlsx").write_bytes(b"remit")
+            agent = build_agent(build_settings(base))
+
+            self.assertFalse(agent.scan_once(force=True))
+            self.assertFalse(agent.scan_once(force=True))
+
+            self.assertEqual(len(agent.teams.messages), 1)
+            message = agent.teams.messages[0].text
+            self.assertIn("**United Remit**\nFound", message)
+            self.assertIn("**United Liq**\nMissing", message)
+            self.assertIn("**Final Status**\nMissing United Liq", message)
+
+    def test_duplicate_remit_posts_one_duplicate_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            incoming = base / "incoming"
+            incoming.mkdir()
+            (incoming / "United Remit week.xlsx").write_bytes(b"remit")
+            (incoming / "United Liq week.xlsx").write_bytes(b"liq")
+            agent = build_agent(build_settings(base))
+            self.assertTrue(agent.scan_once(force=True))
+            (incoming / "United Remit week.xlsx").write_bytes(b"remit")
+            (incoming / "United Liq week.xlsx").write_bytes(b"liq")
+
+            self.assertFalse(agent.scan_once(force=True))
+            self.assertEqual(len(agent.teams.messages), 2)
+            self.assertIn("**Final Status**\nDuplicate remit", agent.teams.messages[-1].text)
+
+    def test_email_failure_posts_failure_status_without_moving_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            incoming = base / "incoming"
+            incoming.mkdir()
+            remit = incoming / "United Remit week.xlsx"
+            liquidation = incoming / "United Liq week.xlsx"
+            remit.write_bytes(b"remit")
+            liquidation.write_bytes(b"liq")
+            agent = build_agent(build_settings(base))
+            agent.graph = FailingGraph()
+
+            with self.assertRaisesRegex(RuntimeError, "email unavailable"):
+                agent.scan_once(force=True)
+
+            self.assertEqual(len(agent.teams.messages), 1)
+            self.assertIn("**Final Status**\nEmail send failed", agent.teams.messages[0].text)
+            self.assertTrue(remit.exists())
+            self.assertTrue(liquidation.exists())
+
+    def test_dry_run_previews_but_does_not_post(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            incoming = base / "incoming"
+            incoming.mkdir()
+            (incoming / "United Remit week.xlsx").write_bytes(b"remit")
+            (incoming / "United Liq week.xlsx").write_bytes(b"liq")
+            settings = build_settings(base)
+            settings.dry_run = True
+            agent = build_agent(settings)
+
+            self.assertTrue(agent.scan_once(force=True))
+
+            self.assertEqual(len(agent.teams.messages), 1)
+            self.assertTrue(agent.teams.messages[0].text.endswith("Success (DRY RUN preview)"))
+            self.assertEqual(agent.graph.sent_count, 0)
+
     def test_icr_import_requires_liquidation_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -274,9 +366,16 @@ class FakeGraph:
 class FakeTeams:
     def __init__(self) -> None:
         self.sent_count = 0
+        self.messages = []
 
     def send(self, message) -> None:
         self.sent_count += 1
+        self.messages.append(message)
+
+
+class FailingGraph:
+    def send_user_mail(self, **kwargs) -> None:
+        raise RuntimeError("email unavailable")
 
 
 class TestableWeeklyRemitAgent(WeeklyRemitAgent):

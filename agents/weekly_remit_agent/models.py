@@ -24,3 +24,16 @@ class RemitBatch:
     remit_hash: str
     liquidation_hash: str
 
+
+@dataclass(frozen=True)
+class RemitRunStatus:
+    broker_name: str
+    recipient_email: str
+    remit_found: bool
+    liquidation_found: bool
+    attachments_sent: int
+    send_time: str
+    processing_seconds: float
+    archive_result: str
+    final_status: str
+    dry_run: bool = False
