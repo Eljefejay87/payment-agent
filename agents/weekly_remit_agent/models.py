@@ -37,3 +37,20 @@ class RemitRunStatus:
     archive_result: str
     final_status: str
     dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class RemitApprovalPreview:
+    approval_id: str
+    created_at: str
+    expires_at: str
+    authorized_user_id: str
+    broker_name: str
+    recipient_email: str
+    week_start: str
+    subject: str
+    remit_filename: str
+    liquidation_filename: str
+    remit_hash: str
+    liquidation_hash: str
+    status: str

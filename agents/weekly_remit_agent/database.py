@@ -5,7 +5,7 @@ from pathlib import Path
 
 from shared.database import SQLiteDatabase
 
-from .models import RemitBatch
+from .models import RemitApprovalPreview, RemitBatch
 
 
 SCHEMA = """
@@ -39,6 +39,26 @@ CREATE TABLE IF NOT EXISTS remit_run_notifications (
     created_at TEXT NOT NULL,
     UNIQUE(broker_name, week_start, status)
 );
+
+CREATE TABLE IF NOT EXISTS remit_approvals (
+    approval_id TEXT PRIMARY KEY,
+    authorized_user_id TEXT NOT NULL,
+    broker_name TEXT NOT NULL,
+    week_start TEXT NOT NULL,
+    recipient_email TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    remit_filename TEXT NOT NULL,
+    remit_hash TEXT NOT NULL,
+    liquidation_filename TEXT NOT NULL,
+    liquidation_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remit_approvals_lookup
+ON remit_approvals(approval_id, authorized_user_id, status);
 """
 
 
@@ -102,5 +122,43 @@ class RemitDatabase(SQLiteDatabase):
                 VALUES (?, ?, ?, ?)
                 """,
                 (broker_name, week_start, status, now),
+            )
+            return cursor.rowcount == 1
+
+    def save_approval(self, preview: RemitApprovalPreview) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO remit_approvals
+                (approval_id, authorized_user_id, broker_name, week_start, recipient_email,
+                 subject, remit_filename, remit_hash, liquidation_filename, liquidation_hash,
+                 status, created_at, expires_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    preview.approval_id, preview.authorized_user_id, preview.broker_name,
+                    preview.week_start, preview.recipient_email, preview.subject,
+                    preview.remit_filename, preview.remit_hash, preview.liquidation_filename,
+                    preview.liquidation_hash, preview.status, preview.created_at,
+                    preview.expires_at, preview.created_at,
+                ),
+            )
+
+    def get_approval(self, approval_id: str) -> RemitApprovalPreview | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT approval_id, created_at, expires_at, authorized_user_id, broker_name,
+                recipient_email, week_start, subject, remit_filename, liquidation_filename,
+                remit_hash, liquidation_hash, status FROM remit_approvals WHERE approval_id = ?""",
+                (approval_id,),
+            ).fetchone()
+        return RemitApprovalPreview(**dict(row)) if row else None
+
+    def update_approval_status(self, approval_id: str, user_id: str, expected: str, status: str, updated_at: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE remit_approvals SET status = ?, updated_at = ?
+                WHERE approval_id = ? AND authorized_user_id = ? AND status = ?""",
+                (status, updated_at, approval_id, user_id, expected),
             )
             return cursor.rowcount == 1

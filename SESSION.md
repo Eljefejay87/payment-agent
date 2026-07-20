@@ -2,6 +2,8 @@
 
 ## Current Milestone
 
+- Added a disabled-by-default Weekly Remit approval bridge for Jason. It creates durable SQLite previews bound to the exact authorized user, broker/week, recipient, subject, filenames, and SHA-256 hashes. Approval records only save `approved_pending_send`; they do not call email send, move, or archive code. Expired, replayed, wrong-user, duplicate, and changed-file approvals fail closed.
+
 Jason Cloud Readiness Foundation
 
 ## Completed

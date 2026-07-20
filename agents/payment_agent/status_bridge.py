@@ -10,6 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from agents.weekly_remit_agent.approval_service import WeeklyRemitApprovalService
+from agents.weekly_remit_agent.config import load_remit_settings
+
 
 _SERVICE = {"not_started", "starting", "running", "stopped", "error", "unreadable", "unknown"}
 _GRAPH = {"available", "unavailable", "unknown"}
@@ -62,10 +65,11 @@ def _token_matches(value: str, expected: str) -> bool:
 
 
 class PaymentStatusBridge:
-    def __init__(self, *, token: str, payment_health_path: Path, voicemail_health_path: Path, host: str = "0.0.0.0", port: int = 8091) -> None:
+    def __init__(self, *, token: str, payment_health_path: Path, voicemail_health_path: Path, weekly_remit_approvals: WeeklyRemitApprovalService | None = None, host: str = "0.0.0.0", port: int = 8091) -> None:
         self.token = token
         self.payment_health_path = payment_health_path
         self.voicemail_health_path = voicemail_health_path
+        self.weekly_remit_approvals = weekly_remit_approvals
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -81,6 +85,32 @@ class PaymentStatusBridge:
                 logging.info("payment_status_bridge result=ok")
                 bridge._respond(self, 200, build_status_payload(bridge.payment_health_path, bridge.voicemail_health_path))
 
+            def do_POST(self) -> None:  # noqa: N802
+                supplied = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+                if not _token_matches(supplied, bridge.token):
+                    logging.warning("payment_status_bridge result=denied")
+                    bridge._respond(self, 401, {})
+                    return
+                if bridge.weekly_remit_approvals is None:
+                    bridge._respond(self, 404, {})
+                    return
+                payload = bridge._request_payload(self)
+                user_id = payload.get("authorized_user_id")
+                if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
+                    bridge._respond(self, 400, {})
+                    return
+                if self.path == "/internal/weekly-remit/preview":
+                    result, preview = bridge.weekly_remit_approvals.create_preview(user_id)
+                elif self.path.startswith("/internal/weekly-remit/approvals/"):
+                    approval_id = self.path.rsplit("/", 1)[-1]
+                    action = payload.get("action")
+                    result, preview = (bridge.weekly_remit_approvals.approve(user_id, approval_id) if action == "approve" else bridge.weekly_remit_approvals.cancel(user_id, approval_id) if action == "cancel" else ("invalid", None))
+                else:
+                    bridge._respond(self, 404, {})
+                    return
+                logging.info("weekly_remit_approval_bridge result=%s", result)
+                bridge._respond(self, 200, {"status": result, "preview": bridge._safe_preview(preview)})
+
             def log_message(self, _format: str, *_args: object) -> None:
                 return
 
@@ -94,6 +124,28 @@ class PaymentStatusBridge:
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
+
+    @staticmethod
+    def _request_payload(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+        try:
+            length = int(handler.headers.get("Content-Length", "0"))
+            if length < 1 or length > 2048:
+                return {}
+            value = json.loads(handler.rfile.read(length).decode("utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+
+    @staticmethod
+    def _safe_preview(preview: Any) -> dict[str, Any] | None:
+        if preview is None:
+            return None
+        return {
+            "approval_id": preview.approval_id, "created_at": preview.created_at, "expires_at": preview.expires_at,
+            "broker": preview.broker_name, "recipient": preview.recipient_email, "week": preview.week_start,
+            "subject": preview.subject, "attachment_filenames": [preview.remit_filename, preview.liquidation_filename],
+            "attachment_count": 2, "status": preview.status,
+        }
 
     def start(self) -> None:
         import threading
@@ -115,10 +167,12 @@ def from_environment(payment_health_path: Path) -> PaymentStatusBridge | None:
         return None
     voicemail_path = Path(os.getenv("VOICEMAIL_HEALTH_PATH", "/data/voicemail_health.json"))
     try:
+        remit_approvals = WeeklyRemitApprovalService(load_remit_settings()) if os.getenv("WEEKLY_REMIT_APPROVAL_BRIDGE_ENABLED", "false").lower() == "true" else None
         return PaymentStatusBridge(
             token=token,
             payment_health_path=payment_health_path,
             voicemail_health_path=voicemail_path,
+            weekly_remit_approvals=remit_approvals,
             host=os.getenv("PAYMENT_STATUS_BRIDGE_HOST", "0.0.0.0"),
             port=int(os.getenv("PAYMENT_STATUS_BRIDGE_PORT", "8091")),
         )
