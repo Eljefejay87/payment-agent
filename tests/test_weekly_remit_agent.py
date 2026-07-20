@@ -16,6 +16,7 @@ from agents.weekly_remit_agent.file_detector import RemitFileValidationError, fi
 from agents.weekly_remit_agent.models import RemitBatch, RemitFiles
 from agents.weekly_remit_agent.reports import build_broker_email_html, build_broker_email_subject
 from agents.weekly_remit_agent.service import WeeklyRemitAgent
+from agents.weekly_remit_agent.approval_service import WeeklyRemitApprovalService
 
 
 class WeeklyRemitFileTests(unittest.TestCase):
@@ -125,6 +126,51 @@ class WeeklyRemitServiceTests(unittest.TestCase):
             self.assertEqual(agent.graph.sent_count, 1)
             self.assertTrue((base / "duplicates" / "2026-06-29" / "United Remit week.xlsx").exists())
             self.assertTrue((base / "duplicates" / "2026-06-29" / "United Liq week.xlsx").exists())
+
+
+class WeeklyRemitApprovalTests(unittest.TestCase):
+    def test_preview_and_approval_never_send_or_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            incoming = base / "incoming"; incoming.mkdir()
+            remit = incoming / "United Remit week.xlsx"; remit.write_bytes(b"remit")
+            liq = incoming / "United Liq week.xlsx"; liq.write_bytes(b"liq")
+            now = datetime.fromisoformat("2026-06-29T12:00:00+00:00")
+            service = WeeklyRemitApprovalService(build_settings(base), now=lambda: now, id_factory=lambda: "opaque-approval-123456")
+            status, preview = service.create_preview("42")
+            self.assertEqual(status, "created")
+            self.assertEqual(preview.remit_filename, remit.name)
+            self.assertEqual(service.approve("42", preview.approval_id)[0], "approved_pending_send")
+            self.assertTrue(remit.exists()); self.assertTrue(liq.exists())
+            self.assertFalse((base / "sent").exists())
+
+    def test_rejects_wrong_user_expired_replay_and_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir); incoming = base / "incoming"; incoming.mkdir()
+            remit = incoming / "United Remit week.xlsx"; remit.write_bytes(b"one")
+            (incoming / "United Liq week.xlsx").write_bytes(b"liq")
+            current = [datetime.fromisoformat("2026-06-29T12:00:00+00:00")]
+            identifiers = iter(["opaque-approval-123456", "opaque-approval-654321"])
+            service = WeeklyRemitApprovalService(build_settings(base), now=lambda: current[0], id_factory=lambda: next(identifiers))
+            _, preview = service.create_preview("42")
+            self.assertEqual(service.approve("99", preview.approval_id)[0], "not_pending")
+            remit.write_bytes(b"changed")
+            self.assertEqual(service.approve("42", preview.approval_id)[0], "file_mismatch")
+            self.assertEqual(service.approve("42", preview.approval_id)[0], "not_pending")
+            _, second = service.create_preview("42")
+            current[0] += timedelta(days=2)
+            self.assertEqual(service.approve("42", second.approval_id)[0], "expired")
+
+    def test_missing_file_and_cancellation_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir); (base / "incoming").mkdir()
+            service = WeeklyRemitApprovalService(build_settings(base), id_factory=lambda: "opaque-approval-123456")
+            self.assertEqual(service.create_preview("42")[0], "files_unavailable")
+            (base / "incoming" / "United Remit week.xlsx").write_bytes(b"remit")
+            (base / "incoming" / "United Liq week.xlsx").write_bytes(b"liq")
+            _, preview = service.create_preview("42")
+            self.assertEqual(service.cancel("42", preview.approval_id)[0], "cancelled")
+            self.assertEqual(service.approve("42", preview.approval_id)[0], "not_pending")
 
 
 class ICRRemitImportTests(unittest.TestCase):

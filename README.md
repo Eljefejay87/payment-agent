@@ -415,6 +415,12 @@ Each completed Weekly Remit processing outcome produces one structured owner sta
 
 Failure statuses are intentionally limited to operational outcomes such as `Missing United Remit`, `Missing United Liq`, `Duplicate remit`, `Email send failed`, `Validation failed`, and `Deadline missed`; no report contents or credentials are included.
 
+### Weekly Remit Approval Preview (Phase 1)
+
+The optional private approval bridge creates a durable preview with only broker, recipient, week, existing subject, filenames, count, expiration, and an opaque approval ID. It binds the approval to the authenticated Jason user and exact file hashes. Records expire after 24 hours and invalidate if the source files, recipient, subject, broker, or week changes.
+
+Phase 1 is saved-only: `approved_pending_send` never calls Microsoft Graph, sends an email, moves a file, or archives a remit. Controlled sending requires a future explicit phase.
+
 ### Microsoft Graph Permission For Broker Email
 
 The email Microsoft Graph app needs permission to send mail from the configured mailbox:
