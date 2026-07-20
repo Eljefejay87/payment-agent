@@ -3,7 +3,7 @@ from __future__ import annotations
 from shared.integrations.microsoft_teams import TeamsMessage
 from shared.utils.text import escape_html
 
-from .models import RemitBatch
+from .models import RemitBatch, RemitRunStatus
 
 
 def build_broker_email_subject(batch: RemitBatch) -> str:
@@ -55,3 +55,56 @@ def build_owner_teams_message(batch: RemitBatch) -> TeamsMessage:
         "</ul>"
     )
     return TeamsMessage(title=title, text=text, html=html)
+
+
+def build_remit_status_teams_message(status: RemitRunStatus) -> TeamsMessage:
+    """Build the owner-facing, non-sensitive remit run status update."""
+    remit_state = "Found" if status.remit_found else "Missing"
+    liquidation_state = "Found" if status.liquidation_found else "Missing"
+    attachment_text = str(status.attachments_sent)
+    if status.dry_run:
+        attachment_text += " (preview only)"
+    lines = [
+        "📬 Weekly Remit Status",
+        "",
+        "**Broker**",
+        status.broker_name,
+        "",
+        "**United Remit**",
+        remit_state,
+        "",
+        "**United Liq**",
+        liquidation_state,
+        "",
+        "**Recipient**",
+        status.recipient_email or "Not available",
+        "",
+        "**Attachments sent**",
+        attachment_text,
+        "",
+        "**Send time**",
+        status.send_time,
+        "",
+        "**Processing duration**",
+        f"{status.processing_seconds:.2f} seconds",
+        "",
+        "**Archive result**",
+        status.archive_result,
+        "",
+        "**Final Status**",
+        status.final_status,
+    ]
+    text = "\n".join(lines)
+    html = (
+        "<h2>Weekly Remit Status</h2>"
+        f"<p><strong>Broker:</strong> {escape_html(status.broker_name)}</p>"
+        f"<p><strong>United Remit:</strong> {remit_state}</p>"
+        f"<p><strong>United Liq:</strong> {liquidation_state}</p>"
+        f"<p><strong>Recipient:</strong> {escape_html(status.recipient_email or 'Not available')}</p>"
+        f"<p><strong>Attachments sent:</strong> {escape_html(attachment_text)}</p>"
+        f"<p><strong>Send time:</strong> {escape_html(status.send_time)}</p>"
+        f"<p><strong>Processing duration:</strong> {status.processing_seconds:.2f} seconds</p>"
+        f"<p><strong>Archive result:</strong> {escape_html(status.archive_result)}</p>"
+        f"<p><strong>Final Status:</strong> {escape_html(status.final_status)}</p>"
+    )
+    return TeamsMessage(title="Weekly Remit Status", text=text, html=html)

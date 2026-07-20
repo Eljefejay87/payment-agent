@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import shutil
+import time as time_module
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -13,8 +14,8 @@ from shared.integrations.microsoft_teams import TeamsNotifier
 from .config import RemitSettings
 from .database import RemitDatabase
 from .file_detector import RemitFileValidationError, find_required_remit_files
-from .models import RemitBatch, RemitFiles
-from .reports import build_broker_email_html, build_broker_email_subject, build_owner_teams_message
+from .models import RemitBatch, RemitFiles, RemitRunStatus
+from .reports import build_broker_email_html, build_broker_email_subject, build_remit_status_teams_message
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,12 +47,27 @@ class WeeklyRemitAgent:
     def scan_once(self, force: bool = False) -> bool:
         self.initialize()
         now = self._now()
+        started_at = time_module.monotonic()
+        week_start = self._week_start(now)
+        sent_date = now.date().isoformat()
         if not force and not self._is_send_window(now):
+            if self._is_deadline_missed(now) and not self.db.batch_exists(self.settings.broker_name, week_start):
+                remit_found, liquidation_found = self._file_availability()
+                self._send_status_update(
+                    week_start,
+                    self._run_status(
+                        now,
+                        started_at,
+                        remit_found=remit_found,
+                        liquidation_found=liquidation_found,
+                        attachments_sent=0,
+                        archive_result="Not attempted",
+                        final_status="Deadline missed",
+                    ),
+                )
             LOGGER.info("Weekly Remit Agent waiting for Monday send window")
             return False
 
-        week_start = self._week_start(now)
-        sent_date = now.date().isoformat()
         try:
             files = find_required_remit_files(
                 self.settings.incoming_folder,
@@ -61,11 +77,36 @@ class WeeklyRemitAgent:
             )
         except RemitFileValidationError as exc:
             LOGGER.info("Weekly remit files not ready: %s", exc)
+            remit_found, liquidation_found = self._file_availability()
+            self._send_status_update(
+                week_start,
+                self._run_status(
+                    now,
+                    started_at,
+                    remit_found=remit_found,
+                    liquidation_found=liquidation_found,
+                    attachments_sent=0,
+                    archive_result="Not attempted",
+                    final_status=self._validation_failure_status(exc),
+                ),
+            )
             return False
 
         if self.db.batch_exists(self.settings.broker_name, week_start):
             LOGGER.info("Duplicate weekly remit detected for %s week %s", self.settings.broker_name, week_start)
             self._move_files(files, self._dated_folder(self.settings.duplicate_folder, sent_date))
+            self._send_status_update(
+                week_start,
+                self._run_status(
+                    now,
+                    started_at,
+                    remit_found=True,
+                    liquidation_found=True,
+                    attachments_sent=0,
+                    archive_result="Archived to duplicate folder",
+                    final_status="Duplicate remit",
+                ),
+            )
             return False
 
         batch = RemitBatch(
@@ -78,10 +119,69 @@ class WeeklyRemitAgent:
             liquidation_hash=self._file_hash(files.liquidation),
         )
 
-        self._send_broker_email(batch)
-        self.db.save_sent_batch(batch)
-        self._send_owner_update(batch)
-        self._move_files(batch.files, self._dated_folder(self.settings.sent_folder, batch.sent_date))
+        try:
+            self._send_broker_email(batch)
+        except Exception:
+            self._send_status_update(
+                week_start,
+                self._run_status(
+                    now,
+                    started_at,
+                    remit_found=True,
+                    liquidation_found=True,
+                    attachments_sent=0,
+                    archive_result="Not attempted",
+                    final_status="Email send failed",
+                ),
+            )
+            raise
+
+        try:
+            self.db.save_sent_batch(batch)
+        except Exception:
+            self._send_status_update(
+                week_start,
+                self._run_status(
+                    now,
+                    started_at,
+                    remit_found=True,
+                    liquidation_found=True,
+                    attachments_sent=0,
+                    archive_result="Not attempted",
+                    final_status="Validation failed",
+                ),
+            )
+            raise
+
+        try:
+            self._move_files(batch.files, self._dated_folder(self.settings.sent_folder, batch.sent_date))
+        except Exception:
+            self._send_status_update(
+                week_start,
+                self._run_status(
+                    now,
+                    started_at,
+                    remit_found=True,
+                    liquidation_found=True,
+                    attachments_sent=len(batch.files.attachments) if not self.settings.dry_run else 0,
+                    archive_result="Archive failed",
+                    final_status="Validation failed",
+                ),
+            )
+            raise
+
+        self._send_status_update(
+            week_start,
+            self._run_status(
+                now,
+                started_at,
+                remit_found=True,
+                liquidation_found=True,
+                attachments_sent=len(batch.files.attachments) if not self.settings.dry_run else 0,
+                archive_result="Archived",
+                final_status="Success" if not self.settings.dry_run else "Success (DRY RUN preview)",
+            ),
+        )
         LOGGER.info("Weekly remit sent for %s week %s", batch.broker_name, batch.week_start)
         return True
 
@@ -101,13 +201,63 @@ class WeeklyRemitAgent:
             attachments=batch.files.attachments,
         )
 
-    def _send_owner_update(self, batch: RemitBatch) -> None:
+    def _send_status_update(self, week_start: str, status: RemitRunStatus) -> None:
         if not self.settings.send_owner_teams_update:
             return
+        if not self.settings.dry_run and not self.db.reserve_status_notification(
+            self.settings.broker_name,
+            week_start,
+            status.final_status,
+        ):
+            LOGGER.info("Weekly remit Teams status already recorded for %s", status.final_status)
+            return
         try:
-            self.teams.send(build_owner_teams_message(batch))
+            self.teams.send(build_remit_status_teams_message(status))
         except Exception:
-            LOGGER.exception("Owner Teams remit confirmation failed")
+            LOGGER.exception("Owner Teams remit status update failed")
+
+    def _run_status(
+        self,
+        now: datetime,
+        started_at: float,
+        *,
+        remit_found: bool,
+        liquidation_found: bool,
+        attachments_sent: int,
+        archive_result: str,
+        final_status: str,
+    ) -> RemitRunStatus:
+        return RemitRunStatus(
+            broker_name=self.settings.broker_name,
+            recipient_email=self.settings.broker_email,
+            remit_found=remit_found,
+            liquidation_found=liquidation_found,
+            attachments_sent=attachments_sent,
+            send_time=now.isoformat(timespec="seconds"),
+            processing_seconds=time_module.monotonic() - started_at,
+            archive_result=archive_result,
+            final_status=final_status,
+            dry_run=self.settings.dry_run,
+        )
+
+    def _file_availability(self) -> tuple[bool, bool]:
+        files = [
+            path
+            for path in self.settings.incoming_folder.iterdir()
+            if path.is_file() and path.suffix.lower() in self.settings.allowed_extensions
+        ]
+        return (
+            any(self.settings.remit_filename_contains.lower() in path.name.lower() for path in files),
+            any(self.settings.liquidation_filename_contains.lower() in path.name.lower() for path in files),
+        )
+
+    def _validation_failure_status(self, error: RemitFileValidationError) -> str:
+        value = str(error).lower()
+        if "missing remit" in value:
+            return "Missing United Remit"
+        if "missing liquidation" in value:
+            return "Missing United Liq"
+        return "Validation failed"
 
     def _move_files(self, files: RemitFiles, destination: Path) -> None:
         destination.mkdir(parents=True, exist_ok=True)
@@ -141,6 +291,9 @@ class WeeklyRemitAgent:
         if now.strftime("%A").lower() != self.settings.run_day:
             return False
         return now.time() <= self._deadline_time()
+
+    def _is_deadline_missed(self, now: datetime) -> bool:
+        return now.strftime("%A").lower() == self.settings.run_day and now.time() > self._deadline_time()
 
     def _deadline_time(self) -> time:
         hour, minute = self.settings.send_deadline.split(":", 1)

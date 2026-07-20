@@ -233,6 +233,8 @@ Automated verification is passing: all 263 repository tests pass, including the 
 
 The Chargeback Tracker now retains partially readable unlabeled screenshot rows as manual-review candidates instead of dropping them. It preserves only OCR-confirmed fields, defaults/identifies NDH or ICR using the existing `NOT US` rule, and never appends a candidate missing required fields—even after explicit apply. Preview exposes the available field names locally without logging consumer values; Master Agent reports that required information could not be confirmed. No Google Sheet write was performed during development or testing.
 
+- Added a narrowly scoped Weekly Remit executive Teams status update. Every unique broker/week/outcome now produces one structured status notification (or a dry-run preview) covering United Remit and United Liq availability, recipient, attachment count, send time, processing duration, archive outcome, and an allowlisted final status. SQLite notification reservations prevent repeated scheduler checks from posting duplicate Teams messages. Remit parsing, broker email generation, duplicate batch detection, scheduling, folder movement, and broker logic remain unchanged.
+
 ## Next Recommended Task
 
 Run the real screenshot through the normal preview command, review valid records plus any manual-review candidates, and do not use `--apply` until the preview is explicitly approved.

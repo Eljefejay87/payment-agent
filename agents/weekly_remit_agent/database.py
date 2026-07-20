@@ -30,6 +30,15 @@ ON remit_batches(broker_name, week_start);
 
 CREATE INDEX IF NOT EXISTS idx_remit_batches_status
 ON remit_batches(status);
+
+CREATE TABLE IF NOT EXISTS remit_run_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    broker_name TEXT NOT NULL,
+    week_start TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(broker_name, week_start, status)
+);
 """
 
 
@@ -77,3 +86,21 @@ class RemitDatabase(SQLiteDatabase):
                 ),
             )
 
+    def reserve_status_notification(
+        self,
+        broker_name: str,
+        week_start: str,
+        status: str,
+    ) -> bool:
+        """Reserve one owner notification per broker/week/status outcome."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO remit_run_notifications
+                (broker_name, week_start, status, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (broker_name, week_start, status, now),
+            )
+            return cursor.rowcount == 1

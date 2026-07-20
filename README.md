@@ -360,7 +360,7 @@ United Remit*.xlsx or United Remit*.csv
 United Liq*.xlsx or United Liq*.csv
 ```
 
-The spreadsheet contents and formatting are not changed. The agent only validates that both files exist, sends them, records the send in SQLite, sends the owner Teams confirmation, and moves the sent files into a dated folder:
+The spreadsheet contents and formatting are not changed. The agent validates that both files exist, sends them, records the send in SQLite, posts one owner Teams status per unique broker/week/outcome, and moves the sent files into a dated folder:
 
 ```text
 remits/sent/ICR/YYYY-MM-DD/
@@ -408,6 +408,12 @@ REMIT_OWNER_TEAMS_CHAT_ID=
 ```
 
 `REMIT_OWNER_TEAMS_CHAT_ID` should be your private one-on-one Teams chat ID, not the UCM Leadership group chat ID.
+
+### Weekly Remit Teams Status
+
+Each completed Weekly Remit processing outcome produces one structured owner status with file availability, recipient, attachment count, send time, processing duration, archive result, and final status. Repeated scheduler checks for the same broker/week/outcome are recorded in SQLite and do not create duplicate Teams posts. In `DRY_RUN=true`, the same message is generated as a log preview but is not posted to Teams.
+
+Failure statuses are intentionally limited to operational outcomes such as `Missing United Remit`, `Missing United Liq`, `Duplicate remit`, `Email send failed`, `Validation failed`, and `Deadline missed`; no report contents or credentials are included.
 
 ### Microsoft Graph Permission For Broker Email
 
