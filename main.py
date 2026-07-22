@@ -15,6 +15,10 @@ from shared.data_layer.main import main as shared_data_main
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].startswith("ai-budget-"):
+        from shared.ai_budget_cli import main as ai_budget_main
+
+        sys.exit(ai_budget_main())
     if len(sys.argv) > 1 and sys.argv[1] == "chief-of-staff":
         del sys.argv[1]
         sys.exit(chief_of_staff_main())
