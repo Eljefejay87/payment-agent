@@ -7,6 +7,7 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from shared.logging import configure_logging
@@ -22,13 +23,32 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="United Account Services Voicemail Tracker Agent")
     parser.add_argument(
         "command",
-        choices=["scan-once", "test-sample", "run", "health"],
+        choices=[
+            "scan-once",
+            "retry-transcriptions",
+            "backfill-transcriptions",
+            "test-sample",
+            "run",
+            "health",
+        ],
         help="Action to run.",
     )
     parser.add_argument("--env-file", default=None, help="Optional path to .env file.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Prevent external writes while preserving local restart-safe state.",
+    )
+    parser.add_argument(
+        "--source-runtime-state",
+        default=None,
+        help="Legacy voicemail runtime JSON to use for a one-time backfill.",
+    )
     args = parser.parse_args()
 
     settings = load_settings(args.env_file)
+    if args.dry_run:
+        settings = replace(settings, dry_run=True)
     configure_logging(settings.log_level)
 
     agent = VoicemailTrackerAgent(settings)
@@ -54,6 +74,24 @@ def main() -> int:
         logging.info("Voicemail intake scan complete. Parsed %s new voicemail(s).", len(records))
         return 0
 
+    if args.command == "retry-transcriptions":
+        records = agent.retry_pending_transcriptions()
+        print(json.dumps(records, indent=2))
+        logging.info(
+            "Voicemail transcription retry complete. Processed %s pending job(s).",
+            len(records),
+        )
+        return 0
+
+    if args.command == "backfill-transcriptions":
+        records = agent.backfill_pending_transcriptions(args.source_runtime_state)
+        print(json.dumps(records, indent=2))
+        logging.info(
+            "Voicemail transcription backfill complete. Queued %s pending job(s).",
+            len(records),
+        )
+        return 0
+
     if args.command == "run":
         scheduler = AgentScheduler()
         health = VoicemailHealth(settings.health_path)
@@ -74,12 +112,20 @@ def main() -> int:
         signal.signal(signal.SIGINT, stop_agent)
 
         scan_job = lambda: run_with_retry("scan_once", agent.scan_once, health)
+        retry_job = lambda: run_with_retry(
+            "retry_transcriptions",
+            agent.retry_pending_transcriptions,
+            health,
+            attempts=1,
+        )
         scheduler.every_minutes(settings.scan_interval_minutes, scan_job)
+        scheduler.every_minutes(settings.transcription_retry_poll_minutes, retry_job)
         _schedule_weekday_summary_slot(scheduler, settings.summary_time)
         if settings.run_startup_scan:
             scan_job()
         else:
             logging.info("Startup scan skipped by VOICEMAIL_RUN_STARTUP_SCAN=false")
+        retry_job()
         try:
             scheduler.run_forever()
         finally:

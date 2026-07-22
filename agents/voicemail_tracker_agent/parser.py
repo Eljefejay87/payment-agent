@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from shared.utils.text import html_to_text
 
+from .audio import AudioProcessingResult, process_audio_attachment
 from .models import VoicemailRecord
 
 PHONE_RE = re.compile(
@@ -17,20 +20,67 @@ DURATION_RE = re.compile(r"(?:duration|length)\D{0,20}([0-9]{1,2}:[0-9]{2}(?::[0
 TRANSCRIPT_RE = re.compile(r"(?:transcript|message)\s*:?\s*(.+)", re.IGNORECASE | re.DOTALL)
 
 
-def parse_voicemail_message(message: dict, timezone_name: str) -> VoicemailRecord:
+@dataclass(frozen=True)
+class ParsedVoicemail:
+    record: VoicemailRecord
+    audio_attachment: dict | None
+    audio_result: AudioProcessingResult
+
+
+def parse_voicemail_message(
+    message: dict,
+    timezone_name: str,
+    audio_processor: Callable[[dict], AudioProcessingResult] = process_audio_attachment,
+) -> VoicemailRecord:
+    return parse_voicemail_message_details(
+        message,
+        timezone_name,
+        audio_processor,
+    ).record
+
+
+def parse_voicemail_message_details(
+    message: dict,
+    timezone_name: str,
+    audio_processor: Callable[[dict], AudioProcessingResult] = process_audio_attachment,
+) -> ParsedVoicemail:
     text = _message_text(message)
     received = _received_datetime(message.get("receivedDateTime", ""), timezone_name)
     attachments = message.get("attachments") or []
-    return VoicemailRecord(
+    audio = next(
+        (
+            attachment
+            for attachment in attachments
+            if is_audio_attachment(
+                attachment.get("name", ""),
+                attachment.get("contentType", ""),
+            )
+        ),
+        None,
+    )
+    audio_result = (
+        audio_processor(audio)
+        if audio and "content_bytes" in audio
+        else AudioProcessingResult(
+            duration=_first_match(DURATION_RE, text),
+            transcript=_transcript(text),
+        )
+    )
+    record = VoicemailRecord(
         date_received=received.strftime("%Y-%m-%d"),
         time_received=received.strftime("%H:%M:%S"),
         phone_number=_first_match(PHONE_RE, text) or _first_match(LOOSE_PHONE_RE, text),
-        duration=_first_match(DURATION_RE, text),
-        transcript=_transcript(text),
+        duration=audio_result.duration,
+        transcript=audio_result.transcript,
         audio_reference=_audio_reference(attachments),
         source_email_id=message.get("internetMessageId") or message.get("id", ""),
         email_subject=message.get("subject", ""),
         sender_email=_sender_email(message),
+    )
+    return ParsedVoicemail(
+        record=record,
+        audio_attachment=audio,
+        audio_result=audio_result,
     )
 
 
@@ -87,12 +137,12 @@ def _audio_reference(attachments: list[dict]) -> str:
     names = [
         attachment.get("name", "")
         for attachment in attachments
-        if _looks_like_audio(attachment.get("name", ""), attachment.get("contentType", ""))
+        if is_audio_attachment(attachment.get("name", ""), attachment.get("contentType", ""))
     ]
     return ", ".join(name for name in names if name)
 
 
-def _looks_like_audio(name: str, content_type: str) -> bool:
+def is_audio_attachment(name: str, content_type: str) -> bool:
     lowered_name = (name or "").lower()
     lowered_type = (content_type or "").lower()
     return lowered_type.startswith("audio/") or lowered_name.endswith((".wav", ".mp3", ".m4a", ".ogg"))

@@ -4,6 +4,33 @@ The Payment Agent monitors Microsoft 365 email for online payment notification e
 
 Dry-run mode is enabled by default, so the agent can be tested without sending Teams messages.
 
+## AI Budget Guard (Phase 1)
+
+All current OpenAI traffic is admitted through a shared local SQLite guard before
+the network request is made. The calendar-month hard limit is `$20.00`, with
+warnings at `$10.00`, `$15.00`, and `$18.00`. Reaching `$20.00` activates the
+kill switch for OpenAI-powered work only; non-OpenAI work continues normally.
+
+The default usage database is
+`~/Library/Application Support/UCM/payment-agent/ai_budget.sqlite3`. Configure
+`AI_BUDGET_DATABASE_PATH` to use another local durable path. Voicemail
+transcription estimates use audio duration multiplied by the model rate:
+`$0.003`/minute for `gpt-4o-mini-transcribe` and `$0.006`/minute for
+`gpt-4o-transcribe` or `whisper-1`. Unknown models use `$0.01`/minute. The
+optional `AI_BUDGET_TRANSCRIPTION_RATE_USD_PER_MINUTE` overrides those rates. If
+duration cannot be read, `AI_BUDGET_UNKNOWN_REQUEST_ESTIMATE_USD` (default
+`$0.01`) is reserved conservatively.
+
+```bash
+python main.py ai-budget-status
+python main.py ai-budget-pause
+python main.py ai-budget-resume
+python main.py ai-budget-reset --confirm
+```
+
+Reset retains the audit rows and starts a new current-month accounting window.
+The automatic calendar-month reset requires no command or running service.
+
 ## What It Does
 
 - Scans a Microsoft 365 mailbox for messages whose subject contains `Online Payment -`.
@@ -147,6 +174,8 @@ VOICEMAIL_STATUS_PATH=~/Library/Application Support/UCM/payment-agent/voicemail_
 VOICEMAIL_RUNTIME_STATE_PATH=~/Library/Application Support/UCM/payment-agent/voicemail_runtime_state.json
 VOICEMAIL_HEALTH_PATH=~/Library/Application Support/UCM/payment-agent/voicemail_health.json
 VOICEMAIL_SCAN_INTERVAL_MINUTES=15
+VOICEMAIL_TRANSCRIPTION_MAX_ATTEMPTS=5
+VOICEMAIL_TRANSCRIPTION_RETRY_POLL_MINUTES=1
 VOICEMAIL_SUMMARY_TIME=08:50
 ```
 
@@ -157,12 +186,18 @@ identifier, or debtor data. Phase 1 has no callback-resolution workflow, so the
 pending callback count is the number of voicemail records found by the latest
 successful scan.
 
-The voicemail agent uses Outlook message ID / internet message ID as the source identifier for duplicate protection. The runtime state file stores processed voicemail IDs, the last successful scan timestamp, pending callback IDs, callback completion status, and the last Teams-summary guard date so redeploys cannot reprocess the same Outlook voicemail. Phase 1 still does not write to Google Sheets, move emails, delete emails, contact consumers, or add SCollect integration.
+The voicemail agent uses Outlook message ID / internet message ID as the source identifier for duplicate protection. The runtime state file stores processed voicemail IDs, callback state, and pending transcription jobs. A transcription job keeps the unchanged voicemail record, Outlook attachment reference, retry status, attempt count, next retry time, and last error; raw MP3 content is not stored. Phase 1 still does not write to Google Sheets, move emails, delete emails, contact consumers, or add SCollect integration.
 
 Check voicemail health:
 
 ```bash
 python main.py voicemail-health
+```
+
+Process only pending transcription jobs whose retry time has arrived:
+
+```bash
+python main.py voicemail-retry-transcriptions
 ```
 
 Run the long-lived Railway-ready worker locally:

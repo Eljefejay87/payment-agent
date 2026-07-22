@@ -28,6 +28,8 @@ class Settings:
     status_path: Path = DEFAULT_LOCAL_DATA_DIR / "voicemail_status.json"
     runtime_state_path: Path = DEFAULT_LOCAL_DATA_DIR / "voicemail_runtime_state.json"
     health_path: Path = DEFAULT_LOCAL_DATA_DIR / "voicemail_health.json"
+    transcription_max_attempts: int = 5
+    transcription_retry_poll_minutes: int = 1
 
 
 def load_settings(env_file: str | None = None) -> Settings:
@@ -55,6 +57,14 @@ def load_settings(env_file: str | None = None) -> Settings:
             data_dir / "voicemail_runtime_state.json",
         ),
         health_path=_path_env("VOICEMAIL_HEALTH_PATH", data_dir / "voicemail_health.json"),
+        transcription_max_attempts=max(
+            1,
+            get_int("VOICEMAIL_TRANSCRIPTION_MAX_ATTEMPTS", 5),
+        ),
+        transcription_retry_poll_minutes=max(
+            1,
+            get_int("VOICEMAIL_TRANSCRIPTION_RETRY_POLL_MINUTES", 1),
+        ),
     )
 
 
