@@ -46,6 +46,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/operations":
             self._send_html(render_operations_page(self.dashboard_service.snapshot()["operations"]))
             return
+        if parsed.path == "/ai-control":
+            self._send_html(
+                render_ai_control_page(
+                    self.dashboard_service.ai_control_snapshot(),
+                    csrf_token=self.dashboard_service.control_csrf_token,
+                )
+            )
+            return
         if parsed.path == "/needs-review":
             self._send_html(
                 render_needs_review_page(
@@ -71,6 +79,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/status":
             self._send_json(self.dashboard_service.snapshot())
+            return
+        if parsed.path == "/api/ai-control":
+            self._send_json(self.dashboard_service.ai_control_snapshot())
             return
         if parsed.path == "/api/shared-dashboard":
             self._send_json(self.dashboard_service.shared_data.summary())
@@ -117,6 +128,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/ai-control/"):
+            self._handle_ai_control_action(parsed.path)
+            return
         cash_flow_match = re.fullmatch(r"/api/cash-flow/bills/([^/]+)/(save|approve)", parsed.path)
         if cash_flow_match:
             form = self._read_form()
@@ -165,6 +179,39 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             self._send_html(render_operations_review_page(report, error=result.message))
+
+    def _handle_ai_control_action(self, path: str) -> None:
+        # These controls can pause local services.  They are intentionally local
+        # only; the read-only dashboard remains available on its configured host.
+        if not _is_loopback_address(self.client_address[0]):
+            self.send_error(HTTPStatus.FORBIDDEN, "AI Control Center actions require local access")
+            return
+        form = self._read_form()
+        if form.get("csrf_token") != self.dashboard_service.control_csrf_token:
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid AI Control Center token")
+            return
+        request_id = form.get("request_id", "")
+        if path == "/api/ai-control/pause-ai":
+            result = self.dashboard_service.pause_ai_usage(request_id)
+        elif path == "/api/ai-control/resume-ai":
+            result = self.dashboard_service.resume_ai_usage(request_id)
+        elif path == "/api/ai-control/pause-all":
+            result = self.dashboard_service.pause_all_services(
+                request_id, form.get("confirmation", "")
+            )
+        elif path == "/api/ai-control/resume-all":
+            result = self.dashboard_service.resume_all_services(request_id)
+        else:
+            match = re.fullmatch(r"/api/ai-control/run-once/([a-z_]+)", path)
+            if not match:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            result = self.dashboard_service.run_one_time_ai_control_job(
+                match.group(1), request_id, form.get("confirmation", "")
+            )
+        self._send_json(
+            {"ok": result.ok, "message": result.message, "duplicate": result.duplicate}
+        )
 
     def _handle_review_action(self, record_id: str, action: str) -> None:
         form = self._read_form()
@@ -264,6 +311,101 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(content)
+
+
+def render_ai_control_page(control: dict, *, csrf_token: str) -> str:
+    budget = control["budget"]
+    agents = control["agents"]
+    activity = control["activity"]
+    chart = control["spending_chart"]
+    warning_state = control["warning_state"]
+    metrics = "".join(
+        f"<article class='metric ai-{_e(warning_state)}'><span>{_e(label)}</span><strong>{_e(value)}</strong></article>"
+        for label, value in (
+            ("Spend today", budget["spend_today"]),
+            ("Spend this month", budget["spend_this_month"]),
+            ("Monthly budget", budget["monthly_budget"]),
+            ("Remaining budget", budget["remaining_budget"]),
+            ("Percentage used", budget["percentage_used"]),
+            ("Kill switch", budget["kill_switch"]),
+            ("Manual pause", budget["manual_pause"]),
+        )
+    )
+    agent_rows = "".join(
+        "<tr>"
+        f"<td><strong>{_e(agent['name'])}</strong><br><button class='small secondary' onclick=\"runOneTime('{_e(agent['key'])}')\">Run one-time job</button></td>"
+        f"<td><span class='badge {_e(_state_badge(agent['state']))}'>{_e(agent['state'])}</span></td>"
+        f"<td>{_e(agent['last_run'])}</td><td>{_e(agent['last_successful_run'])}</td>"
+        f"<td>{_e(agent['last_failure'])}</td><td>{_e(agent['last_run_duration'])}</td>"
+        f"<td>{_e(agent['last_exit_code'])}</td><td>{_e(agent['openai_spend_today'])}</td>"
+        f"<td>{_e(agent['openai_spend_month'])}</td><td>{_e(agent['next_scheduled_run'])}</td>"
+        "</tr>"
+        for agent in agents
+    )
+    chart_max = max((point["amount"] for point in chart), default=0) or 1
+    chart_bars = "".join(
+        f"<div class='ai-chart-bar' title='{_e(point['date'])}: {_e(point['spend'])}'><span style='height:{max(2, round(point['amount'] / chart_max * 100))}%'></span><small>{_e(point['date'][-5:])}</small></div>"
+        for point in chart
+    )
+    activity_rows = "".join(
+        f"<li><span class='badge {_e(_activity_badge(event['status']))}'>{_e(event['status'])}</span> <strong>{_e(event['type'])}</strong> — {_e(event['message'])}<small>{_e(event['timestamp'] or 'time unavailable')}</small></li>"
+        for event in activity
+    ) or "<li class='muted'>No control or AI-budget activity recorded yet.</li>"
+    resume_message = control["controls"]["resume_all_services_message"]
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UCM AI Control Center</title><style>{CSS}</style></head>
+<body class="dashboard-body"><main class="dashboard-main ai-control-main">
+  <header class="topbar dashboard-hero"><div><p class="eyebrow">UCM Administration</p><h1>AI Control Center</h1><p>Local budget visibility and guarded service controls.</p></div><a class="button-link secondary" href="/">Back to Dashboard</a></header>
+  <section class="agent-card ai-safety-notice"><strong>Safety controls</strong><p>Services remain stopped unless a separately confirmed one-time job is requested. Resume All Services is intentionally unavailable.</p></section>
+  <section class="summary-grid ai-metrics">{metrics}</section>
+  <section class="agent-card"><div class="card-head"><div><h2>Guarded Controls</h2><p class="detail">Every action is recorded locally and duplicate request IDs are ignored.</p></div></div>
+    <div class="command-actions ai-controls">
+      <button data-ai-control onclick="controlAction('/api/ai-control/pause-ai')">Pause AI Usage</button>
+      <button data-ai-control class="secondary" onclick="controlAction('/api/ai-control/resume-ai')">Resume AI Usage</button>
+      <button data-ai-control class="danger" onclick="pauseAllServices()">Pause All Services</button>
+      <button disabled title="{_e(resume_message)}">Resume All Services</button>
+      <button class="secondary" onclick="document.getElementById('activity-feed').scrollIntoView()">View Recent Logs</button>
+    </div>
+    <p class="detail">{_e(resume_message)}</p>
+  </section>
+  <section class="agent-card"><div class="card-head"><div><h2>Agent Status</h2><p class="detail">Status is read locally; no agent is started while viewing this page.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Agent</th><th>State</th><th>Last run</th><th>Last successful</th><th>Last failure</th><th>Duration</th><th>Exit</th><th>AI today</th><th>AI month</th><th>Next schedule</th></tr></thead><tbody>{agent_rows}</tbody></table></div>
+  </section>
+  <section class="ai-control-grid"><article class="agent-card"><div class="card-head"><div><h2>30-Day AI Spending</h2><p class="detail">Allowed requests from the local AI budget ledger.</p></div></div><div class="ai-chart">{chart_bars}</div></article>
+  <article class="agent-card" id="activity-feed"><div class="card-head"><div><h2>Activity Feed</h2><p class="detail">Sanitized budget, control, and run events.</p></div></div><ul class="ai-activity">{activity_rows}</ul></article></section>
+</main>
+<script>
+const csrfToken = {json.dumps(csrf_token)};
+let controlInFlight = false;
+function requestId() {{ return (window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'ai-control-' + Date.now() + '-' + Math.random().toString(16).slice(2)); }}
+async function controlAction(path, confirmation='') {{
+  if (controlInFlight) return;
+  controlInFlight = true;
+  document.querySelectorAll('[data-ai-control]').forEach(button => button.disabled = true);
+  try {{
+    const response = await fetch(path, {{method:'POST', headers:{{'Content-Type':'application/x-www-form-urlencoded'}}, body:new URLSearchParams({{csrf_token:csrfToken, request_id:requestId(), confirmation}})}});
+    const result = await response.json(); alert(result.message); if (result.ok) location.reload();
+  }} finally {{
+    controlInFlight = false;
+    document.querySelectorAll('[data-ai-control]').forEach(button => button.disabled = false);
+  }}
+}}
+function pauseAllServices() {{ const answer = prompt('Type PAUSE ALL SERVICES to confirm.'); if (answer === 'PAUSE ALL SERVICES') controlAction('/api/ai-control/pause-all', answer); }}
+function runOneTime(key) {{ const answer = prompt('Type RUN ONE-TIME JOB to confirm.'); if (answer === 'RUN ONE-TIME JOB') controlAction('/api/ai-control/run-once/' + key, answer); }}
+</script></body></html>"""
+
+
+def _state_badge(state: str) -> str:
+    return {"Running": "ready", "Scheduled": "neutral", "Stopped": "warn"}.get(state, "neutral")
+
+
+def _activity_badge(status: str) -> str:
+    return "ready" if status in {"allowed", "succeeded"} else "warn"
+
+
+def _is_loopback_address(address: str) -> bool:
+    return address in {"127.0.0.1", "::1"}
 
 
 def render_dashboard(snapshot: dict, banner: str = "") -> str:
@@ -377,6 +519,7 @@ def render_dashboard(snapshot: dict, banner: str = "") -> str:
         <a href="#future-agents"><span>☎</span>Voicemail</a>
         <a href="/operations"><span>▥</span>Reports</a>
         <a href="#shared-sync"><span>⚙</span>Settings</a>
+        <a href="/ai-control"><span>◉</span>AI Control Center</a>
       </nav>
       <div class="sidebar-user">
         <div class="user-avatar">JC</div>
@@ -2716,6 +2859,26 @@ dd { margin: 0; overflow-wrap: anywhere; }
   font-size: 12px;
   text-align: center;
 }
+.ai-control-main { padding-bottom: 56px; }
+.ai-safety-notice { border-left: 4px solid var(--warn); }
+.ai-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ai-green { border-top: 4px solid #31a36f; }
+.ai-yellow { border-top: 4px solid #d9a327; }
+.ai-orange { border-top: 4px solid #d8712d; }
+.ai-red, .ai-blocked { border-top: 4px solid #bf4e4e; }
+.ai-controls { margin-top: 12px; }
+button.danger { background: #a94b4b; }
+.table-wrap { overflow-x: auto; }
+.table-wrap table { min-width: 1250px; }
+.table-wrap td { vertical-align: top; }
+.ai-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.ai-chart { height: 210px; display: flex; align-items: end; gap: 5px; border-bottom: 1px solid var(--line); padding: 14px 4px 0; overflow: hidden; }
+.ai-chart-bar { height: 100%; flex: 1; min-width: 12px; display: flex; flex-direction: column; justify-content: end; align-items: center; gap: 5px; }
+.ai-chart-bar span { display: block; width: 100%; background: #3d8dca; border-radius: 5px 5px 0 0; }
+.ai-chart-bar small { font-size: 9px; color: var(--muted); transform: rotate(-45deg); white-space: nowrap; }
+.ai-activity { list-style: none; display: grid; gap: 12px; margin: 0; padding: 0; max-height: 255px; overflow-y: auto; }
+.ai-activity li { border-bottom: 1px solid var(--line); padding: 0 0 10px; font-size: 13px; }
+.ai-activity small { display: block; margin-top: 4px; color: var(--muted); }
 @media (max-width: 1180px) {
   .dashboard-sidebar {
     width: 84px;
@@ -2753,6 +2916,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .command-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .ai-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .priority-grid,
   .legacy-agent-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2765,6 +2929,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .summary-grid, .agent-grid, .future-grid, .intelligence-grid, .ops-detail-grid, .ops-analytics-grid, .review-grid, .cash-flow-sections, .command-grid, .priority-grid, .legacy-agent-row {
     grid-template-columns: 1fr;
   }
+  .ai-control-grid { grid-template-columns: 1fr; }
   .dashboard-sidebar {
     position: static;
     width: auto;

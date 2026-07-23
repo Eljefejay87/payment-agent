@@ -592,6 +592,33 @@ DASHBOARD_HOST=0.0.0.0
 DASHBOARD_PORT=8080
 ```
 
+### AI Control Center
+
+`/ai-control` is a local dashboard page for read-only AI-budget visibility and
+guarded owner controls. It uses the existing `$20.00` monthly `AIBudgetGuard`;
+it does not make OpenAI requests or alter the budget limit. The page shows the
+current budget state, a 30-day local spending chart, sanitized activity, and
+known LaunchAgent status for Payment Agent, Operations Intelligence, Cash Flow
+HQ, Shared Data Sync, and Voicemail Tracker.
+
+```dotenv
+AI_BUDGET_DATABASE_PATH=~/Library/Application Support/UCM/payment-agent/ai_budget.sqlite3
+AI_CONTROL_AUDIT_PATH=~/Library/Application Support/UCM/payment-agent/ai_control_audit.sqlite3
+```
+
+The control audit is a local SQLite file with mode `0600`. Pause AI Usage and
+Resume AI Usage call the existing budget-guard pause/resume operations. Pause
+All Services requires typing `PAUSE ALL SERVICES` and can unload only the four
+approved UCM LaunchAgents. Resume All Services is deliberately disabled:
+event-driven schedules need separate approval before any service can resume.
+
+One-time jobs require typing `RUN ONE-TIME JOB`, use fixed `scan-once` style
+commands, and are protected by durable request IDs so repeated clicks do not
+run the command twice. They never start a continuous worker and do not bypass
+the budget guard. Viewing the page alone does not start, resume, or load an
+agent. State-changing Control Center requests are accepted only from a local
+loopback browser session; LAN and Tailscale dashboard viewers remain read-only.
+
 Start from Terminal:
 
 ```bash

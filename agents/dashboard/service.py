@@ -25,6 +25,7 @@ from .review_actions import ReviewActionService
 
 from agents.cash_flow_hq.config import load_cash_flow_settings
 from agents.cash_flow_hq.service import CashFlowHQService, plain_rich_text, plain_title
+from agents.dashboard.ai_control import AIControlCenter, ControlResult
 from agents.dashboard.config import DashboardSettings
 from agents.operations_intelligence_agent.config import load_operations_settings
 from agents.operations_intelligence_agent.database import OperationsDatabase
@@ -39,11 +40,13 @@ from agents.payment_agent.config import Settings as PaymentSettings
 from agents.payment_agent.database import PaymentDatabase
 from agents.payment_agent.parser import cents_to_currency
 from agents.payment_agent.reports import today_in_timezone
+from agents.voicemail_tracker_agent.config import load_settings as load_voicemail_settings
 from agents.payment_agent.service import PaymentAgent
 from agents.weekly_remit_agent.config import RemitSettings, load_remit_settings
 from agents.weekly_remit_agent.database import RemitDatabase
 from agents.weekly_remit_agent.file_detector import RemitFileValidationError, find_required_remit_files
 from agents.weekly_remit_agent.service import WeeklyRemitAgent
+from shared.ai_budget import AIBudgetGuard
 
 
 @dataclass(frozen=True)
@@ -312,6 +315,25 @@ class DashboardService:
         self.shared_data = ReadOnlyDashboardDataService(repository)
         self.review_actions = ReviewActionService(repository)
         self.review_csrf_token = secrets.token_urlsafe(32)
+        self.control_csrf_token = secrets.token_urlsafe(32)
+        # The control-plane audit database is initialized only when someone opens
+        # the AI Control Center or invokes a control.  The normal dashboard remains
+        # a read-only status surface and must not create local control state.
+        self._ai_control: AIControlCenter | None = None
+
+    def _get_ai_control(self) -> AIControlCenter:
+        if self._ai_control is None:
+            voicemail_settings = load_voicemail_settings()
+            self._ai_control = AIControlCenter(
+                AIBudgetGuard(self.dashboard_settings.ai_budget_database_path or None),
+                audit_path=self.dashboard_settings.ai_control_audit_path or None,
+                health_paths={
+                    "payment": self.payment_settings.health_path,
+                    "voicemail": voicemail_settings.status_path,
+                },
+                voicemail_runtime_state_path=voicemail_settings.runtime_state_path,
+            )
+        return self._ai_control
 
     def snapshot(self) -> dict:
         return {
@@ -329,6 +351,28 @@ class DashboardService:
                 {"name": "Executive Dashboard", "status": "Planned", "priority": "Medium"},
             ],
         }
+
+    def ai_control_snapshot(self) -> dict:
+        return self._get_ai_control().snapshot()
+
+    def pause_ai_usage(self, request_id: str) -> ControlResult:
+        return self._get_ai_control().pause_ai_usage(request_id=request_id)
+
+    def resume_ai_usage(self, request_id: str) -> ControlResult:
+        return self._get_ai_control().resume_ai_usage(request_id=request_id)
+
+    def pause_all_services(self, request_id: str, confirmation: str) -> ControlResult:
+        return self._get_ai_control().pause_all_services(request_id=request_id, confirmation=confirmation)
+
+    def resume_all_services(self, request_id: str) -> ControlResult:
+        return self._get_ai_control().resume_all_services(request_id=request_id)
+
+    def run_one_time_ai_control_job(
+        self, job_key: str, request_id: str, confirmation: str
+    ) -> ControlResult:
+        return self._get_ai_control().run_one_time_job(
+            job_key, request_id=request_id, confirmation=confirmation
+        )
 
     def shared_sync_health(self) -> dict:
         settings = load_shared_data_sync_settings()
