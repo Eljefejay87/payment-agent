@@ -16,6 +16,8 @@ class DashboardSettings:
     manager_checklist_sheet_url: str
     logo_path: str = ""
     shared_database_path: str = ""
+    ai_budget_database_path: str = ""
+    ai_control_audit_path: str = ""
 
 
 def load_dashboard_settings(env_file: str | None = None) -> DashboardSettings:
@@ -39,6 +41,28 @@ def load_dashboard_settings(env_file: str | None = None) -> DashboardSettings:
                 / "UCM"
                 / "payment-agent"
                 / "shared_ucm_data.sqlite3"
+            ),
+        ),
+        ai_budget_database_path=os.getenv(
+            "AI_BUDGET_DATABASE_PATH",
+            str(
+                Path.home()
+                / "Library"
+                / "Application Support"
+                / "UCM"
+                / "payment-agent"
+                / "ai_budget.sqlite3"
+            ),
+        ),
+        ai_control_audit_path=os.getenv(
+            "AI_CONTROL_AUDIT_PATH",
+            str(
+                Path.home()
+                / "Library"
+                / "Application Support"
+                / "UCM"
+                / "payment-agent"
+                / "ai_control_audit.sqlite3"
             ),
         ),
     )
