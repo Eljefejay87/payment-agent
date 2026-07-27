@@ -95,11 +95,26 @@ def build_launch_agent(job: OneShotJob, *, python_path: str, project_root: Path,
     }
 
 
-def write_launch_agents(*, output_directory: Path, python_path: str, project_root: Path, log_directory: Path, lock_directory: Path) -> list[Path]:
+def write_launch_agents(
+    *,
+    output_directory: Path,
+    python_path: str,
+    project_root: Path,
+    log_directory: Path,
+    lock_directory: Path,
+    job_keys: tuple[str, ...] | None = None,
+) -> list[Path]:
     """Write inactive plist files; callers must explicitly install/load them later."""
     output_directory.mkdir(parents=True, exist_ok=True)
+    selected_jobs = ONE_SHOT_JOBS
+    if job_keys is not None:
+        unknown = [job_key for job_key in job_keys if job_key not in JOB_BY_KEY]
+        if unknown:
+            unknown_list = ", ".join(sorted(unknown))
+            raise ValueError(f"Unknown one-shot job(s): {unknown_list}")
+        selected_jobs = tuple(JOB_BY_KEY[job_key] for job_key in job_keys)
     written: list[Path] = []
-    for job in ONE_SHOT_JOBS:
+    for job in selected_jobs:
         path = output_directory / f"{job.label}.plist"
         with path.open("wb") as handle:
             plistlib.dump(build_launch_agent(job, python_path=python_path, project_root=project_root, log_directory=log_directory, lock_directory=lock_directory), handle, sort_keys=True)

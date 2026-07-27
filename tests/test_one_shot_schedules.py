@@ -47,6 +47,44 @@ class OneShotScheduleTests(unittest.TestCase):
             self.assertEqual(len(written), 5)
             self.assertTrue(all(path.stat().st_mode & 0o777 == 0o644 for path in written))
 
+    def test_can_generate_only_payment_plist_for_runtime_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_root = root / "Application Support" / "UCM" / "payment-agent"
+            written = write_launch_agents(
+                output_directory=root / "LaunchAgents",
+                python_path=str(runtime_root / ".venv/bin/python"),
+                project_root=runtime_root,
+                log_directory=runtime_root / "logs",
+                lock_directory=runtime_root / "locks",
+                job_keys=("payment",),
+            )
+            self.assertEqual(len(written), 1)
+            self.assertEqual(written[0].name, "com.ucm.payment-agent.plist")
+            payload = build_launch_agent(
+                JOB_BY_KEY["payment"],
+                python_path=str(runtime_root / ".venv/bin/python"),
+                project_root=runtime_root,
+                log_directory=runtime_root / "logs",
+                lock_directory=runtime_root / "locks",
+            )
+            self.assertEqual(payload["ProgramArguments"][0], str(runtime_root / ".venv/bin/python"))
+            self.assertEqual(payload["ProgramArguments"][6], str(runtime_root))
+            self.assertEqual(payload["WorkingDirectory"], str(runtime_root))
+
+    def test_unknown_job_key_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "Unknown one-shot job"):
+                write_launch_agents(
+                    output_directory=root / "plists",
+                    python_path="/tmp/python",
+                    project_root=root,
+                    log_directory=root / "logs",
+                    lock_directory=root / "locks",
+                    job_keys=("missing",),
+                )
+
     def test_runner_uses_fixed_command_timeout_and_private_lock(self) -> None:
         calls = []
         with tempfile.TemporaryDirectory() as directory:
