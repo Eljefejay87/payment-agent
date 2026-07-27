@@ -179,11 +179,12 @@ class AIControlCenter:
         agents = []
         for spec in SERVICE_SPECS:
             health = self._health_summary(spec.key)
+            state = self._service_state(spec, disabled, health)
             agents.append(
                 {
                 "key": spec.key,
                 "name": spec.name,
-                "state": self._service_state(spec, disabled),
+                "state": state,
                 "last_run": health["last_run"],
                 "last_successful_run": health["last_successful_run"],
                 "last_failure": health["last_failure"],
@@ -310,11 +311,11 @@ class AIControlCenter:
             return set()
         return set(re.findall(r'"(com\.ucm\.[^"]+)"\s*=>\s*disabled', completed.stdout))
 
-    def _service_state(self, spec: ServiceSpec, disabled: set[str]) -> str:
+    def _service_state(self, spec: ServiceSpec, disabled: set[str], health: dict[str, str]) -> str:
         if spec.launch_agent is None:
             return "Stopped"
         if spec.launch_agent in disabled:
-            return "Stopped"
+            return "Paused"
         try:
             completed = self.command_runner(
                 ["launchctl", "print", f"gui/{self.user_id}/{spec.launch_agent}"],
@@ -325,8 +326,12 @@ class AIControlCenter:
             )
         except (OSError, subprocess.SubprocessError):
             return "Unknown"
-        if completed.returncode == 0:
+        if completed.returncode != 0:
+            return "Stopped"
+        if _launchctl_active_count(completed.stdout) > 0:
             return "Running"
+        if health["last_failure"] != "None recorded":
+            return "Error"
         if (self.launch_agents_directory / f"{spec.launch_agent}.plist").is_file():
             return "Scheduled"
         return "Unknown"
@@ -515,3 +520,13 @@ def _safe_timestamp(value: object) -> str:
         return datetime.fromisoformat(value).isoformat()
     except ValueError:
         return "Unknown"
+
+
+def _launchctl_active_count(output: str) -> int:
+    match = re.search(r"active count\s*=\s*(\d+)", output, re.I)
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return 0

@@ -397,7 +397,13 @@ function runOneTime(key) {{ const answer = prompt('Type RUN ONE-TIME JOB to conf
 
 
 def _state_badge(state: str) -> str:
-    return {"Running": "ready", "Scheduled": "neutral", "Stopped": "warn"}.get(state, "neutral")
+    return {
+        "Running": "ready",
+        "Scheduled": "neutral",
+        "Stopped": "warn",
+        "Paused": "warn",
+        "Error": "warn",
+    }.get(state, "neutral")
 
 
 def _activity_badge(status: str) -> str:

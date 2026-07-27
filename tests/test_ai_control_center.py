@@ -49,7 +49,7 @@ class AIControlCenterTests(unittest.TestCase):
             return CompletedProcess(command, 0, '"com.ucm.cash-flow-hq" => disabled\n', "")
         if command[:2] == ["launchctl", "print"]:
             if command[-1].endswith("com.ucm.payment-agent"):
-                return CompletedProcess(command, 0, "last exit code = 0\n", "")
+                return CompletedProcess(command, 0, "active count = 0\nstate = not running\nlast exit code = 0\n", "")
             return CompletedProcess(command, 3, "", "")
         return CompletedProcess(command, 0, "", "")
 
@@ -75,11 +75,34 @@ class AIControlCenterTests(unittest.TestCase):
     def test_service_status_detection_never_starts_a_service(self) -> None:
         agents = {agent["key"]: agent for agent in self.center.service_statuses()}
 
-        self.assertEqual(agents["payment"]["state"], "Running")
+        self.assertEqual(agents["payment"]["state"], "Scheduled")
         self.assertEqual(agents["payment"]["last_exit_code"], "0")
-        self.assertEqual(agents["cash_flow"]["state"], "Stopped")
+        self.assertEqual(agents["cash_flow"]["state"], "Paused")
         self.assertEqual(agents["voicemail"]["state"], "Stopped")
         self.assertFalse(any(command[:2] == ["launchctl", "bootstrap"] for command in self.calls))
+
+    def test_running_state_requires_active_execution(self) -> None:
+        def running_runner(command, **_kwargs):
+            self.calls.append(list(command))
+            if command[:2] == ["launchctl", "print-disabled"]:
+                return CompletedProcess(command, 0, "", "")
+            if command[:2] == ["launchctl", "print"] and command[-1].endswith("com.ucm.payment-agent"):
+                return CompletedProcess(command, 0, "active count = 1\nstate = running\nlast exit code = 0\n", "")
+            return CompletedProcess(command, 3, "", "")
+
+        self.center.command_runner = running_runner
+        agents = {agent["key"]: agent for agent in self.center.service_statuses()}
+
+        self.assertEqual(agents["payment"]["state"], "Running")
+
+    def test_error_state_uses_recorded_failure_when_idle(self) -> None:
+        self.payment_health.write_text(
+            '{"updated_at":"2026-07-23T16:00:00+00:00","last_successful_run":"2026-07-23T15:00:00+00:00","last_error":"RuntimeError: job failed."}'
+        )
+
+        agents = {agent["key"]: agent for agent in self.center.service_statuses()}
+
+        self.assertEqual(agents["payment"]["state"], "Error")
 
     def test_resume_all_is_permanently_blocked(self) -> None:
         result = self.center.resume_all_services(request_id="resume-all-123")
