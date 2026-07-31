@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
 from agents.weekly_remit_agent.approval_service import WeeklyRemitApprovalService
 from agents.weekly_remit_agent.config import load_remit_settings
 
@@ -65,11 +66,22 @@ def _token_matches(value: str, expected: str) -> bool:
 
 
 class PaymentStatusBridge:
-    def __init__(self, *, token: str, payment_health_path: Path, voicemail_health_path: Path, weekly_remit_approvals: WeeklyRemitApprovalService | None = None, host: str = "0.0.0.0", port: int = 8091) -> None:
+    def __init__(
+        self,
+        *,
+        token: str,
+        payment_health_path: Path,
+        voicemail_health_path: Path,
+        weekly_remit_approvals: WeeklyRemitApprovalService | None = None,
+        cash_flow_hq_service: CashFlowHqPrivateBridgeService | None = None,
+        host: str = "0.0.0.0",
+        port: int = 8091,
+    ) -> None:
         self.token = token
         self.payment_health_path = payment_health_path
         self.voicemail_health_path = voicemail_health_path
         self.weekly_remit_approvals = weekly_remit_approvals
+        self.cash_flow_hq_service = cash_flow_hq_service
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -91,10 +103,60 @@ class PaymentStatusBridge:
                     logging.warning("payment_status_bridge result=denied")
                     bridge._respond(self, 401, {})
                     return
+                payload = bridge._request_payload(self)
+
+                if self.path == "/internal/cash-flow/search":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    query = payload.get("query")
+                    if not isinstance(query, str) or not query.strip():
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        result = bridge.cash_flow_hq_service.search(query)
+                        bridge._respond(self, 200, result)
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
+                if self.path == "/internal/cash-flow/mark-paid":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    record_ref = payload.get("record_ref")
+                    if not isinstance(record_ref, str) or not record_ref.strip():
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        result = bridge.cash_flow_hq_service.mark_paid(record_ref)
+                        bridge._respond(self, 200, result)
+                    except KeyError:
+                        logging.warning("cash_flow_hq_bridge result=unknown_record")
+                        bridge._respond(self, 404, {"status": "unknown_record"})
+                    except ValueError:
+                        logging.warning("cash_flow_hq_bridge result=replayed_mutation")
+                        bridge._respond(self, 409, {"status": "replayed_mutation"})
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
+                if self.path == "/internal/cash-flow/planner-summary":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    try:
+                        bridge._respond(self, 200, {"status": "ok", "planner_summary": bridge.cash_flow_hq_service.planner_summary()})
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
                 if bridge.weekly_remit_approvals is None:
                     bridge._respond(self, 404, {})
                     return
-                payload = bridge._request_payload(self)
                 user_id = payload.get("authorized_user_id")
                 if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
                     bridge._respond(self, 400, {})
@@ -166,13 +228,18 @@ def from_environment(payment_health_path: Path) -> PaymentStatusBridge | None:
         logging.error("payment_status_bridge result=disabled configuration=invalid")
         return None
     voicemail_path = Path(os.getenv("VOICEMAIL_HEALTH_PATH", "/data/voicemail_health.json"))
+    cash_flow_service = None
     try:
+        database_path = os.getenv("SHARED_DATA_DATABASE_PATH")
+        if database_path:
+            cash_flow_service = CashFlowHqPrivateBridgeService(database_path)
         remit_approvals = WeeklyRemitApprovalService(load_remit_settings()) if os.getenv("WEEKLY_REMIT_APPROVAL_BRIDGE_ENABLED", "false").lower() == "true" else None
         return PaymentStatusBridge(
             token=token,
             payment_health_path=payment_health_path,
             voicemail_health_path=voicemail_path,
             weekly_remit_approvals=remit_approvals,
+            cash_flow_hq_service=cash_flow_service,
             host=os.getenv("PAYMENT_STATUS_BRIDGE_HOST", "0.0.0.0"),
             port=int(os.getenv("PAYMENT_STATUS_BRIDGE_PORT", "8091")),
         )
