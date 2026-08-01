@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from base64 import b64encode
 from datetime import date, datetime, timezone
@@ -385,6 +386,56 @@ class CashFlowHQConfigTests(unittest.TestCase):
         self.assertEqual(settings.cash_flow_teams_user, "jaye@unitedaccountservices.com")
         self.assertEqual(settings.cash_flow_notification_time, "08:00")
         self.assertEqual(settings.cash_flow_run_times, ("10:00", "17:00"))
+
+    def test_load_settings_uses_default_cash_flow_planner_database_path(self) -> None:
+        with patch.dict(os.environ, {"NOTION_API_KEY": "secret", "CASH_FLOW_HQ_PARENT_PAGE_ID": "page"}, clear=True):
+            settings = load_cash_flow_settings()
+
+        self.assertEqual(settings.cash_flow_planner_database_path, Path("cash_flow_planner.sqlite3"))
+
+    def test_load_settings_reads_explicit_cash_flow_planner_database_path(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "NOTION_API_KEY": "secret",
+                "CASH_FLOW_HQ_PARENT_PAGE_ID": "page",
+                "CASH_FLOW_PLANNER_DATABASE_PATH": "/tmp/override_cash_flow_planner.sqlite3",
+            },
+            clear=True,
+        ):
+            settings = load_cash_flow_settings()
+
+        self.assertEqual(settings.cash_flow_planner_database_path, Path("/tmp/override_cash_flow_planner.sqlite3"))
+
+    def test_status_bridge_from_environment_initializes_cash_flow_service_when_sqlite_paths_exist(self) -> None:
+        from agents.payment_agent.status_bridge import from_environment
+
+        with patch.dict(
+            os.environ,
+            {
+                "PAYMENT_STATUS_BRIDGE_ENABLED": "true",
+                "PAYMENT_STATUS_BRIDGE_TOKEN": "test-token",
+                "SHARED_DATA_DATABASE_PATH": "/tmp/test_shared_data.sqlite3",
+                "CASH_FLOW_PLANNER_DATABASE_PATH": "/tmp/test_cash_flow_planner.sqlite3",
+                "WEEKLY_REMIT_APPROVAL_BRIDGE_ENABLED": "false",
+            },
+            clear=True,
+        ):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                shared_db = Path(tmpdir) / "shared_data.sqlite3"
+                planner_db = Path(tmpdir) / "cash_flow_planner.sqlite3"
+                shared_db.touch()
+                planner_db.touch()
+
+                os.environ["SHARED_DATA_DATABASE_PATH"] = str(shared_db)
+                os.environ["CASH_FLOW_PLANNER_DATABASE_PATH"] = str(planner_db)
+
+                bridge = from_environment(Path(tmpdir) / "payment_health.json")
+
+                self.assertIsNotNone(bridge)
+                self.assertIsNotNone(bridge.cash_flow_hq_service)
+                self.assertEqual(bridge.cash_flow_hq_service.repository.database_path, shared_db)
+                self.assertEqual(bridge.cash_flow_hq_service.planner.db.path, planner_db)
 
     def test_load_settings_reads_explicit_notion_data_source_ids(self) -> None:
         with patch.dict(
