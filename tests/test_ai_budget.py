@@ -160,12 +160,16 @@ class AIBudgetGuardTests(unittest.TestCase):
         self.assertIn("Kill switch: inactive", output)
         self.assertIn("Usage by agent:", output)
 
+    @patch("agents.voicemail_tracker_agent.audio.AIBudgetGuard")
     @patch("agents.voicemail_tracker_agent.audio.requests.post")
     @patch("agents.voicemail_tracker_agent.audio.subprocess.run")
-    def test_voicemail_hard_stop_prevents_http_request(self, run, post) -> None:
+    def test_voicemail_hard_stop_prevents_http_request(
+        self, run, post, budget_guard
+    ) -> None:
         self.guard.reserve(
             agent="Other/Unknown", estimated_cost="20.00", model="test-model"
         )
+        budget_guard.return_value = self.guard
         run.return_value.stdout = "30.0\n"
         attachment = {
             "name": "voicemail.mp3",
