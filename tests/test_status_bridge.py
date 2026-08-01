@@ -46,16 +46,44 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             bridge.stop()
 
     def test_cash_flow_hq_search_and_mark_paid_private_http_contract(self) -> None:
+        class CashFlowService:
+            def __init__(self) -> None:
+                self.marked: list[str] = []
+
+            def search(self, query: str) -> dict:
+                return {"status": "ok", "matches": []}
+
+            def mark_paid(self, record_ref: str) -> dict:
+                self.marked.append(record_ref)
+                return {
+                    "status": "ok",
+                    "updated": {
+                        "record_ref": record_ref,
+                        "bill_name": "ADP Payroll",
+                        "amount": "1500.00",
+                        "due_date": "2026-08-15",
+                        "current_status": "paid",
+                    },
+                    "planner_summary": {
+                        "operating_cash": "$2,685.29",
+                        "current_week_obligations": "$0.00",
+                        "overdue_items_requiring_review": "$0.00",
+                        "projected_ending_cash": "$2,685.29",
+                    },
+                }
+
         with tempfile.TemporaryDirectory() as directory:
             payment = Path(directory) / "payment.json"
             voicemail = Path(directory) / "voicemail.json"
             payment.write_text('{"service_status":"running","graph_status":"available"}')
             voicemail.write_text('{"status":"running"}')
+            cash_flow_service = CashFlowService()
             bridge = PaymentStatusBridge(
                 token="approved",
+                cash_flow_mutation_token="mutation-approved",
                 payment_health_path=payment,
                 voicemail_health_path=voicemail,
-                cash_flow_hq_service=None,
+                cash_flow_hq_service=cash_flow_service,
                 host="127.0.0.1",
                 port=0,
             )
@@ -70,10 +98,28 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                     headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
                 )
                 response = conn.getresponse()
-                # When service is None, bridge returns 404 unavailable
-                self.assertEqual(response.status, 404)
-                payload = response.read().decode()
-                self.assertIn('"status":"unavailable"', payload)
+                self.assertEqual(response.status, 200)
+                response.read()
+
+                denied = HTTPConnection("127.0.0.1", port)
+                denied.request(
+                    "POST",
+                    "/internal/cash-flow/mark-paid",
+                    body='{"record_ref":"bill-adp"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                self.assertEqual(denied.getresponse().status, 401)
+                self.assertEqual(cash_flow_service.marked, [])
+
+                allowed = HTTPConnection("127.0.0.1", port)
+                allowed.request(
+                    "POST",
+                    "/internal/cash-flow/mark-paid",
+                    body='{"record_ref":"bill-adp"}',
+                    headers={"Authorization": "Bearer mutation-approved", "Content-Type": "application/json"},
+                )
+                self.assertEqual(allowed.getresponse().status, 200)
+                self.assertEqual(cash_flow_service.marked, ["bill-adp"])
             finally:
                 bridge.stop()
 
