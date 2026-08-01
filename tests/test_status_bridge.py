@@ -46,6 +46,8 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             bridge.stop()
 
     def test_cash_flow_hq_search_and_mark_paid_private_http_contract(self) -> None:
+        from agents.cash_flow_hq.private_bridge_service import StaleCashFlowRecordError
+
         class CashFlowService:
             def __init__(self) -> None:
                 self.marked: list[str] = []
@@ -53,8 +55,10 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             def search(self, query: str) -> dict:
                 return {"status": "ok", "matches": []}
 
-            def mark_paid(self, record_ref: str) -> dict:
-                self.marked.append(record_ref)
+            def mark_paid(self, record_ref: str, expected_status: str) -> dict:
+                if expected_status == "past_due":
+                    raise StaleCashFlowRecordError("stale")
+                self.marked.append(f"{record_ref}:{expected_status}")
                 return {
                     "status": "ok",
                     "updated": {
@@ -105,7 +109,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                 denied.request(
                     "POST",
                     "/internal/cash-flow/mark-paid",
-                    body='{"record_ref":"bill-adp"}',
+                    body='{"record_ref":"bill-adp","expected_status":"upcoming"}',
                     headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
                 )
                 self.assertEqual(denied.getresponse().status, 401)
@@ -115,11 +119,23 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                 allowed.request(
                     "POST",
                     "/internal/cash-flow/mark-paid",
-                    body='{"record_ref":"bill-adp"}',
+                    body='{"record_ref":"bill-adp","expected_status":"upcoming"}',
                     headers={"Authorization": "Bearer mutation-approved", "Content-Type": "application/json"},
                 )
                 self.assertEqual(allowed.getresponse().status, 200)
-                self.assertEqual(cash_flow_service.marked, ["bill-adp"])
+                self.assertEqual(cash_flow_service.marked, ["bill-adp:upcoming"])
+
+                stale = HTTPConnection("127.0.0.1", port)
+                stale.request(
+                    "POST",
+                    "/internal/cash-flow/mark-paid",
+                    body='{"record_ref":"bill-adp","expected_status":"past_due"}',
+                    headers={"Authorization": "Bearer mutation-approved", "Content-Type": "application/json"},
+                )
+                stale_response = stale.getresponse()
+                self.assertEqual(stale_response.status, 409)
+                self.assertIn('"status":"stale_record"', stale_response.read().decode())
+                self.assertEqual(cash_flow_service.marked, ["bill-adp:upcoming"])
             finally:
                 bridge.stop()
 
@@ -252,7 +268,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             self.assertEqual(len(result["matches"]), 10)
             
             # Test mark_paid returns exact keys
-            result = service.mark_paid("bill-adp")
+            result = service.mark_paid("bill-adp", "upcoming")
             self.assertEqual(result["status"], "ok")
             self.assertIn("updated", result)
             self.assertIn("planner_summary", result)
@@ -260,17 +276,21 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             self.assertEqual(set(updated.keys()), {"record_ref", "bill_name", "amount", "due_date", "current_status"})
             self.assertEqual(updated["current_status"], "paid")
             
-            # Test mark_paid raises ValueError if already paid
+            # Test mark_paid rejects replay or stale state without another write
             with self.assertRaises(ValueError) as ctx:
-                service.mark_paid("bill-adp")
-            self.assertIn("already marked paid", str(ctx.exception))
+                service.mark_paid("bill-adp", "upcoming")
+            self.assertIn("changed after confirmation", str(ctx.exception))
             self.assertNotIn("bill-adp", str(ctx.exception))  # No record ref in message
             
             # Test mark_paid raises KeyError if not found
             with self.assertRaises(KeyError) as ctx:
-                service.mark_paid("nonexistent")
+                service.mark_paid("nonexistent", "upcoming")
             self.assertIn("not found", str(ctx.exception))
             self.assertNotIn("nonexistent", str(ctx.exception))  # No record ref in message
+
+            with self.assertRaises(ValueError):
+                service.mark_paid("bill-cancelled", "cancelled")
+            self.assertEqual(repository.get("bill-cancelled").status, Status.CANCELLED)
             
             # Test planner_summary returns exact keys
             summary = service.planner_summary()

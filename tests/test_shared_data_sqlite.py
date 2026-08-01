@@ -90,6 +90,16 @@ class SQLiteSharedRecordRepositoryTests(unittest.TestCase):
 
         self.assertEqual([record.id for record in records], ["record-1"])
 
+    def test_conditional_status_update_is_atomic_and_rejects_stale_state(self) -> None:
+        record = self.repository.upsert(replace(build_record(), status=Status.UPCOMING))
+
+        with self.assertRaisesRegex(RuntimeError, "status changed"):
+            self.repository.update_status_if_current(record.id, Status.PAST_DUE, Status.PAID)
+
+        self.assertEqual(self.repository.get(record.id).status, Status.UPCOMING)
+        updated = self.repository.update_status_if_current(record.id, Status.UPCOMING, Status.PAID)
+        self.assertEqual(updated.status, Status.PAID)
+
     def test_agent_runs_persist_across_restart(self) -> None:
         run = AgentRunRecord(
             agent_name="cash_flow_hq",

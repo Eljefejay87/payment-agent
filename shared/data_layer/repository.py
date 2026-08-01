@@ -50,6 +50,14 @@ class SharedRecordRepository(ABC):
     def update_status(self, record_id: str, status: Status) -> SharedRecord: ...
 
     @abstractmethod
+    def update_status_if_current(
+        self,
+        record_id: str,
+        expected_status: Status,
+        status: Status,
+    ) -> SharedRecord: ...
+
+    @abstractmethod
     def record_agent_run(self, run: AgentRunRecord) -> AgentRunRecord: ...
 
     @abstractmethod
@@ -139,6 +147,17 @@ class InMemorySharedRecordRepository(SharedRecordRepository):
 
     def update_status(self, record_id: str, status: Status) -> SharedRecord:
         record = self._required(record_id)
+        return self.upsert(replace(record, status=status, updated_at=utc_now()))
+
+    def update_status_if_current(
+        self,
+        record_id: str,
+        expected_status: Status,
+        status: Status,
+    ) -> SharedRecord:
+        record = self._required(record_id)
+        if record.status != expected_status:
+            raise RuntimeError("Shared record status changed before the update committed.")
         return self.upsert(replace(record, status=status, updated_at=utc_now()))
 
     def record_agent_run(self, run: AgentRunRecord) -> AgentRunRecord:

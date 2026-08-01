@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
+from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService, StaleCashFlowRecordError
 from agents.weekly_remit_agent.approval_service import WeeklyRemitApprovalService
 from agents.weekly_remit_agent.config import load_remit_settings
 
@@ -133,15 +133,25 @@ class PaymentStatusBridge:
                         bridge._respond(self, 404, {"status": "unavailable"})
                         return
                     record_ref = payload.get("record_ref")
-                    if not isinstance(record_ref, str) or not record_ref.strip():
+                    expected_status = payload.get("expected_status")
+                    if (
+                        not isinstance(record_ref, str)
+                        or not record_ref.strip()
+                        or not isinstance(expected_status, str)
+                        or not expected_status.strip()
+                        or len(expected_status) > 64
+                    ):
                         bridge._respond(self, 400, {"status": "invalid"})
                         return
                     try:
-                        result = bridge.cash_flow_hq_service.mark_paid(record_ref)
+                        result = bridge.cash_flow_hq_service.mark_paid(record_ref, expected_status)
                         bridge._respond(self, 200, result)
                     except KeyError:
                         logging.warning("cash_flow_hq_bridge result=unknown_record")
                         bridge._respond(self, 404, {"status": "unknown_record"})
+                    except StaleCashFlowRecordError:
+                        logging.warning("cash_flow_hq_bridge result=stale_record")
+                        bridge._respond(self, 409, {"status": "stale_record"})
                     except ValueError:
                         logging.warning("cash_flow_hq_bridge result=replayed_mutation")
                         bridge._respond(self, 409, {"status": "replayed_mutation"})

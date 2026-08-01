@@ -15,6 +15,10 @@ from agents.weekly_remit_agent.config import load_remit_settings
 EXCLUDED_STATUSES = {Status.PAID, Status.CANCELLED, Status.COMPLETED, Status.FAILED}
 
 
+class StaleCashFlowRecordError(ValueError):
+    """Raised when a confirmed bill no longer has the status the user reviewed."""
+
+
 class CashFlowHqPrivateBridgeService:
     """Private bridge service for Cash Flow HQ bill search and payment operations."""
     
@@ -80,22 +84,28 @@ class CashFlowHqPrivateBridgeService:
         
         return {"status": "ok", "matches": matches}
     
-    def mark_paid(self, record_ref: str) -> dict:
-        """Mark a bill as paid. Raises KeyError if not found, ValueError if already paid."""
+    def mark_paid(self, record_ref: str, expected_status: str) -> dict:
+        """Atomically mark a bill paid only if its confirmed status is unchanged."""
         # Get record - returns None if not found
         record = self.repository.get(record_ref)
         if record is None:
             raise KeyError("Bill not found.")
         
-        # Check if already paid
-        if record.status == Status.PAID:
-            raise ValueError("Bill is already marked paid.")
+        try:
+            confirmed_status = Status(str(expected_status).strip().lower())
+        except ValueError as error:
+            raise StaleCashFlowRecordError("Bill status confirmation is invalid.") from error
+
+        if record.record_type != RecordType.BILL or record.status in EXCLUDED_STATUSES or record.status != confirmed_status:
+            raise StaleCashFlowRecordError("Bill status changed after confirmation.")
         
         # Update status - this will raise KeyError if record disappears
         try:
-            updated = self.repository.update_status(record_ref, Status.PAID)
+            updated = self.repository.update_status_if_current(record_ref, confirmed_status, Status.PAID)
         except KeyError:
             raise KeyError("Bill not found.")
+        except RuntimeError as error:
+            raise StaleCashFlowRecordError("Bill status changed after confirmation.") from error
         
         return {
             "status": "ok",
