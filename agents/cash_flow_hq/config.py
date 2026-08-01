@@ -34,6 +34,7 @@ class CashFlowHQSettings:
     cash_flow_notification_time: str
     cash_flow_notification_state_path: Path
     cash_flow_review_state_path: Path
+    cash_flow_planner_database_path: Path
     cash_flow_run_times: tuple[str, ...]
 
 
@@ -60,6 +61,7 @@ def load_cash_flow_settings(env_file: str | None = None) -> CashFlowHQSettings:
         cash_flow_notification_time=os.getenv("CASH_FLOW_HQ_NOTIFICATION_TIME", "08:00"),
         cash_flow_notification_state_path=Path(os.getenv("CASH_FLOW_HQ_NOTIFICATION_STATE_PATH", ".cash_flow_hq_notifications.json")),
         cash_flow_review_state_path=Path(os.getenv("CASH_FLOW_HQ_REVIEW_STATE_PATH", ".cash_flow_hq_review.json")),
+        cash_flow_planner_database_path=Path(os.getenv("CASH_FLOW_PLANNER_DATABASE_PATH", "cash_flow_planner.sqlite3")),
         cash_flow_run_times=parse_run_times(os.getenv("CASH_FLOW_HQ_RUN_TIMES", "10:00,17:00")),
     )
 
