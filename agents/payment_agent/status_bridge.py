@@ -160,6 +160,23 @@ class PaymentStatusBridge:
                         bridge._respond(self, 400, {"status": "error"})
                     return
 
+                if self.path == "/internal/cash-flow/bills":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    scope = payload.get("scope")
+                    if not isinstance(scope, str) or not scope.strip():
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        bridge._respond(self, 200, bridge.cash_flow_hq_service.list_bills(scope))
+                    except ValueError:
+                        bridge._respond(self, 400, {"status": "invalid"})
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
                 if self.path == "/internal/cash-flow/planner-summary":
                     if bridge.cash_flow_hq_service is None:
                         bridge._respond(self, 404, {"status": "unavailable"})
