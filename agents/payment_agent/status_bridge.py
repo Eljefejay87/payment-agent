@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
+from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService, StaleCashFlowRecordError
 from agents.weekly_remit_agent.approval_service import WeeklyRemitApprovalService
 from agents.weekly_remit_agent.config import load_remit_settings
 
@@ -70,6 +70,7 @@ class PaymentStatusBridge:
         self,
         *,
         token: str,
+        cash_flow_mutation_token: str = "",
         payment_health_path: Path,
         voicemail_health_path: Path,
         weekly_remit_approvals: WeeklyRemitApprovalService | None = None,
@@ -78,6 +79,7 @@ class PaymentStatusBridge:
         port: int = 8091,
     ) -> None:
         self.token = token
+        self.cash_flow_mutation_token = cash_flow_mutation_token
         self.payment_health_path = payment_health_path
         self.voicemail_health_path = voicemail_health_path
         self.weekly_remit_approvals = weekly_remit_approvals
@@ -99,7 +101,12 @@ class PaymentStatusBridge:
 
             def do_POST(self) -> None:  # noqa: N802
                 supplied = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-                if not _token_matches(supplied, bridge.token):
+                expected_token = (
+                    bridge.cash_flow_mutation_token
+                    if self.path == "/internal/cash-flow/mark-paid"
+                    else bridge.token
+                )
+                if not _token_matches(supplied, expected_token):
                     logging.warning("payment_status_bridge result=denied")
                     bridge._respond(self, 401, {})
                     return
@@ -126,15 +133,25 @@ class PaymentStatusBridge:
                         bridge._respond(self, 404, {"status": "unavailable"})
                         return
                     record_ref = payload.get("record_ref")
-                    if not isinstance(record_ref, str) or not record_ref.strip():
+                    expected_status = payload.get("expected_status")
+                    if (
+                        not isinstance(record_ref, str)
+                        or not record_ref.strip()
+                        or not isinstance(expected_status, str)
+                        or not expected_status.strip()
+                        or len(expected_status) > 64
+                    ):
                         bridge._respond(self, 400, {"status": "invalid"})
                         return
                     try:
-                        result = bridge.cash_flow_hq_service.mark_paid(record_ref)
+                        result = bridge.cash_flow_hq_service.mark_paid(record_ref, expected_status)
                         bridge._respond(self, 200, result)
                     except KeyError:
                         logging.warning("cash_flow_hq_bridge result=unknown_record")
                         bridge._respond(self, 404, {"status": "unknown_record"})
+                    except StaleCashFlowRecordError:
+                        logging.warning("cash_flow_hq_bridge result=stale_record")
+                        bridge._respond(self, 409, {"status": "stale_record"})
                     except ValueError:
                         logging.warning("cash_flow_hq_bridge result=replayed_mutation")
                         bridge._respond(self, 409, {"status": "replayed_mutation"})
@@ -236,6 +253,7 @@ def from_environment(payment_health_path: Path) -> PaymentStatusBridge | None:
         remit_approvals = WeeklyRemitApprovalService(load_remit_settings()) if os.getenv("WEEKLY_REMIT_APPROVAL_BRIDGE_ENABLED", "false").lower() == "true" else None
         return PaymentStatusBridge(
             token=token,
+            cash_flow_mutation_token=os.getenv("WEEKLY_REMIT_APPROVAL_BRIDGE_TOKEN", ""),
             payment_health_path=payment_health_path,
             voicemail_health_path=voicemail_path,
             weekly_remit_approvals=remit_approvals,

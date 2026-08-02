@@ -95,6 +95,17 @@ class SharedDataLayerTests(unittest.TestCase):
         self.assertEqual(completed.status, Status.COMPLETED)
         self.assertEqual(repository.list(RecordFilters(status=Status.COMPLETED)), [completed])
 
+    def test_repository_conditional_status_update_rejects_stale_state(self) -> None:
+        repository = InMemorySharedRecordRepository()
+        record = repository.upsert(build_record(status=Status.UPCOMING))
+
+        with self.assertRaisesRegex(RuntimeError, "status changed"):
+            repository.update_status_if_current(record.id, Status.PAST_DUE, Status.PAID)
+
+        self.assertEqual(repository.get(record.id).status, Status.UPCOMING)
+        updated = repository.update_status_if_current(record.id, Status.UPCOMING, Status.PAID)
+        self.assertEqual(updated.status, Status.PAID)
+
     def test_cash_flow_adapter_preserves_agent_specific_fields(self) -> None:
         candidate = BillCandidate(
             vendor_payee="Phone Vendor",

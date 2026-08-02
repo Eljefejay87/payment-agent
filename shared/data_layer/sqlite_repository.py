@@ -246,6 +246,20 @@ class SQLiteSharedRecordRepository(SharedRecordRepository):
         record = self._required(record_id)
         return self.upsert(replace(record, status=status, updated_at=utc_now()))
 
+    def update_status_if_current(
+        self,
+        record_id: str,
+        expected_status: Status,
+        status: Status,
+    ) -> SharedRecord:
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            record = self._required_in_connection(connection, record_id)
+            if record.status != expected_status:
+                raise RuntimeError("Shared record status changed before the update committed.")
+            return self._upsert(connection, replace(record, status=status, updated_at=utc_now()))
+
     def record_agent_run(self, run: AgentRunRecord) -> AgentRunRecord:
         self.initialize()
         payload = run.to_dict()
