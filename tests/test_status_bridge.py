@@ -167,6 +167,81 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             finally:
                 bridge.stop()
 
+    def test_cash_flow_hq_conversational_search_handles_vendor_amount_invoice_and_status_queries(self) -> None:
+        from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
+        from shared.data_layer.models import SharedRecord, RecordType, SourceSystem, Status
+        from shared.data_layer.repository import InMemorySharedRecordRepository
+        from decimal import Decimal
+        from datetime import date
+
+        repository = InMemorySharedRecordRepository()
+        for record in [
+            SharedRecord(
+                id="bill-adp",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-adp",
+                title="ADP Payroll",
+                amount=Decimal("69.00"),
+                effective_date=date(2026, 8, 15),
+                status=Status.UPCOMING,
+                metadata={"invoice_number": "725823402"},
+            ),
+            SharedRecord(
+                id="bill-comcast",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-comcast",
+                title="Comcast",
+                amount=Decimal("79.99"),
+                effective_date=date(2026, 8, 16),
+                status=Status.PAID,
+                metadata={"invoice_number": "COMCAST-1001"},
+            ),
+            SharedRecord(
+                id="bill-adp-extra",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-adp-extra",
+                title="ADP Payroll Extra",
+                amount=Decimal("150.00"),
+                effective_date=date(2026, 8, 22),
+                status=Status.PAID,
+                metadata={"invoice_number": "ADP-150"},
+            ),
+        ]:
+            repository.upsert(record)
+        service = CashFlowHqPrivateBridgeService(database_path="unused", repository=repository, planner=None)
+
+        exact_vendor = service.search("show me Comcast")
+        self.assertEqual(exact_vendor["status"], "ok")
+        self.assertEqual(exact_vendor["matches"][0]["bill_name"], "Comcast")
+
+        amount_query = service.search("Find the $69 invoice")
+        self.assertEqual(amount_query["matches"][0]["bill_name"], "ADP Payroll")
+
+        invoice_query = service.search("What is the status of invoice 725823402?")
+        self.assertEqual(invoice_query["matches"][0]["bill_name"], "ADP Payroll")
+
+        no_match = service.search("Do we still owe Google $999?")
+        self.assertEqual(no_match["matches"], [])
+        self.assertIn("no matching bill", no_match["answer"].lower())
+
+        multi = service.search("ADP")
+        self.assertGreaterEqual(len(multi["matches"]), 2)
+        self.assertIn("which one", str(multi["answer"]).lower())
+
+        search_no_mutation = service.search("Did we pay Comcast?")
+        self.assertEqual(search_no_mutation["matches"][0]["bill_name"], "Comcast")
+        self.assertIn("paid", str(search_no_mutation["answer"]).lower())
+
+        original_mark_paid = service.mark_paid
+        service.mark_paid = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("search invoked mark_paid"))
+        alias_collision = service.search("mark paid Comcast")
+        service.mark_paid = original_mark_paid
+        self.assertEqual(alias_collision["matches"][0]["bill_name"], "Comcast")
+        self.assertNotIn("mark_paid", str(alias_collision).lower())
+
     def test_cash_flow_hq_private_bridge_service_contract(self) -> None:
         """Test CashFlowHqPrivateBridgeService exact response contracts."""
         from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
