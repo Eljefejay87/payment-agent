@@ -415,6 +415,8 @@ class CashFlowHQConfigTests(unittest.TestCase):
             {
                 "PAYMENT_STATUS_BRIDGE_ENABLED": "true",
                 "PAYMENT_STATUS_BRIDGE_TOKEN": "test-token",
+                "PAYMENT_STATUS_BRIDGE_HOST": "127.0.0.1",
+                "PAYMENT_STATUS_BRIDGE_PORT": "0",
                 "SHARED_DATA_DATABASE_PATH": "/tmp/test_shared_data.sqlite3",
                 "CASH_FLOW_PLANNER_DATABASE_PATH": "/tmp/test_cash_flow_planner.sqlite3",
                 "WEEKLY_REMIT_APPROVAL_BRIDGE_ENABLED": "false",
