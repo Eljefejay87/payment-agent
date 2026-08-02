@@ -46,3 +46,11 @@ Use these standards for every UCM AI Operations agent unless the user explicitly
 - Include `README.md`, `requirements.txt`, `.env.example`, `.gitignore`, and tests for parsing, configuration, database behavior, duplicate detection, and mocked integrations.
 - Keep changes scoped to the requested task.
 - Report validation performed and any skipped checks.
+
+## Required Engineering Playbook
+
+All coding agents working in this repository must follow the engineering standards in `docs/UCM_ENGINEERING_PLAYBOOK.md`.
+
+This playbook defines the repository boundaries, safety rules, deployment safeguards, testing expectations, documentation standards, incident procedures, and required completion-report format.
+
+When a requirement conflicts with a narrower instruction, the playbook and the repo’s existing documentation take precedence. If a detail is unknown, record it as `To be documented` rather than inventing it.
