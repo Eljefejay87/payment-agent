@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -55,6 +56,20 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             def search(self, query: str) -> dict:
                 return {"status": "ok", "matches": []}
 
+            def list_bills(self, scope: str) -> dict:
+                return {
+                    "status": "ok",
+                    "scope": scope,
+                    "bills": [
+                        {
+                            "bill_name": "Office Rent",
+                            "amount": "1200.00",
+                            "due_date": "2026-08-03",
+                            "status": "upcoming",
+                        }
+                    ],
+                }
+
             def mark_paid(self, record_ref: str, expected_status: str) -> dict:
                 if expected_status == "past_due":
                     raise StaleCashFlowRecordError("stale")
@@ -105,6 +120,19 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 response.read()
 
+                bills = HTTPConnection("127.0.0.1", port)
+                bills.request(
+                    "POST",
+                    "/internal/cash-flow/bills",
+                    body='{"scope":"current_week"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                bills_response = bills.getresponse()
+                bills_payload = json.loads(bills_response.read().decode())
+                self.assertEqual(bills_response.status, 200)
+                self.assertEqual(set(bills_payload["bills"][0]), {"bill_name", "amount", "due_date", "status"})
+                self.assertNotIn("record_ref", str(bills_payload))
+
                 denied = HTTPConnection("127.0.0.1", port)
                 denied.request(
                     "POST",
@@ -142,7 +170,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
     def test_cash_flow_hq_private_bridge_service_contract(self) -> None:
         """Test CashFlowHqPrivateBridgeService exact response contracts."""
         from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
-        from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerService, WeeklyCashPlannerDatabase
+        from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerService, WeeklyCashPlannerDatabase, active_business_week
         from agents.icr_remit_agent.database import ICRRemitDatabase
         from shared.data_layer.models import SharedRecord, RecordType, SourceSystem, Status
         from shared.data_layer.repository import InMemorySharedRecordRepository
@@ -154,7 +182,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             repository = InMemorySharedRecordRepository()
             
             # Create 12 bills to test 10-match limit
-            for i in range(12):
+            for i in range(60):
                 bill = SharedRecord(
                     id=f"bill-{i}",
                     record_type=RecordType.BILL,
@@ -162,7 +190,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                     source_record_id=f"notion-{i}",
                     title=f"Test Bill {i}",
                     amount=Decimal("100.00"),
-                    effective_date=date(2026, 8, i + 1),
+                    effective_date=date(2026, 8, min(i + 1, 28)),
                     status=Status.UPCOMING,
                 )
                 repository.upsert(bill)
@@ -228,6 +256,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             planner_db = WeeklyCashPlannerDatabase(Path(directory) / "planner.sqlite3")
             remit_db = ICRRemitDatabase(Path(directory) / "remit.sqlite3")
             planner = WeeklyCashPlannerService(planner_db.path, remit_db.path)
+            planner.record_already_sent_remit(active_business_week(), Decimal("5000.00"), Decimal("1200.00"))
             
             # Initialize service with test dependencies
             service = CashFlowHqPrivateBridgeService(
@@ -245,6 +274,36 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             self.assertEqual(set(match.keys()), {"record_ref", "bill_name", "amount", "due_date", "current_status"})
             self.assertEqual(match["bill_name"], "ADP Payroll")
             self.assertEqual(match["current_status"], "upcoming")
+
+            # Test read-only bill lists expose no internal record refs
+            current_week = service.list_bills("current_week")
+            self.assertEqual(current_week["status"], "ok")
+            self.assertEqual(current_week["scope"], "current_week")
+            self.assertTrue(current_week["bills"])
+            self.assertEqual(set(current_week["bills"][0].keys()), {"bill_name", "amount", "due_date", "status"})
+            self.assertLessEqual(len(current_week["bills"]), 50)
+            self.assertNotIn("record_ref", str(current_week))
+
+            needs_review = SharedRecord(
+                id="bill-review",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-review",
+                title="Review Needed Bill",
+                amount=Decimal("75.00"),
+                effective_date=date(2026, 8, 2),
+                status=Status.NEEDS_REVIEW,
+            )
+            repository.upsert(needs_review)
+            review_list = service.list_bills("bills_needing_review")
+            self.assertEqual({bill["bill_name"] for bill in review_list["bills"]}, {"Review Needed Bill", "Office Rent"})
+            unpaid_list = service.list_bills("unpaid")
+            self.assertIn("ADP Payroll", [bill["bill_name"] for bill in unpaid_list["bills"]])
+            self.assertEqual(len(unpaid_list["bills"]), 50)
+            self.assertTrue(unpaid_list["truncated"])
+            self.assertGreater(unpaid_list["total_count"], 50)
+            with self.assertRaises(ValueError):
+                service.list_bills("unsupported")
             
             # Test empty query returns no matches
             result = service.search("")

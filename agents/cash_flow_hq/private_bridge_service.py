@@ -13,6 +13,7 @@ from agents.weekly_remit_agent.config import load_remit_settings
 
 # Statuses that represent non-actionable bills
 EXCLUDED_STATUSES = {Status.PAID, Status.CANCELLED, Status.COMPLETED, Status.FAILED}
+MAX_BILL_LIST_ITEMS = 50
 
 
 class StaleCashFlowRecordError(ValueError):
@@ -83,6 +84,54 @@ class CashFlowHqPrivateBridgeService:
         matches = matches[:10]
         
         return {"status": "ok", "matches": matches}
+
+    def list_bills(self, scope: str) -> dict:
+        """Return a sanitized, read-only list of bills for a supported Cash Flow HQ scope."""
+        normalized_scope = _normalize_scope(scope)
+        if normalized_scope is None:
+            raise ValueError("Unsupported bill list scope.")
+
+        bills = self.repository.list(RecordFilters(record_type=RecordType.BILL))
+        if normalized_scope == "current_week":
+            rows = self._current_week_bill_rows(bills)
+        elif normalized_scope == "review":
+            rows = [
+                _public_bill_from_record(bill) for bill in bills
+                if bill.status in {Status.PAST_DUE, Status.NEEDS_REVIEW}
+            ]
+        elif normalized_scope == "upcoming":
+            rows = [
+                _public_bill_from_record(bill) for bill in bills
+                if bill.status in {Status.UPCOMING, Status.DUE}
+            ]
+        else:
+            rows = [
+                _public_bill_from_record(bill) for bill in bills
+                if bill.status not in EXCLUDED_STATUSES
+            ]
+
+        rows.sort(key=lambda item: (item["due_date"] or "9999-12-31", item["bill_name"]))
+        total_count = len(rows)
+        return {
+            "status": "ok",
+            "scope": normalized_scope,
+            "bills": rows[:MAX_BILL_LIST_ITEMS],
+            "total_count": total_count,
+            "truncated": total_count > MAX_BILL_LIST_ITEMS,
+        }
+
+    def _current_week_bill_rows(self, bills) -> list[dict]:
+        bill_dicts = [
+            {
+                "status": bill.status.value,
+                "due_date": bill.effective_date,
+                "amount": bill.amount or Decimal("0"),
+                "title": bill.title,
+            }
+            for bill in bills
+        ]
+        snapshot = self.planner.jason_snapshot(bill_dicts)
+        return [_public_bill_from_planner_row(bill) for bill in snapshot.get("bills_due_before_next_remit", [])]
     
     def mark_paid(self, record_ref: str, expected_status: str) -> dict:
         """Atomically mark a bill paid only if its confirmed status is unchanged."""
@@ -182,3 +231,41 @@ def _parse_money(value: str) -> Decimal:
 def _format_money(value: Decimal) -> str:
     """Format a Decimal as a money string like '$1,234.56'."""
     return f"${value:,.2f}"
+
+
+def _normalize_scope(scope: str) -> str | None:
+    value = str(scope or "").strip().lower().replace("-", "_")
+    aliases = {
+        "current": "current_week",
+        "current_week": "current_week",
+        "current_week_obligations": "current_week",
+        "this_week": "current_week",
+        "review": "review",
+        "needs_review": "review",
+        "bills_needing_review": "review",
+        "upcoming": "upcoming",
+        "unpaid": "unpaid",
+    }
+    return aliases.get(value)
+
+
+def _public_bill_from_record(bill) -> dict:
+    return {
+        "bill_name": bill.title,
+        "amount": str(bill.amount) if bill.amount else "0.00",
+        "due_date": bill.effective_date.isoformat() if bill.effective_date else "",
+        "status": bill.status.value,
+    }
+
+
+def _public_bill_from_planner_row(row: dict) -> dict:
+    due_date = row.get("due_date")
+    if hasattr(due_date, "isoformat"):
+        due_date = due_date.isoformat()
+    amount = row.get("amount", Decimal("0"))
+    return {
+        "bill_name": str(row.get("title") or row.get("bill_name") or ""),
+        "amount": str(amount),
+        "due_date": str(due_date or ""),
+        "status": str(row.get("status") or ""),
+    }
