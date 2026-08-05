@@ -12,6 +12,7 @@ from agents.cash_flow_hq.private_bridge import CashFlowHqPrivateBridge, from_env
 from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
 from shared.data_layer.models import RecordType, SourceSystem, Status, SharedRecord
 from shared.data_layer.repository import InMemorySharedRecordRepository
+from shared.data_layer.sqlite_repository import SQLiteSharedRecordRepository
 
 
 class _FakeServer:
@@ -118,6 +119,48 @@ class CashFlowHqPrivateBridgeTests(unittest.TestCase):
                 self.assertIn('"status":"created"', payload)
                 self.assertIn('Incoming Weekly Remit - 2026-08-03', payload)
                 self.assertEqual(len(repository.list()), 1)
+            finally:
+                bridge.stop()
+
+    def test_bridge_create_verifies_row_persisted_in_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "shared.sqlite3"
+            service = CashFlowHqPrivateBridgeService(
+                database_path=str(database_path),
+                now=lambda: datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc),
+            )
+            try:
+                bridge = CashFlowHqPrivateBridge(
+                    token="bridge-token",
+                    service=service,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/cash-flow/incoming-weekly-remit",
+                    body='{"amount":"8573","replace_existing":false}',
+                    headers={"Authorization": "Bearer bridge-token", "Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                payload = response.read().decode()
+                self.assertEqual(response.status, 200)
+                self.assertIn('"status":"created"', payload)
+
+                repository = SQLiteSharedRecordRepository(str(database_path))
+                saved = repository.get("incoming-weekly-remit-2026-08-03")
+                self.assertIsNotNone(saved)
+                assert saved is not None
+                self.assertEqual(saved.title, "Incoming Weekly Remit - 2026-08-03")
+                self.assertEqual(str(saved.amount), "8573")
+                self.assertEqual(saved.status, Status.UPCOMING)
             finally:
                 bridge.stop()
 

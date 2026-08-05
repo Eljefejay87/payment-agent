@@ -49,10 +49,15 @@ class CashFlowHqPrivateBridge:
                     return
                 payload = bridge._request_payload(self)
                 if self.path == "/internal/cash-flow/incoming-weekly-remit":
-                    result = bridge.service.create_incoming_weekly_remit(
-                        payload.get("amount"),
-                        replace_existing=payload.get("replace_existing") is True,
-                    )
+                    try:
+                        result = bridge.service.create_incoming_weekly_remit(
+                            payload.get("amount"),
+                            replace_existing=payload.get("replace_existing") is True,
+                        )
+                    except Exception:
+                        logging.exception("cash_flow_hq_bridge result=error endpoint=incoming_weekly_remit")
+                        bridge._respond(self, 500, {"status": "error"})
+                        return
                 elif self.path == "/internal/cash-flow/incoming-weekly-remit/received":
                     result = bridge.service.mark_incoming_weekly_remit_received(payload.get("amount"))
                 else:
