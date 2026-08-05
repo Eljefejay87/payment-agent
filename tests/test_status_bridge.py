@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -74,6 +75,100 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                 self.assertEqual(response.status, 404)
                 payload = response.read().decode()
                 self.assertIn('"status":"unavailable"', payload)
+            finally:
+                bridge.stop()
+
+    def test_cash_flow_hq_incoming_weekly_remit_private_http_contract(self) -> None:
+        class FakeCashFlowService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def create_incoming_weekly_remit(self, amount, *, replace_existing=False) -> dict:
+                self.calls.append((str(amount), replace_existing))
+                return {"status": "duplicate" if not replace_existing else "updated"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            service = FakeCashFlowService()
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    cash_flow_hq_service=service,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/cash-flow/incoming-weekly-remit",
+                    body='{"amount":"8573"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                first = json.loads(conn.getresponse().read().decode())
+                self.assertEqual(first["status"], "duplicate")
+
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/cash-flow/incoming-weekly-remit",
+                    body='{"amount":"8573","replace_existing":true}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                second = json.loads(conn.getresponse().read().decode())
+                self.assertEqual(second["status"], "updated")
+                self.assertEqual(service.calls, [("8573", False), ("8573", True)])
+            finally:
+                bridge.stop()
+
+    def test_cash_flow_hq_incoming_weekly_remit_received_private_http_contract(self) -> None:
+        class FakeCashFlowService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def mark_incoming_weekly_remit_received(self, amount) -> dict:
+                self.calls.append(None if amount is None else str(amount))
+                return {"status": "paid"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            service = FakeCashFlowService()
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    cash_flow_hq_service=service,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/cash-flow/incoming-weekly-remit/received",
+                    body='{"amount":"8562.91"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                response = json.loads(conn.getresponse().read().decode())
+                self.assertEqual(response["status"], "paid")
+                self.assertEqual(service.calls, ["8562.91"])
             finally:
                 bridge.stop()
 
