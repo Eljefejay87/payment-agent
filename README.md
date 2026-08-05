@@ -31,6 +31,38 @@ python main.py ai-budget-reset --confirm
 Reset retains the audit rows and starts a new current-month accounting window.
 The automatic calendar-month reset requires no command or running service.
 
+## Mem0 Integration (Phase 1 Foundation Only)
+
+Phase 1 includes only a reusable shared adapter scaffold at
+`shared/integrations/mem0_adapter.py`. It is disabled by default and is not
+wired into Payment Agent, Jason, Master Agent, or any production workflow.
+
+Required environment variables for future enablement are documented but unused
+until a later approved phase:
+
+- `MEM0_ENABLED` (default `false`)
+- `MEM0_API_KEY`
+- `MEM0_BASE_URL` (default `https://api.mem0.ai`)
+- `MEM0_ORG_ID` (optional)
+- `MEM0_PROJECT_ID` (optional)
+
+How Mem0 will be enabled later:
+
+- Keep `MEM0_ENABLED=false` in all active environments during Phase 1.
+- In a future approved phase, enable Mem0 only at explicitly reviewed
+  non-production integration points.
+- Add runtime wiring only after adapter behavior, data classification, and
+  privacy controls are approved.
+
+Privacy considerations:
+
+- The Phase 1 adapter is fail-closed and no-op unless explicitly enabled and
+  configured.
+- It keeps metadata minimal and does not require transcript, debtor, or payment
+  content to operate in this phase.
+- Any future write path must continue to avoid sending raw regulated or
+  sensitive collections data without explicit approval.
+
 ## What It Does
 
 - Scans a Microsoft 365 mailbox for messages whose subject contains `Online Payment -`.

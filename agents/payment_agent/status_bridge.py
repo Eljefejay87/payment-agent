@@ -136,7 +136,7 @@ class PaymentStatusBridge:
                         result = bridge.cash_flow_hq_service.search(query)
                         bridge._respond(self, 200, result)
                     except Exception:
-                        logging.warning("cash_flow_hq_bridge result=error")
+                        logging.exception("cash_flow_hq_bridge result=error")
                         bridge._respond(self, 400, {"status": "error"})
                     return
 
