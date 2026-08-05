@@ -17,6 +17,7 @@ from .config import NOTION_SETUP_MESSAGE, load_cash_flow_settings, validate_cash
 from .email_scan import CashFlowEmailScanner
 from .graph_client import CashFlowGraphClient
 from .payment_scan import CashFlowPaymentScanner
+from .private_bridge import run_bridge as run_private_bridge
 from .review import build_review_report, format_review_report, ignore_email
 from .service import CashFlowHQService
 
@@ -53,6 +54,8 @@ def main() -> int:
             "cash-flow-mark-paid",
             "cashflow-ignore-email",
             "cash-flow-ignore-email",
+            "cash-flow-bridge",
+            "cashflow-bridge",
             "cashflow-run",
             "cash-flow-run",
             "cashflow-scheduler",
@@ -81,6 +84,9 @@ def main() -> int:
     parser.add_argument("--notes", default=None, help="Replacement Notes value for manual update.")
     parser.add_argument("--message-id", default="", help="Outlook message ID to ignore in review queue.")
     args = parser.parse_args()
+
+    if args.command in {"cash-flow-bridge", "cashflow-bridge"}:
+        return run_private_bridge(args.env_file)
 
     settings = load_cash_flow_settings(args.env_file)
     configure_logging(settings.log_level)
