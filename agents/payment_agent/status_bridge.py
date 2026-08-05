@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,17 @@ def build_status_payload(payment_health_path: Path, voicemail_health_path: Path)
 
 def _token_matches(value: str, expected: str) -> bool:
     return bool(value) and bool(expected) and hmac.compare_digest(value.encode(), expected.encode())
+
+
+def _decimal_payload_value(value: Any) -> Decimal | None:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return Decimal(str(value).replace(",", "").replace("$", "").strip())
+    except (InvalidOperation, AttributeError):
+        return None
 
 
 class PaymentStatusBridge:
@@ -183,6 +195,42 @@ class PaymentStatusBridge:
                         return
                     try:
                         bridge._respond(self, 200, {"status": "ok", "planner_summary": bridge.cash_flow_hq_service.planner_summary()})
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
+                if self.path == "/internal/cash-flow/incoming-weekly-remit":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    amount = _decimal_payload_value(payload.get("amount"))
+                    if amount is None or amount <= 0:
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        result = bridge.cash_flow_hq_service.create_incoming_weekly_remit(
+                            amount,
+                            replace_existing=payload.get("replace_existing") is True,
+                        )
+                        bridge._respond(self, 200, result)
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
+                if self.path == "/internal/cash-flow/incoming-weekly-remit/received":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    amount_value = payload.get("amount")
+                    amount = _decimal_payload_value(amount_value) if amount_value not in {None, ""} else None
+                    if amount_value not in {None, ""} and (amount is None or amount <= 0):
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        result = bridge.cash_flow_hq_service.mark_incoming_weekly_remit_received(amount)
+                        bridge._respond(self, 200, result)
                     except Exception:
                         logging.warning("cash_flow_hq_bridge result=error")
                         bridge._respond(self, 400, {"status": "error"})
