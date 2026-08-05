@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import Callable
 
 from agents.cash_flow_hq.service import CashFlowHQService, cash_flow_bill_from_page
-from shared.data_layer.models import RecordType, Status
+from shared.data_layer.models import Priority, RecordType, ReviewStatus, SharedRecord, SourceSystem, Status
 from shared.data_layer.repository import RecordFilters, SharedRecordRepository
 from shared.data_layer.sqlite_repository import SQLiteSharedRecordRepository
 from agents.cash_flow_hq.config import load_cash_flow_settings
@@ -36,6 +37,7 @@ class CashFlowHqPrivateBridgeService:
         repository: SharedRecordRepository | None = None,
         planner: WeeklyCashPlannerService | None = None,
         cash_flow: CashFlowHQService | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         """
         Initialize the bridge service.
@@ -63,6 +65,7 @@ class CashFlowHqPrivateBridgeService:
                 settings.cash_flow_planner_database_path,
                 remit_settings.database_path,
             )
+        self.now = now or (lambda: datetime.now(timezone.utc))
     
     def search(self, query: str) -> dict:
         """Read-only bill lookup that ranks invoice, vendor, and amount matches without invoking mutation logic."""
@@ -325,131 +328,138 @@ class CashFlowHqPrivateBridgeService:
 
     def create_incoming_weekly_remit(
         self,
-        amount: Decimal,
+        amount: str | Decimal | None,
         *,
         replace_existing: bool = False,
-        today: date | None = None,
     ) -> dict:
-        week_start = active_business_week(today)
-        title = _incoming_weekly_remit_title(week_start)
-        foundation = self.cash_flow.get_existing_foundation()
-        existing = self._find_incoming_weekly_remit(foundation["data_source_id"], title)
-        if len(existing) > 1:
-            return {"status": "conflict", "week_start": week_start.isoformat(), "title": title}
+        week_start = self._current_week_start()
+        candidates = self._incoming_weekly_remit_candidates(week_start)
+        if len(candidates) > 1:
+            return {"status": "conflict", "matches": [self._record_payload(record) for record in candidates]}
+        if candidates and candidates[0].status == Status.PAID:
+            return {"status": "already_paid", "record": self._record_payload(candidates[0])}
+        if candidates and not replace_existing:
+            return {"status": "duplicate", "record": self._record_payload(candidates[0])}
 
-        due_date = week_start + timedelta(days=2)
-        if existing:
-            bill = existing[0]
-            if not replace_existing:
-                return {
-                    "status": "duplicate",
-                    "week_start": week_start.isoformat(),
-                    "title": title,
-                    "record": _incoming_weekly_remit_record(bill),
-                }
-            if (bill.status or "").strip().casefold() == "paid":
-                return {
-                    "status": "already_paid",
-                    "week_start": week_start.isoformat(),
-                    "title": title,
-                    "record": _incoming_weekly_remit_record(bill),
-                }
-            self.cash_flow.update_bill_fields(
-                bill.page_id,
-                expense_name=title,
-                vendor_payee=INCOMING_WEEKLY_REMIT_VENDOR,
-                amount=amount,
-                due_date_value=due_date,
-                status="Upcoming",
-                category=INCOMING_WEEKLY_REMIT_CATEGORY,
-                payment_type="Manual",
-                notes=INCOMING_WEEKLY_REMIT_NOTE,
-            )
-            refreshed = self._find_incoming_weekly_remit(foundation["data_source_id"], title)
-            return {
-                "status": "updated",
-                "week_start": week_start.isoformat(),
-                "title": title,
-                "record": _incoming_weekly_remit_record(refreshed[0] if refreshed else bill),
-            }
-
-        payload = self.cash_flow.create_manual_expense_payload(
-            expense_name=title,
-            amount=float(amount),
-            due_date=due_date.isoformat(),
-            vendor_payee=INCOMING_WEEKLY_REMIT_VENDOR,
-            category=INCOMING_WEEKLY_REMIT_CATEGORY,
-            source=INCOMING_WEEKLY_REMIT_SOURCE,
-        )
-        payload["Notes"] = {
-            "rich_text": [{"type": "text", "text": {"content": INCOMING_WEEKLY_REMIT_NOTE}}]
-        }
-        page = self.cash_flow.notion.request(
-            "POST",
-            "/pages",
-            json={"parent": {"data_source_id": foundation["data_source_id"]}, "properties": payload},
-        )
-        created = self._find_incoming_weekly_remit(foundation["data_source_id"], title)
-        bill = created[0] if created else cash_flow_bill_from_page(page)
+        record = self._incoming_weekly_remit_record(week_start, amount, existing=candidates[0] if candidates else None)
+        saved = self.repository.upsert(record)
         return {
-            "status": "created",
-            "week_start": week_start.isoformat(),
-            "title": title,
-            "record": _incoming_weekly_remit_record(bill),
+            "status": "updated" if candidates else "created",
+            "record": self._record_payload(saved),
         }
 
     def mark_incoming_weekly_remit_received(
         self,
-        amount: Decimal | None = None,
-        *,
-        today: date | None = None,
+        amount: str | Decimal | None = None,
     ) -> dict:
-        week_start = active_business_week(today)
-        title = _incoming_weekly_remit_title(week_start)
-        foundation = self.cash_flow.get_existing_foundation()
-        existing = self._find_incoming_weekly_remit(foundation["data_source_id"], title)
-        if len(existing) > 1:
-            return {"status": "conflict", "week_start": week_start.isoformat(), "title": title}
-        if not existing:
-            return {"status": "not_found", "week_start": week_start.isoformat(), "title": title}
+        week_start = self._current_week_start()
+        candidates = self._incoming_weekly_remit_candidates(week_start)
+        if not candidates:
+            return {"status": "not_found"}
+        if len(candidates) > 1:
+            return {"status": "conflict", "matches": [self._record_payload(record) for record in candidates]}
 
-        bill = existing[0]
-        if (bill.status or "").strip().casefold() == "paid":
-            return {
-                "status": "already_paid",
-                "week_start": week_start.isoformat(),
-                "title": title,
-                "record": _incoming_weekly_remit_record(bill),
-            }
+        record = candidates[0]
+        if record.status == Status.PAID:
+            return {"status": "already_paid", "record": self._record_payload(record)}
 
-        if amount is not None:
-            self.cash_flow.update_bill_fields(
-                bill.page_id,
-                amount=amount,
-                notes=_received_notes(bill.notes, bill.amount, amount),
+        updated_amount = self._parse_amount(amount) if amount is not None else record.amount
+        updated = self.repository.upsert(
+            record.__class__(
+                id=record.id,
+                record_type=record.record_type,
+                source_system=record.source_system,
+                source_record_id=record.source_record_id,
+                title=record.title,
+                source_url=record.source_url,
+                created_at=record.created_at,
+                updated_at=self.now(),
+                effective_date=record.effective_date,
+                status=Status.PAID,
+                owner=record.owner,
+                priority=record.priority,
+                action_required=record.action_required,
+                review_status=record.review_status,
+                confidence=record.confidence,
+                amount=updated_amount,
+                currency=record.currency,
+                summary=record.summary,
+                metadata=record.metadata,
+                idempotency_key=record.idempotency_key,
+                schema_version=record.schema_version,
             )
-
-        self.cash_flow.ensure_payment_confirmation_properties(foundation["data_source_id"])
-        self.cash_flow.mark_bill_paid_manually(
-            bill.page_id,
-            today or date.today(),
-            payment_method="Manual",
-            confirmation_subject="Telegram deposit received",
         )
-        refreshed = self._find_incoming_weekly_remit(foundation["data_source_id"], title)
-        return {
-            "status": "paid",
-            "week_start": week_start.isoformat(),
-            "title": title,
-            "record": _incoming_weekly_remit_record(refreshed[0] if refreshed else bill),
-        }
+        return {"status": "paid", "record": self._record_payload(updated)}
 
-    def _find_incoming_weekly_remit(self, data_source_id: str, title: str) -> list:
+    def _current_week_start(self) -> date:
+        today = self.now().date()
+        return today - timedelta(days=today.weekday())
+
+    def _incoming_weekly_remit_candidates(self, week_start: date) -> list:
+        title = self._incoming_weekly_remit_title(week_start)
+        bills = self.repository.list(RecordFilters(record_type=RecordType.BILL))
         return [
             bill
-            for bill in self.cash_flow.list_cash_flow_bills(data_source_id)
-            if (bill.expense_name or "").strip() == title
+            for bill in bills
+            if bill.title == title and bill.effective_date == week_start
         ]
+
+    def _incoming_weekly_remit_record(self, week_start: date, amount: str | Decimal | None, existing=None):
+        record_id = existing.id if existing is not None else self._incoming_weekly_remit_record_id(week_start)
+        amount_value = self._parse_amount(amount) if amount is not None else existing.amount if existing is not None else None
+        return SharedRecord(
+            id=record_id,
+            record_type=RecordType.BILL,
+            source_system=existing.source_system if existing is not None else SourceSystem.SQLITE,
+            source_record_id=self._incoming_weekly_remit_source_record_id(week_start),
+            title=self._incoming_weekly_remit_title(week_start),
+            source_url=existing.source_url if existing is not None else None,
+            created_at=existing.created_at if existing is not None else self.now(),
+            updated_at=self.now(),
+            effective_date=week_start,
+            status=Status.UPCOMING,
+            owner=existing.owner if existing is not None else None,
+            priority=existing.priority if existing is not None else Priority.NORMAL,
+            action_required=existing.action_required if existing is not None else None,
+            review_status=existing.review_status if existing is not None else ReviewStatus.NOT_REQUIRED,
+            confidence=existing.confidence if existing is not None else None,
+            amount=amount_value,
+            currency=existing.currency if existing is not None else "USD",
+            summary=existing.summary if existing is not None else None,
+            metadata={**(existing.metadata if existing is not None else {}), "bridge": "cash_flow_hq_private", "week_start": week_start.isoformat()},
+            idempotency_key=self._incoming_weekly_remit_source_record_id(week_start),
+            schema_version=existing.schema_version if existing is not None else 1,
+        )
+
+    @staticmethod
+    def _parse_amount(amount: str | Decimal | None) -> Decimal | None:
+        if amount is None:
+            return None
+        if isinstance(amount, Decimal):
+            return amount
+        return Decimal(str(amount))
+
+    @staticmethod
+    def _incoming_weekly_remit_source_record_id(week_start: date) -> str:
+        return f"incoming-weekly-remit:{week_start.isoformat()}"
+
+    @staticmethod
+    def _incoming_weekly_remit_record_id(week_start: date) -> str:
+        return f"incoming-weekly-remit-{week_start.isoformat()}"
+
+    @staticmethod
+    def _incoming_weekly_remit_title(week_start: date) -> str:
+        return f"Incoming Weekly Remit - {week_start.isoformat()}"
+
+    @staticmethod
+    def _record_payload(record) -> dict:
+        return {
+            "record_ref": record.id,
+            "bill_name": record.title,
+            "amount": str(record.amount) if record.amount is not None else "0.00",
+            "due_date": record.effective_date.isoformat() if record.effective_date else "",
+            "current_status": record.status.value,
+        }
 
 
 def _parse_money(value: str) -> Decimal:
