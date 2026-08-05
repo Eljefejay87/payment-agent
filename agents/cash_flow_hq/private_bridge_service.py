@@ -343,9 +343,12 @@ class CashFlowHqPrivateBridgeService:
 
         record = self._incoming_weekly_remit_record(week_start, amount, existing=candidates[0] if candidates else None)
         saved = self.repository.upsert(record)
+        persisted = self.repository.get(saved.id)
+        if persisted is None:
+            raise RuntimeError("Incoming weekly remit was not persisted.")
         return {
             "status": "updated" if candidates else "created",
-            "record": self._record_payload(saved),
+            "record": self._record_payload(persisted),
         }
 
     def mark_incoming_weekly_remit_received(
