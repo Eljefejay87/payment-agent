@@ -132,6 +132,7 @@ class PaymentStatusBridge:
                     if not isinstance(query, str) or not query.strip():
                         bridge._respond(self, 400, {"status": "invalid"})
                         return
+                    query = query.strip()
                     try:
                         result = bridge.cash_flow_hq_service.search(query)
                         bridge._respond(self, 200, result)
