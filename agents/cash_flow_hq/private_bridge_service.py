@@ -73,6 +73,10 @@ class CashFlowHqPrivateBridgeService:
             return {"status": "ok", "matches": [], "answer": "No matching bill was found."}
 
         query_text = str(query).strip()
+        remit_query = self._incoming_weekly_remit_query(query_text)
+        if remit_query is not None:
+            return remit_query
+
         query_lower = query_text.lower()
         status_hint = _infer_status_hint(query_text)
         explicit_lookup = any(
@@ -406,6 +410,51 @@ class CashFlowHqPrivateBridgeService:
             for bill in bills
             if bill.title == title and bill.effective_date == week_start
         ]
+
+    def _incoming_weekly_remit_query(self, query: str) -> dict | None:
+        normalized = _normalize_text(query)
+        if not normalized:
+            return None
+
+        patterns = [
+            r"\bwhere did you save the ndh remit\b",
+            r"\bwhere is the ndh remit\b",
+            r"\bshow(?: me)?(?: this week'?s)? incoming weekly remit\b",
+            r"\bincoming weekly remit\b",
+        ]
+        if not any(re.search(pattern, normalized) for pattern in patterns):
+            return None
+
+        week_start = active_business_week()
+        title = _incoming_weekly_remit_title(week_start)
+        existing = [
+            bill
+            for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
+            if (bill.title or "").strip() == title
+        ]
+        if not existing:
+            return {
+                "status": "not_found",
+                "matches": [],
+                "answer": "No Incoming Weekly Remit exists for this week.",
+                "record": None,
+            }
+
+        bill = existing[0]
+        record = {
+            "record_id": bill.id,
+            "amount": str(bill.amount) if bill.amount is not None else "",
+            "status": bill.status.value if hasattr(bill.status, "value") else str(bill.status or ""),
+            "effective_date": bill.effective_date.isoformat() if bill.effective_date else "",
+            "collection": "Cash Flow HQ",
+            "table": "Incoming Weekly Remits",
+        }
+        return {
+            "status": "ok",
+            "matches": [record],
+            "record": record,
+            "answer": "Incoming Weekly Remit found.",
+        }
 
     def _incoming_weekly_remit_record(self, week_start: date, amount: str | Decimal | None, existing=None):
         record_id = existing.id if existing is not None else self._incoming_weekly_remit_record_id(week_start)

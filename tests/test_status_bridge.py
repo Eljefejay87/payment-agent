@@ -261,6 +261,57 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             finally:
                 bridge.stop()
 
+    def test_cash_flow_hq_incoming_weekly_remit_lookup_private_http_contract(self) -> None:
+        class FakeCashFlowService:
+            def search(self, query: str) -> dict:
+                self.query = query
+                return {
+                    "status": "ok",
+                    "record": {
+                        "record_id": "page-123",
+                        "amount": "8573.00",
+                        "status": "upcoming",
+                        "effective_date": "2026-08-05",
+                        "collection": "Cash Flow HQ",
+                        "table": "Incoming Weekly Remits",
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            service = FakeCashFlowService()
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    cash_flow_hq_service=service,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/cash-flow/search",
+                    body='{"query":"Where did you save the NDH remit?"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                response = json.loads(conn.getresponse().read().decode())
+                self.assertEqual(response["status"], "ok")
+                self.assertEqual(response["record"]["record_id"], "page-123")
+                self.assertEqual(response["record"]["collection"], "Cash Flow HQ")
+                self.assertEqual(response["record"]["table"], "Incoming Weekly Remits")
+            finally:
+                bridge.stop()
+
     def test_cash_flow_hq_conversational_search_handles_vendor_amount_invoice_and_status_queries(self) -> None:
         from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
         from shared.data_layer.models import SharedRecord, RecordType, SourceSystem, Status
@@ -335,6 +386,45 @@ class PaymentStatusBridgeTests(unittest.TestCase):
         service.mark_paid = original_mark_paid
         self.assertEqual(alias_collision["matches"][0]["bill_name"], "Comcast")
         self.assertNotIn("mark_paid", str(alias_collision).lower())
+
+    def test_cash_flow_hq_conversational_search_returns_incoming_weekly_remit_details(self) -> None:
+        from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
+        from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerDatabase, WeeklyCashPlannerService, active_business_week
+        from agents.icr_remit_agent.database import ICRRemitDatabase
+        from shared.data_layer.models import RecordType, SourceSystem, Status, SharedRecord
+        from shared.data_layer.repository import InMemorySharedRecordRepository
+        from decimal import Decimal
+        from datetime import date
+
+        repository = InMemorySharedRecordRepository()
+        repository.upsert(
+            SharedRecord(
+                id="bill-ndh-remit",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-ndh-remit",
+                title=f"Incoming Weekly Remit - {active_business_week(date(2026, 8, 5)).isoformat()}",
+                amount=Decimal("8573.00"),
+                effective_date=date(2026, 8, 7),
+                status=Status.UPCOMING,
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            planner_db = WeeklyCashPlannerDatabase(Path(directory) / "planner.sqlite3")
+            remit_db = ICRRemitDatabase(Path(directory) / "remit.sqlite3")
+            planner = WeeklyCashPlannerService(planner_db.path, remit_db.path)
+            planner.record_already_sent_remit(active_business_week(date(2026, 8, 5)), Decimal("5000.00"), Decimal("1200.00"))
+            service = CashFlowHqPrivateBridgeService(database_path="unused", repository=repository, planner=planner)
+
+            result = service.search("Where did you save the NDH remit?")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["record"]["record_id"], "bill-ndh-remit")
+        self.assertEqual(result["record"]["amount"], "8573.00")
+        self.assertEqual(result["record"]["status"], "upcoming")
+        self.assertEqual(result["record"]["effective_date"], "2026-08-07")
+        self.assertEqual(result["record"]["collection"], "Cash Flow HQ")
+        self.assertEqual(result["record"]["table"], "Incoming Weekly Remits")
 
     def test_cash_flow_hq_private_bridge_service_contract(self) -> None:
         """Test CashFlowHqPrivateBridgeService exact response contracts."""
