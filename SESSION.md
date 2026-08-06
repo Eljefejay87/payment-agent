@@ -1,5 +1,18 @@
 # UCM AI Operations Session
 
+## Latest Session Update — 2026-07-28
+
+- Fixed the Payment Agent's strict subject matching so known Debit Card, Credit Card,
+  and Credit or Debit Card future-processing notifications are recognized without
+  widening the filter to unrelated scheduled-payment email.
+- Recovered the missed live Debit Card payment: the approved scan recorded the
+  exact source values, sent the normal Teams notification, marked the source email
+  read, and moved it to `Processed Payments`.
+- Verified 8 focused subject tests, all 23 Payment Agent tests, and the full offline
+  suite of 317 tests with 1 skipped on the clean remote-main publication base.
+- Current task is complete. Next recommended step: monitor the next scheduled
+  future-processing payment and confirm it appears without manual intervention.
+
 ## Current Milestone
 
 - AI Control Center implementation is staged locally only. It adds the `/ai-control` dashboard page, read-only budget and LaunchAgent visibility, a private local control audit, confirmation-gated one-time jobs, and an intentionally disabled Resume All Services control. It does not start, resume, or deploy any agent.

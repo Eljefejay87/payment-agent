@@ -15,6 +15,11 @@ APPROVED_CARD_PAYMENT_SUBJECT = re.compile(
     r"^Online (Debit|Credit|Credit or Debit) Card payment was approved .* Reference number:",
     re.IGNORECASE,
 )
+FUTURE_PROCESSING_PAYMENT_SUBJECT = re.compile(
+    r"^Online (Debit|Credit|Credit or Debit) Card payments scheduled for future processing\. "
+    r"Reference number:",
+    re.IGNORECASE,
+)
 
 
 def is_payment_subject(subject: str, configured_subject_contains: str) -> bool:
@@ -22,7 +27,10 @@ def is_payment_subject(subject: str, configured_subject_contains: str) -> bool:
     configured = configured_subject_contains.strip().lower()
     if configured and configured in normalized_subject.lower():
         return True
-    return bool(APPROVED_CARD_PAYMENT_SUBJECT.search(normalized_subject))
+    return bool(
+        APPROVED_CARD_PAYMENT_SUBJECT.search(normalized_subject)
+        or FUTURE_PROCESSING_PAYMENT_SUBJECT.search(normalized_subject)
+    )
 
 
 class PaymentGraphClient(MicrosoftGraphClient):
