@@ -280,7 +280,7 @@ class CashFlowHqPrivateBridgeService:
             "planner_summary": self.planner_summary(),
         }
     
-    def planner_summary(self) -> dict:
+    def planner_summary(self, today: date | None = None) -> dict:
         """
         Return planner summary with calculated financial metrics.
         
@@ -323,11 +323,30 @@ class CashFlowHqPrivateBridgeService:
         # Calculate projected ending cash: operating_cash - current_week_obligations
         projected_ending = operating_cash - current_week_total
         
+        plan = snapshot.get("plan") or {}
+        already_paid = sum(
+            (bill.amount or Decimal("0"))
+            for bill in bills
+            if bill.status == Status.PAID
+            and _belongs_to_current_month(bill.effective_date, today)
+        )
+
         return {
             "operating_cash": _format_money(operating_cash),
             "current_week_obligations": _format_money(current_week_total),
             "overdue_items_requiring_review": _format_money(overdue_total),
             "projected_ending_cash": _format_money(projected_ending),
+            "current_weekly_remit": {
+                "week_start": str(plan.get("week_start") or ""),
+                "amount": str(plan.get("weekly_remit_amount") or "$0.00"),
+            },
+            "jim_remit": str(plan.get("jim_remit_amount") or "$0.00"),
+            "jim_remit_status": str(plan.get("jim_remit_status") or ""),
+            "already_paid": _format_money(already_paid),
+            "reserved_funds_total": str(snapshot.get("reserved_cash") or "$0.00"),
+            "reserved_funds": [_public_planner_item(item) for item in snapshot.get("reservations", [])],
+            "safe_to_spend_cash": str(snapshot.get("spendable_cash") or "$0.00"),
+            "current_week_obligation_details": [_public_planner_item(item) for item in current_week_bills],
         }
 
     def create_incoming_weekly_remit(
@@ -745,4 +764,24 @@ def _public_bill_from_planner_row(row: dict) -> dict:
         "amount": str(amount),
         "due_date": str(due_date or ""),
         "status": str(row.get("status") or ""),
+    }
+
+
+def _belongs_to_current_month(value: date | None, today: date | None = None) -> bool:
+    reference = today or date.today()
+    return isinstance(value, date) and value.year == reference.year and value.month == reference.month
+
+
+def _public_planner_item(item: dict) -> dict:
+    due_date = item.get("due_date")
+    if hasattr(due_date, "isoformat"):
+        due_date = due_date.isoformat()
+    amount = item.get("amount", Decimal("0"))
+    if not isinstance(amount, Decimal):
+        amount = _parse_money(str(amount))
+    return {
+        "title": str(item.get("title") or item.get("description") or ""),
+        "amount": _format_money(amount),
+        "status": str(item.get("status") or ""),
+        "due_date": str(due_date or ""),
     }
