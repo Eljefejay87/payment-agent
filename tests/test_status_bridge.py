@@ -226,17 +226,25 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             self.assertIn("not found", str(ctx.exception))
             self.assertNotIn("nonexistent", str(ctx.exception))  # No record ref in message
             
-            # Test planner_summary returns exact keys
-            summary = service.planner_summary()
+            # Test planner_summary preserves existing totals and adds the full planner contract
+            summary = service.planner_summary(today=date(2026, 8, 7))
             self.assertEqual(set(summary.keys()), {
                 "operating_cash",
                 "current_week_obligations",
                 "overdue_items_requiring_review",
                 "projected_ending_cash",
+                "current_weekly_remit",
+                "jim_remit",
+                "jim_remit_status",
+                "already_paid",
+                "reserved_funds_total",
+                "reserved_funds",
+                "safe_to_spend_cash",
+                "current_week_obligation_details",
             })
             
-            # Verify all values are dollar-formatted strings
-            for key in summary:
+            # Verify all scalar financial values are dollar-formatted strings
+            for key in ("operating_cash", "current_week_obligations", "overdue_items_requiring_review", "projected_ending_cash", "already_paid", "reserved_funds_total", "safe_to_spend_cash"):
                 self.assertTrue(summary[key].startswith("$"), f"{key} should be dollar-formatted")
             
             # Verify projected_ending_cash is calculated independently (not copied from spendable_cash)
@@ -246,6 +254,13 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             obligations = _parse_money(summary["current_week_obligations"])
             projected = _parse_money(summary["projected_ending_cash"])
             self.assertEqual(projected, operating - obligations)
+            self.assertEqual(summary["current_weekly_remit"], {"week_start": "", "amount": "$0.00"})
+            self.assertEqual(summary["jim_remit"], "$0.00")
+            self.assertEqual(summary["jim_remit_status"], "")
+            self.assertEqual(summary["reserved_funds_total"], "$0.00")
+            self.assertEqual(summary["reserved_funds"], [])
+            self.assertEqual(summary["safe_to_spend_cash"], "$0.00")
+            self.assertEqual(summary["current_week_obligation_details"], [])
             
             # Test negative projected ending cash is supported
             # Create many high-value bills to exceed operating cash
@@ -266,3 +281,65 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             projected2 = _parse_money(summary2["projected_ending_cash"])
             # Verify negative values are formatted correctly
             self.assertTrue(summary2["projected_ending_cash"].startswith("$"))
+
+    def test_planner_summary_reports_current_month_paid_bills_without_double_counting_jim_remit(self) -> None:
+        from datetime import date
+        from decimal import Decimal
+
+        from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
+        from shared.data_layer.models import SharedRecord, RecordType, SourceSystem, Status
+        from shared.data_layer.repository import InMemorySharedRecordRepository
+
+        repository = InMemorySharedRecordRepository()
+        for record_id, title, amount, due_date in [
+            ("paid-current", "Current Paid Bill", Decimal("100.00"), date(2026, 8, 5)),
+            ("paid-previous", "Previous Month Paid Bill", Decimal("200.00"), date(2026, 7, 31)),
+            ("paid-future", "Future Month Paid Bill", Decimal("300.00"), date(2026, 9, 1)),
+            ("paid-jim", "Jim Remit", Decimal("1200.00"), date(2026, 8, 6)),
+        ]:
+            repository.upsert(SharedRecord(
+                id=record_id,
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id=f"notion-{record_id}",
+                title=title,
+                amount=amount,
+                effective_date=due_date,
+                status=Status.PAID,
+            ))
+        repository.upsert(SharedRecord(
+            id="paid-invalid-date",
+            record_type=RecordType.BILL,
+            source_system=SourceSystem.NOTION,
+            source_record_id="notion-paid-invalid-date",
+            title="Invalid Date Paid Bill",
+            amount=Decimal("400.00"),
+            effective_date=None,
+            status=Status.PAID,
+        ))
+
+        class FakePlanner:
+            def jason_snapshot(self, _bills=None):
+                return {
+                    "plan": {
+                        "week_start": "2026-08-03",
+                        "weekly_remit_amount": "$5,000.00",
+                        "jim_remit_amount": "$1,200.00",
+                        "jim_remit_status": "Open",
+                    },
+                    "operating_cash": "$3,800.00",
+                    "reserved_cash": "$800.00",
+                    "spendable_cash": "$3,000.00",
+                    "reservations": [{"title": "Payroll", "amount": "$800.00", "status": "Reserved", "due_date": "2026-08-10"}],
+                    "bills_due_before_next_remit": [{"title": "Office Rent", "amount": Decimal("700.00"), "status": "Planned", "due_date": date(2026, 8, 10)}],
+                }
+
+        service = CashFlowHqPrivateBridgeService(database_path="unused", repository=repository, planner=FakePlanner())
+        summary = service.planner_summary(today=date(2026, 8, 7))
+
+        self.assertEqual(summary["already_paid"], "$1,300.00")
+        self.assertEqual(summary["jim_remit"], "$1,200.00")
+        self.assertEqual(summary["reserved_funds_total"], "$800.00")
+        self.assertEqual(summary["safe_to_spend_cash"], "$3,000.00")
+        self.assertEqual(summary["reserved_funds"], [{"title": "Payroll", "amount": "$800.00", "status": "Reserved", "due_date": "2026-08-10"}])
+        self.assertEqual(summary["current_week_obligation_details"], [{"title": "Office Rent", "amount": "$700.00", "status": "Planned", "due_date": "2026-08-10"}])
