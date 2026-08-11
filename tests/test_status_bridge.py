@@ -394,18 +394,20 @@ class PaymentStatusBridgeTests(unittest.TestCase):
         from shared.data_layer.models import RecordType, SourceSystem, Status, SharedRecord
         from shared.data_layer.repository import InMemorySharedRecordRepository
         from decimal import Decimal
-        from datetime import date
+        from datetime import timedelta
 
         repository = InMemorySharedRecordRepository()
+        current_week = active_business_week()
+        expected_effective_date = current_week + timedelta(days=4)
         repository.upsert(
             SharedRecord(
                 id="bill-ndh-remit",
                 record_type=RecordType.BILL,
                 source_system=SourceSystem.NOTION,
                 source_record_id="notion-ndh-remit",
-                title=f"Incoming Weekly Remit - {active_business_week(date(2026, 8, 5)).isoformat()}",
+                title=f"Incoming Weekly Remit - {current_week.isoformat()}",
                 amount=Decimal("8573.00"),
-                effective_date=date(2026, 8, 7),
+                effective_date=expected_effective_date,
                 status=Status.UPCOMING,
             )
         )
@@ -413,7 +415,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             planner_db = WeeklyCashPlannerDatabase(Path(directory) / "planner.sqlite3")
             remit_db = ICRRemitDatabase(Path(directory) / "remit.sqlite3")
             planner = WeeklyCashPlannerService(planner_db.path, remit_db.path)
-            planner.record_already_sent_remit(active_business_week(date(2026, 8, 5)), Decimal("5000.00"), Decimal("1200.00"))
+            planner.record_already_sent_remit(current_week, Decimal("5000.00"), Decimal("1200.00"))
             service = CashFlowHqPrivateBridgeService(database_path="unused", repository=repository, planner=planner)
 
             result = service.search("Where did you save the NDH remit?")
@@ -422,7 +424,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
         self.assertEqual(result["record"]["record_id"], "bill-ndh-remit")
         self.assertEqual(result["record"]["amount"], "8573.00")
         self.assertEqual(result["record"]["status"], "upcoming")
-        self.assertEqual(result["record"]["effective_date"], "2026-08-07")
+        self.assertEqual(result["record"]["effective_date"], expected_effective_date.isoformat())
         self.assertEqual(result["record"]["collection"], "Cash Flow HQ")
         self.assertEqual(result["record"]["table"], "Incoming Weekly Remits")
 
