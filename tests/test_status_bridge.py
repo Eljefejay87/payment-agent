@@ -394,7 +394,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
         from shared.data_layer.models import RecordType, SourceSystem, Status, SharedRecord
         from shared.data_layer.repository import InMemorySharedRecordRepository
         from decimal import Decimal
-        from datetime import date
+        from datetime import date, datetime, timezone
 
         repository = InMemorySharedRecordRepository()
         repository.upsert(
@@ -414,7 +414,12 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             remit_db = ICRRemitDatabase(Path(directory) / "remit.sqlite3")
             planner = WeeklyCashPlannerService(planner_db.path, remit_db.path)
             planner.record_already_sent_remit(active_business_week(date(2026, 8, 5)), Decimal("5000.00"), Decimal("1200.00"))
-            service = CashFlowHqPrivateBridgeService(database_path="unused", repository=repository, planner=planner)
+            service = CashFlowHqPrivateBridgeService(
+                database_path="unused",
+                repository=repository,
+                planner=planner,
+                now=lambda: datetime(2026, 8, 5, tzinfo=timezone.utc),
+            )
 
             result = service.search("Where did you save the NDH remit?")
 
