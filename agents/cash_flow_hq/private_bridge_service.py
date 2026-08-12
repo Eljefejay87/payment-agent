@@ -444,7 +444,7 @@ class CashFlowHqPrivateBridgeService:
         if not any(re.search(pattern, normalized) for pattern in patterns):
             return None
 
-        week_start = active_business_week()
+        week_start = self._current_week_start()
         title = _incoming_weekly_remit_title(week_start)
         existing = [
             bill
