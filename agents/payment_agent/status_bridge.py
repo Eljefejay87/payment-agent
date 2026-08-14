@@ -87,6 +87,7 @@ class PaymentStatusBridge:
         voicemail_health_path: Path,
         weekly_remit_approvals: WeeklyRemitApprovalService | None = None,
         cash_flow_hq_service: CashFlowHqPrivateBridgeService | None = None,
+        payment_scan_controller: Any | None = None,
         host: str = "0.0.0.0",
         port: int = 8091,
     ) -> None:
@@ -96,6 +97,7 @@ class PaymentStatusBridge:
         self.voicemail_health_path = voicemail_health_path
         self.weekly_remit_approvals = weekly_remit_approvals
         self.cash_flow_hq_service = cash_flow_hq_service
+        self.payment_scan_controller = payment_scan_controller
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -139,6 +141,13 @@ class PaymentStatusBridge:
                     except Exception:
                         logging.exception("cash_flow_hq_bridge result=error")
                         bridge._respond(self, 400, {"status": "error"})
+                    return
+
+                if self.path == "/internal/payments/scan":
+                    if bridge.payment_scan_controller is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    bridge._respond(self, 200, bridge._safe_payment_scan_result(bridge.payment_scan_controller.run()))
                     return
 
                 if self.path == "/internal/cash-flow/mark-paid":
@@ -292,6 +301,29 @@ class PaymentStatusBridge:
             "attachment_count": 2, "status": preview.status,
         }
 
+    @staticmethod
+    def _safe_payment_scan_result(result: Any) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return {"status": "failed", "error": "payment_scan_failed"}
+        status = result.get("status") if result.get("status") in {"completed", "cooldown", "already_running", "failed"} else "failed"
+        payload: dict[str, Any] = {"status": status}
+        if status == "completed":
+            count = result.get("new_payment_count")
+            total = result.get("new_payment_total")
+            teams = result.get("teams_update_status")
+            payload["new_payment_count"] = count if isinstance(count, int) and 0 <= count <= 10000 else 0
+            payload["new_payment_total"] = total if isinstance(total, (int, float)) and 0 <= float(total) <= 100000000 else None
+            payload["teams_update_status"] = teams if teams in {"sent", "failed", "unknown", "not_configured", "not_applicable", "dry_run"} else "unknown"
+        if status == "cooldown":
+            retry = result.get("retry_after_seconds")
+            payload["retry_after_seconds"] = retry if isinstance(retry, int) and 0 < retry <= 600 else 120
+        timestamp = result.get("scan_timestamp")
+        if isinstance(timestamp, str) and "T" in timestamp and len(timestamp) <= 64:
+            payload["scan_timestamp"] = timestamp
+        if status == "failed":
+            payload["error"] = "payment_scan_failed"
+        return payload
+
     def start(self) -> None:
         import threading
         threading.Thread(target=self.server.serve_forever, daemon=True, name="payment-status-bridge").start()
@@ -303,7 +335,7 @@ class PaymentStatusBridge:
         logging.info("payment_status_bridge result=stopped")
 
 
-def from_environment(payment_health_path: Path) -> PaymentStatusBridge | None:
+def from_environment(payment_health_path: Path, payment_scan_controller: Any | None = None) -> PaymentStatusBridge | None:
     if os.getenv("PAYMENT_STATUS_BRIDGE_ENABLED", "false").lower() != "true":
         return None
     token = os.getenv("PAYMENT_STATUS_BRIDGE_TOKEN", "")
@@ -324,6 +356,7 @@ def from_environment(payment_health_path: Path) -> PaymentStatusBridge | None:
             voicemail_health_path=voicemail_path,
             weekly_remit_approvals=remit_approvals,
             cash_flow_hq_service=cash_flow_service,
+            payment_scan_controller=payment_scan_controller,
             host=os.getenv("PAYMENT_STATUS_BRIDGE_HOST", "0.0.0.0"),
             port=int(os.getenv("PAYMENT_STATUS_BRIDGE_PORT", "8091")),
         )

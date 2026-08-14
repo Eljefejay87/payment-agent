@@ -15,6 +15,7 @@ from agents.payment_agent.health import PaymentAgentHealth
 from agents.payment_agent.models import PaymentRecord
 from agents.payment_agent.parser import cents_to_currency, parse_payment_email
 from agents.payment_agent.reports import build_daily_report, build_realtime_alert
+from agents.payment_agent.scan_control import PaymentScanController
 from agents.payment_agent.service import PaymentAgent
 from agents.payment_agent.main import run_with_retry
 from shared.integrations.microsoft_graph import GraphAuthenticationError
@@ -324,12 +325,63 @@ class PaymentAgentCleanupTests(unittest.TestCase):
         self.assertEqual(agent.teams.sent_count, 0)
         self.assertEqual(agent.graph.moved_messages, [("message-1", "Duplicate Payments")])
 
+    def test_scan_summary_reuses_scan_path_and_returns_sanitized_aggregates(self) -> None:
+        agent = build_test_agent(processed=False)
+
+        summary = agent.scan_once_summary()
+
+        self.assertEqual(summary.new_payment_count, 1)
+        self.assertEqual(summary.new_payment_total_cents, 14112)
+        self.assertEqual(summary.teams_update_status, "sent")
+        self.assertNotIn("B123440", str(summary))
+
+    def test_scan_summary_does_not_claim_teams_success_when_posting_fails(self) -> None:
+        agent = build_test_agent(processed=False)
+        agent.teams = FailingTeamsNotifier()
+
+        summary = agent.scan_once_summary()
+
+        self.assertEqual(summary.new_payment_count, 1)
+        self.assertEqual(summary.new_payment_total_cents, 14112)
+        self.assertEqual(summary.teams_update_status, "failed")
+
+    def test_scan_controller_enforces_cooldown_and_reports_failures_safely(self) -> None:
+        current = datetime(2026, 8, 14, 13, 0, tzinfo=timezone.utc)
+        agent = build_test_agent(processed=False)
+        controller = PaymentScanController(agent, now=lambda: current)
+
+        first = controller.run()
+        second = controller.run()
+
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(second["status"], "cooldown")
+        self.assertNotIn("B123440", str(first))
+
+    def test_scan_controller_blocks_overlapping_scan(self) -> None:
+        class SlowAgent:
+            def scan_once_summary(self):
+                overlapping = controller.run()
+                self.overlapping = overlapping
+                return SimpleNamespace(
+                    new_payment_count=0,
+                    new_payment_total_cents=0,
+                    teams_update_status="not_applicable",
+                    scanned_at="2026-08-14T13:00:00+00:00",
+                )
+
+        controller = PaymentScanController(SlowAgent())  # type: ignore[arg-type]
+        result = controller.run()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(controller.agent.overlapping["status"], "already_running")  # type: ignore[attr-defined]
+
 
 def build_test_agent(processed: bool) -> PaymentAgent:
     agent = PaymentAgent.__new__(PaymentAgent)
     agent.settings = SimpleNamespace(
         mailbox_user_id="payments@example.com",
         save_email_html=False,
+        dry_run=False,
         realtime_enabled=False,
         teams_post_method="graph_chat",
     )
@@ -400,6 +452,11 @@ class FakeTeamsNotifier:
 
     def send(self, message) -> None:
         self.sent_count += 1
+
+
+class FailingTeamsNotifier:
+    def send(self, message) -> None:
+        raise RuntimeError("teams token secret")
 
 
 if __name__ == "__main__":
