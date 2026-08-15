@@ -99,7 +99,6 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             cash_flow_service = CashFlowService()
             bridge = PaymentStatusBridge(
                 token="approved",
-                cash_flow_mutation_token="mutation-approved",
                 payment_health_path=payment,
                 voicemail_health_path=voicemail,
                 cash_flow_hq_service=cash_flow_service,
@@ -138,7 +137,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                     "POST",
                     "/internal/cash-flow/mark-paid",
                     body='{"record_ref":"bill-adp","expected_status":"upcoming"}',
-                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                    headers={"Authorization": "Bearer wrong", "Content-Type": "application/json"},
                 )
                 self.assertEqual(denied.getresponse().status, 401)
                 self.assertEqual(cash_flow_service.marked, [])
@@ -148,7 +147,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                     "POST",
                     "/internal/cash-flow/mark-paid",
                     body='{"record_ref":"bill-adp","expected_status":"upcoming"}',
-                    headers={"Authorization": "Bearer mutation-approved", "Content-Type": "application/json"},
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
                 )
                 self.assertEqual(allowed.getresponse().status, 200)
                 self.assertEqual(cash_flow_service.marked, ["bill-adp:upcoming"])
@@ -158,7 +157,7 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                     "POST",
                     "/internal/cash-flow/mark-paid",
                     body='{"record_ref":"bill-adp","expected_status":"past_due"}',
-                    headers={"Authorization": "Bearer mutation-approved", "Content-Type": "application/json"},
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
                 )
                 stale_response = stale.getresponse()
                 self.assertEqual(stale_response.status, 409)

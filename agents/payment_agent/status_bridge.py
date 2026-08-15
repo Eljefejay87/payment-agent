@@ -91,7 +91,7 @@ class PaymentStatusBridge:
         port: int = 8091,
     ) -> None:
         self.token = token
-        self.cash_flow_mutation_token = cash_flow_mutation_token
+        self.cash_flow_mutation_token = cash_flow_mutation_token or token
         self.payment_health_path = payment_health_path
         self.voicemail_health_path = voicemail_health_path
         self.weekly_remit_approvals = weekly_remit_approvals
@@ -319,7 +319,7 @@ def from_environment(payment_health_path: Path) -> PaymentStatusBridge | None:
         remit_approvals = WeeklyRemitApprovalService(load_remit_settings()) if os.getenv("WEEKLY_REMIT_APPROVAL_BRIDGE_ENABLED", "false").lower() == "true" else None
         return PaymentStatusBridge(
             token=token,
-            cash_flow_mutation_token=os.getenv("WEEKLY_REMIT_APPROVAL_BRIDGE_TOKEN", ""),
+            cash_flow_mutation_token=token,
             payment_health_path=payment_health_path,
             voicemail_health_path=voicemail_path,
             weekly_remit_approvals=remit_approvals,
