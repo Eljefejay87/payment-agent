@@ -166,6 +166,101 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             finally:
                 bridge.stop()
 
+    def test_private_payment_scan_endpoint_requires_auth_and_returns_sanitized_aggregates(self) -> None:
+        class ScanController:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run(self) -> dict:
+                self.calls += 1
+                return {
+                    "status": "completed",
+                    "new_payment_count": 4,
+                    "new_payment_total": 3250.0,
+                    "teams_update_status": "sent",
+                    "scan_timestamp": "2026-08-14T13:00:00+00:00",
+                    "account_number": "B123440",
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            scan = ScanController()
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    payment_scan_controller=scan,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                denied = HTTPConnection("127.0.0.1", port)
+                denied.request("POST", "/internal/payments/scan", body="{}", headers={"Authorization": "Bearer wrong"})
+                self.assertEqual(denied.getresponse().status, 401)
+                self.assertEqual(scan.calls, 0)
+
+                allowed = HTTPConnection("127.0.0.1", port)
+                allowed.request(
+                    "POST",
+                    "/internal/payments/scan",
+                    body="{}",
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                response = allowed.getresponse()
+                payload = json.loads(response.read().decode())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["status"], "completed")
+                self.assertEqual(payload["new_payment_count"], 4)
+                self.assertEqual(payload["new_payment_total"], 3250.0)
+                self.assertEqual(payload["teams_update_status"], "sent")
+                self.assertNotIn("B123440", str(payload))
+            finally:
+                bridge.stop()
+
+    def test_private_payment_scan_endpoint_reports_cooldown_and_failures_safely(self) -> None:
+        class ScanController:
+            def __init__(self, result: dict) -> None:
+                self.result = result
+
+            def run(self) -> dict:
+                return self.result
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            bridge = PaymentStatusBridge(
+                token="approved",
+                payment_health_path=payment,
+                voicemail_health_path=voicemail,
+                payment_scan_controller=ScanController({"status": "cooldown", "retry_after_seconds": 88}),
+                host="127.0.0.1",
+                port=0,
+            )
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/payments/scan",
+                    body="{}",
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                payload = json.loads(conn.getresponse().read().decode())
+                self.assertEqual(payload, {"status": "cooldown", "retry_after_seconds": 88})
+            finally:
+                bridge.stop()
+
     def test_cash_flow_hq_incoming_weekly_remit_private_http_contract(self) -> None:
         class FakeCashFlowService:
             def __init__(self) -> None:

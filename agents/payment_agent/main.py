@@ -99,6 +99,7 @@ def main() -> int:
         return debug_list_teams_chats(teams_graph_client(settings))
 
     from .service import PaymentAgent
+    from .scan_control import PaymentScanController
 
     agent = PaymentAgent(settings)
 
@@ -115,7 +116,8 @@ def main() -> int:
     if args.command == "run":
         scheduler = AgentScheduler()
         health = PaymentAgentHealth(settings.health_path)
-        status_bridge = status_bridge_from_environment(settings.health_path)
+        scan_controller = PaymentScanController(agent)
+        status_bridge = status_bridge_from_environment(settings.health_path, payment_scan_controller=scan_controller)
         health.mark_starting()
         agent.initialize()
         health.mark_running()
@@ -135,7 +137,7 @@ def main() -> int:
         signal.signal(signal.SIGTERM, stop_agent)
         signal.signal(signal.SIGINT, stop_agent)
 
-        scan_job = lambda: run_with_retry("scan_once", agent.scan_once, health)
+        scan_job = lambda: run_with_retry("scan_once", scan_controller.run_scheduled, health)
         daily_report_job = lambda: run_with_retry(
             "send_daily_report",
             agent.send_daily_report,
