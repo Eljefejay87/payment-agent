@@ -6,7 +6,12 @@ import json
 from http.client import HTTPConnection
 from pathlib import Path
 
-from agents.payment_agent.status_bridge import PaymentStatusBridge, build_status_payload, _token_matches
+from agents.payment_agent.status_bridge import (
+    PaymentStatusBridge,
+    build_status_payload,
+    sanitize_voicemail_health_update,
+    _token_matches,
+)
 
 
 class PaymentStatusBridgeTests(unittest.TestCase):
@@ -15,10 +20,13 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             payment = Path(directory) / "payment.json"
             voicemail = Path(directory) / "voicemail.json"
             payment.write_text('{"service_status":"running","graph_status":"unavailable","attention_required":true,"last_successful_run":"2026-07-16T08:00:00Z","last_successful_job":"scan_once","last_error":"secret body","account_number":"123"}')
-            voicemail.write_text('{"status":"running","last_successful_scan":"2026-07-16T08:00:00Z","last_successful_job":"scan_once","phone_number":"123"}')
+            voicemail.write_text('{"status":"running","last_successful_scan":"2026-07-16T08:00:00Z","last_successful_job":"scan_once","last_records_processed":2,"last_scan_result":{"status":"success","transcript":"private"},"phone_number":"123"}')
             payload = build_status_payload(payment, voicemail)
-        self.assertEqual(set(payload), {"service_status", "graph_status", "attention_required", "last_successful_run", "last_successful_job", "voicemail_status", "voicemail_last_successful_scan", "voicemail_last_successful_job"})
+        self.assertEqual(set(payload), {"service_status", "graph_status", "attention_required", "last_successful_run", "last_successful_job", "voicemail_status", "voicemail_last_successful_scan", "voicemail_last_successful_job", "voicemail_last_records_processed", "voicemail_last_scan_result"})
+        self.assertEqual(payload["voicemail_last_records_processed"], 2)
+        self.assertEqual(payload["voicemail_last_scan_result"], "success")
         self.assertNotIn("secret", str(payload))
+        self.assertNotIn("private", str(payload))
         self.assertNotIn("123", str(payload))
 
     def test_bridge_token_comparison_rejects_missing_or_wrong_values(self) -> None:
@@ -45,6 +53,167 @@ class PaymentStatusBridgeTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertNotIn("last_error", response.read().decode())
             bridge.stop()
+
+    def test_voicemail_health_update_accepts_authorized_sanitized_payload_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                denied = HTTPConnection("127.0.0.1", port)
+                denied.request(
+                    "POST",
+                    "/internal/voicemail/health",
+                    body='{"status":"running"}',
+                    headers={"Authorization": "Bearer wrong", "Content-Type": "application/json"},
+                )
+                self.assertEqual(denied.getresponse().status, 401)
+                self.assertFalse(voicemail.exists())
+
+                malformed = HTTPConnection("127.0.0.1", port)
+                malformed.request(
+                    "POST",
+                    "/internal/voicemail/health",
+                    body='{"status":"running","last_scan_result":"success","scan_timestamp":"bad","records_processed_count":1}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                self.assertEqual(malformed.getresponse().status, 400)
+                self.assertFalse(voicemail.exists())
+
+                unknown_field = HTTPConnection("127.0.0.1", port)
+                unknown_field.request(
+                    "POST",
+                    "/internal/voicemail/health",
+                    body=json.dumps(
+                        {
+                            "status": "running",
+                            "last_successful_scan": "2026-08-21T13:00:00+00:00",
+                            "last_scan_result": "success",
+                            "records_processed_count": 2,
+                            "scan_timestamp": "2026-08-21T13:00:00+00:00",
+                            "transcript": "private",
+                        }
+                    ),
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                self.assertEqual(unknown_field.getresponse().status, 400)
+                self.assertFalse(voicemail.exists())
+
+                allowed = HTTPConnection("127.0.0.1", port)
+                allowed.request(
+                    "POST",
+                    "/internal/voicemail/health",
+                    body=json.dumps(
+                        {
+                            "status": "running",
+                            "last_successful_scan": "2026-08-21T13:00:00+00:00",
+                            "last_scan_result": "success",
+                            "records_processed_count": 2,
+                            "scan_timestamp": "2026-08-21T13:00:00+00:00",
+                            "last_error_category": "graph_unavailable",
+                        }
+                    ),
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                self.assertEqual(allowed.getresponse().status, 200)
+            finally:
+                bridge.stop()
+
+            persisted = json.loads(voicemail.read_text())
+            self.assertEqual(persisted["status"], "running")
+            self.assertEqual(persisted["last_records_processed"], 2)
+            self.assertEqual(persisted["last_scan_result"]["status"], "success")
+            self.assertIsNone(persisted["last_error_category"])
+            self.assertNotIn("transcript", json.dumps(persisted))
+
+    def test_voicemail_health_update_failure_category_is_sanitized_and_exposed(self) -> None:
+        sanitized = sanitize_voicemail_health_update(
+            {
+                "status": "error",
+                "last_scan_result": "error",
+                "records_processed_count": 0,
+                "scan_timestamp": "2026-08-21T13:00:00+00:00",
+                "last_error_category": "teams_unavailable",
+            }
+        )
+        self.assertIsNotNone(sanitized)
+        self.assertEqual(sanitized["last_error_category"], "teams_unavailable")
+
+        rejected = sanitize_voicemail_health_update(
+            {
+                "status": "error",
+                "last_scan_result": "error",
+                "records_processed_count": 0,
+                "scan_timestamp": "2026-08-21T13:00:00+00:00",
+                "last_error_category": "caller said private thing",
+            }
+        )
+        self.assertIsNotNone(rejected)
+        self.assertEqual(rejected["last_error_category"], "unknown")
+
+    def test_voicemail_health_update_rate_limits_repeated_posts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                for _ in range(12):
+                    conn = HTTPConnection("127.0.0.1", port)
+                    conn.request(
+                        "POST",
+                        "/internal/voicemail/health",
+                        body=json.dumps(
+                            {
+                                "status": "running",
+                                "last_scan_result": "success",
+                                "records_processed_count": 0,
+                                "scan_timestamp": "2026-08-21T13:00:00+00:00",
+                            }
+                        ),
+                        headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                    )
+                    self.assertEqual(conn.getresponse().status, 200)
+                limited = HTTPConnection("127.0.0.1", port)
+                limited.request(
+                    "POST",
+                    "/internal/voicemail/health",
+                    body=json.dumps(
+                        {
+                            "status": "running",
+                            "last_scan_result": "success",
+                            "records_processed_count": 0,
+                            "scan_timestamp": "2026-08-21T13:00:00+00:00",
+                        }
+                    ),
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                self.assertEqual(limited.getresponse().status, 429)
+            finally:
+                bridge.stop()
 
     def test_cash_flow_hq_search_and_mark_paid_private_http_contract(self) -> None:
         from agents.cash_flow_hq.private_bridge_service import StaleCashFlowRecordError
