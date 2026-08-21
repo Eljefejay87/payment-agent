@@ -218,6 +218,30 @@ identifier, or debtor data. Phase 1 has no callback-resolution workflow, so the
 pending callback count is the number of voicemail records found by the latest
 successful scan.
 
+For the local-Mac-to-Railway production topology, use the dedicated stateless
+Railway ingress service instead of exposing the full Payment Agent listener:
+
+```text
+RAILWAY_SERVICE_ROLE=voicemail-health-ingress
+POST /internal/voicemail/health
+Authorization: Bearer VOICEMAIL_HEALTH_INGRESS_TOKEN
+```
+
+That public ingress exposes only `POST /internal/voicemail/health`, rejects
+unknown paths and methods, limits request bodies to 2 KB, rate-limits repeated
+requests, validates a six-field allowlist, and logs only sanitized operational
+outcomes. It forwards the same sanitized payload over Railway private networking
+to the Payment Agent:
+
+```text
+POST http://payment-agent.railway.internal:8091/internal/voicemail/health
+Authorization: Bearer PAYMENT_STATUS_BRIDGE_TOKEN
+```
+
+The ingress is stateless and does not persist voicemail data. It uses a separate
+public ingress token so the Mac publishing credential cannot be reused for
+Payment Agent internal Cash Flow or payment operations.
+
 The voicemail agent uses Outlook message ID / internet message ID as the source identifier for duplicate protection. The runtime state file stores processed voicemail IDs, callback state, and pending transcription jobs. A transcription job keeps the unchanged voicemail record, Outlook attachment reference, retry status, attempt count, next retry time, and last error; raw MP3 content is not stored. Phase 1 still does not write to Google Sheets, move emails, delete emails, contact consumers, or add SCollect integration.
 
 Check voicemail health:
@@ -743,6 +767,24 @@ The Payment Agent health check is available with:
 ```bash
 python main.py health
 ```
+
+The private Payment Status bridge also accepts sanitized voicemail health from
+the dedicated `voicemail-health-ingress` service:
+
+```text
+POST /internal/voicemail/health
+Authorization: Bearer PAYMENT_STATUS_BRIDGE_TOKEN
+```
+
+Allowed payload fields are limited to status, scan timestamps, scan result,
+processed-count aggregate, and an allowlisted error category. The bridge writes
+only the sanitized result to `VOICEMAIL_HEALTH_PATH` with private permissions.
+It must never persist transcript text, caller names, phone numbers,
+account/reference numbers, message IDs, email IDs, raw errors, or credentials.
+When the Voicemail Tracker runs on the local Mac and Payment Agent runs on
+Railway, publish through the dedicated `voicemail-health-ingress` Railway
+service. That service is the only component that needs a public HTTPS domain;
+the Payment Agent bridge stays private on Railway.
 
 Outlook mailbox scanning can run unattended in Railway with the existing app-only Microsoft Graph credentials. The email app registration needs application `Mail.Read` and `Mail.ReadWrite` with admin consent.
 

@@ -6,6 +6,8 @@ import hmac
 import json
 import logging
 import os
+import threading
+import time
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +20,25 @@ from agents.weekly_remit_agent.config import load_remit_settings
 
 _SERVICE = {"not_started", "starting", "running", "stopped", "error", "unreadable", "unknown"}
 _GRAPH = {"available", "unavailable", "unknown"}
+_VOICEMAIL_ERROR_CATEGORIES = {
+    "graph_unavailable",
+    "google_sheets_unavailable",
+    "teams_unavailable",
+    "parse_error",
+    "storage_error",
+    "runtime_error",
+    "unknown",
+}
+_VOICEMAIL_HEALTH_ALLOWED_FIELDS = {
+    "status",
+    "last_successful_scan",
+    "last_scan_result",
+    "records_processed_count",
+    "scan_timestamp",
+    "last_error_category",
+}
+_VOICEMAIL_HEALTH_RATE_WINDOW_SECONDS = 60.0
+_VOICEMAIL_HEALTH_RATE_LIMIT = 12
 
 
 def _safe_status(value: object) -> str:
@@ -38,6 +59,20 @@ def _safe_job(value: object) -> str | None:
     return value if isinstance(value, str) and value.replace("_", "").isalpha() and len(value) <= 64 else None
 
 
+def _safe_count(value: object) -> int | None:
+    return value if isinstance(value, int) and 0 <= value <= 1_000_000 else None
+
+
+def _safe_voicemail_result(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in {"success", "error", "not_started", "unknown"} else None
+
+
+def _safe_voicemail_error_category(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in _VOICEMAIL_ERROR_CATEGORIES else None
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -50,7 +85,7 @@ def build_status_payload(payment_health_path: Path, voicemail_health_path: Path)
     """Return only the explicit Jason contract; never forward health-file errors."""
     payment = _read_json(payment_health_path)
     voicemail = _read_json(voicemail_health_path)
-    return {
+    payload = {
         "service_status": _safe_status(payment.get("service_status", payment.get("status"))),
         "graph_status": _safe_graph(payment.get("graph_status")),
         "attention_required": payment.get("attention_required") is True,
@@ -60,6 +95,60 @@ def build_status_payload(payment_health_path: Path, voicemail_health_path: Path)
         "voicemail_last_successful_scan": _safe_timestamp(voicemail.get("last_successful_scan")),
         "voicemail_last_successful_job": _safe_job(voicemail.get("last_successful_job")),
     }
+    for key, value in {
+        "voicemail_last_records_processed": _safe_count(voicemail.get("last_records_processed")),
+        "voicemail_last_scan_result": _safe_voicemail_result(
+            (voicemail.get("last_scan_result") or {}).get("status")
+            if isinstance(voicemail.get("last_scan_result"), dict)
+            else voicemail.get("last_run_result")
+        ),
+        "voicemail_last_error_category": _safe_voicemail_error_category(voicemail.get("last_error_category")),
+    }.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def sanitize_voicemail_health_update(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate the write contract for standalone Voicemail Tracker health sync."""
+    if set(payload) - _VOICEMAIL_HEALTH_ALLOWED_FIELDS:
+        return None
+    status = _safe_status(payload.get("status"))
+    scan_result = _safe_voicemail_result(payload.get("last_scan_result"))
+    scan_timestamp = _safe_timestamp(payload.get("scan_timestamp"))
+    records_processed = _safe_count(payload.get("records_processed_count"))
+    if status == "unknown" or scan_result is None or scan_timestamp is None or records_processed is None:
+        return None
+    sanitized: dict[str, Any] = {
+        "service": "voicemail_tracker_agent",
+        "status": status,
+        "last_records_processed": records_processed,
+        "last_scan_result": {
+            "status": scan_result,
+            "records_processed": records_processed,
+            "scan_timestamp": scan_timestamp,
+        },
+        "updated_at": scan_timestamp,
+    }
+    if scan_result == "success":
+        last_success = _safe_timestamp(payload.get("last_successful_scan")) or scan_timestamp
+        sanitized["last_successful_scan"] = last_success
+        sanitized["last_successful_job"] = "scan_once"
+        sanitized["last_error_category"] = None
+    else:
+        sanitized["last_error_category"] = _safe_voicemail_error_category(payload.get("last_error_category")) or "unknown"
+    return sanitized
+
+
+def persist_voicemail_health_update(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temp_path, path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def _token_matches(value: str, expected: str) -> bool:
@@ -96,6 +185,8 @@ class PaymentStatusBridge:
         self.voicemail_health_path = voicemail_health_path
         self.weekly_remit_approvals = weekly_remit_approvals
         self.cash_flow_hq_service = cash_flow_hq_service
+        self._voicemail_health_update_times: list[float] = []
+        self._voicemail_health_rate_lock = threading.Lock()
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -123,6 +214,25 @@ class PaymentStatusBridge:
                     bridge._respond(self, 401, {})
                     return
                 payload = bridge._request_payload(self)
+
+                if self.path == "/internal/voicemail/health":
+                    if bridge._voicemail_health_rate_limited():
+                        logging.warning("voicemail_health_bridge result=rate_limited")
+                        bridge._respond(self, 429, {"status": "rate_limited"})
+                        return
+                    sanitized = sanitize_voicemail_health_update(payload)
+                    if sanitized is None:
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        persist_voicemail_health_update(bridge.voicemail_health_path, sanitized)
+                    except OSError:
+                        logging.warning("voicemail_health_bridge result=write_failed")
+                        bridge._respond(self, 500, {"status": "error"})
+                        return
+                    logging.info("voicemail_health_bridge result=updated")
+                    bridge._respond(self, 200, {"status": "ok"})
+                    return
 
                 if self.path == "/internal/cash-flow/search":
                     if bridge.cash_flow_hq_service is None:
@@ -292,8 +402,19 @@ class PaymentStatusBridge:
             "attachment_count": 2, "status": preview.status,
         }
 
+    def _voicemail_health_rate_limited(self) -> bool:
+        now = time.monotonic()
+        cutoff = now - _VOICEMAIL_HEALTH_RATE_WINDOW_SECONDS
+        with self._voicemail_health_rate_lock:
+            self._voicemail_health_update_times = [
+                recorded_at for recorded_at in self._voicemail_health_update_times if recorded_at >= cutoff
+            ]
+            if len(self._voicemail_health_update_times) >= _VOICEMAIL_HEALTH_RATE_LIMIT:
+                return True
+            self._voicemail_health_update_times.append(now)
+            return False
+
     def start(self) -> None:
-        import threading
         threading.Thread(target=self.server.serve_forever, daemon=True, name="payment-status-bridge").start()
         logging.info("payment_status_bridge result=started")
 

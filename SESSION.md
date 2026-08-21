@@ -2,6 +2,8 @@
 
 ## Current Milestone
 
+- Dedicated Voicemail Health ingress is staged locally only. It adds a stateless `voicemail-health-ingress` Railway service role that exposes only authenticated `POST /internal/voicemail/health`, validates a six-field sanitized health payload, and forwards to the Payment Agent private status bridge over Railway private networking with the existing internal bridge token. No Railway variables, schedules, scans, voicemail parsing, Sheet writes, Teams posts, or production services were changed.
+
 - AI Control Center implementation is staged locally only. It adds the `/ai-control` dashboard page, read-only budget and LaunchAgent visibility, a private local control audit, confirmation-gated one-time jobs, and an intentionally disabled Resume All Services control. It does not start, resume, or deploy any agent.
 
 - Added a disabled-by-default Weekly Remit approval bridge for Jason. It creates durable SQLite previews bound to the exact authorized user, broker/week, recipient, subject, filenames, and SHA-256 hashes. Approval records only save `approved_pending_send`; they do not call email send, move, or archive code. Expired, replayed, wrong-user, duplicate, and changed-file approvals fail closed.
