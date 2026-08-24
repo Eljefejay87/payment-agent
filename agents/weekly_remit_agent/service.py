@@ -288,12 +288,40 @@ class WeeklyRemitAgent:
         return monday.isoformat()
 
     def _is_send_window(self, now: datetime) -> bool:
-        if now.strftime("%A").lower() != self.settings.run_day:
+        run_days = self._configured_run_day_indexes()
+        if not run_days:
             return False
-        return now.time() <= self._deadline_time()
+        current_day = now.weekday()
+        first_day = min(run_days)
+        final_day = max(run_days)
+        if current_day < first_day or current_day > final_day:
+            return False
+        if current_day == final_day:
+            return now.time() <= self._deadline_time()
+        return True
 
     def _is_deadline_missed(self, now: datetime) -> bool:
-        return now.strftime("%A").lower() == self.settings.run_day and now.time() > self._deadline_time()
+        run_days = self._configured_run_day_indexes()
+        return bool(run_days) and now.weekday() == max(run_days) and now.time() > self._deadline_time()
+
+    def _configured_run_days(self) -> set[str]:
+        return {
+            day.strip().lower()
+            for day in self.settings.run_day.split(",")
+            if day.strip()
+        }
+
+    def _configured_run_day_indexes(self) -> set[int]:
+        weekdays = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        return {weekdays[day] for day in self._configured_run_days() if day in weekdays}
 
     def _deadline_time(self) -> time:
         hour, minute = self.settings.send_deadline.split(":", 1)
