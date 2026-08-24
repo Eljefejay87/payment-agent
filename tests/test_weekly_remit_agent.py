@@ -89,6 +89,36 @@ class WeeklyRemitDatabaseTests(unittest.TestCase):
 
 
 class WeeklyRemitServiceTests(unittest.TestCase):
+    def test_send_window_allows_configured_monday_and_tuesday(self) -> None:
+        settings = build_settings(Path("/tmp/remit-window-test"))
+        settings.run_day = "monday,tuesday"
+        agent = build_agent(settings)
+
+        monday = datetime.fromisoformat("2026-06-29T14:59:00-04:00")
+        monday_evening = datetime.fromisoformat("2026-06-29T18:17:00-04:00")
+        tuesday = datetime.fromisoformat("2026-06-30T14:59:00-04:00")
+        wednesday = datetime.fromisoformat("2026-07-01T14:59:00-04:00")
+        after_deadline = datetime.fromisoformat("2026-06-30T15:01:00-04:00")
+
+        self.assertTrue(agent._is_send_window(monday))
+        self.assertTrue(agent._is_send_window(monday_evening))
+        self.assertTrue(agent._is_send_window(tuesday))
+        self.assertFalse(agent._is_send_window(wednesday))
+        self.assertFalse(agent._is_send_window(after_deadline))
+        self.assertTrue(agent._is_deadline_missed(after_deadline))
+
+    def test_single_day_send_window_still_closes_at_deadline(self) -> None:
+        settings = build_settings(Path("/tmp/remit-window-test"))
+        settings.run_day = "monday"
+        agent = build_agent(settings)
+
+        before_deadline = datetime.fromisoformat("2026-06-29T14:59:00-04:00")
+        after_deadline = datetime.fromisoformat("2026-06-29T15:01:00-04:00")
+
+        self.assertTrue(agent._is_send_window(before_deadline))
+        self.assertFalse(agent._is_send_window(after_deadline))
+        self.assertTrue(agent._is_deadline_missed(after_deadline))
+
     def test_successful_send_records_and_moves_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
