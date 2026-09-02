@@ -11,6 +11,7 @@ from zipfile import ZipFile
 from agents.icr_remit_agent.database import ICRRemitDatabase
 from agents.icr_remit_agent.parser import parse_icr_remit_file
 from agents.icr_remit_agent.service import ICRRemitImportService
+from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerService
 from agents.weekly_remit_agent.database import RemitDatabase
 from agents.weekly_remit_agent.file_detector import RemitFileValidationError, find_required_remit_files
 from agents.weekly_remit_agent.models import RemitBatch, RemitFiles
@@ -227,6 +228,19 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertEqual(result.total_collected, Decimal("425.75"))
             self.assertEqual(result.remit_week.isoformat(), "2026-07-06")
 
+    def test_current_week_icr_xlsx_derives_expected_jim_remit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "current-week-remit.xlsx"
+            write_current_week_remit_xlsx(path)
+
+            result = parse_icr_remit_file(path, today=datetime.fromisoformat("2026-09-02T12:00:00").date())
+
+            self.assertEqual(result.remit_week.isoformat(), "2026-08-31")
+            self.assertEqual(result.week_ending.isoformat(), "2026-09-06")
+            self.assertEqual(result.due_to_agency, Decimal("886.88"))
+            self.assertEqual(result.due_to_client, Decimal("1330.22"))
+            self.assertEqual(result.total_collected, Decimal("2217.10"))
+
     def test_icr_dry_run_creates_no_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -242,8 +256,9 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertFalse(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
             self.assertEqual(service.cash_flow.created_pages, 0)
             self.assertEqual(service.graph.drafts, [])
+            self.assertEqual(service.planner.created_plans, [])
 
-    def test_icr_live_import_tracks_creates_cash_flow_obligation_and_draft(self) -> None:
+    def test_icr_live_import_tracks_creates_weekly_plan_cash_flow_obligation_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             csv_path = base / "icr.csv"
@@ -255,6 +270,8 @@ class ICRRemitImportTests(unittest.TestCase):
             result = service.import_file(csv_path, liquidation_path, dry_run=False)
 
             self.assertTrue(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
+            self.assertEqual(service.planner.created_plans, [result])
+            self.assertEqual(service.planner.created_plans[0].due_to_client, Decimal("20.00"))
             self.assertEqual(service.cash_flow.created_pages, 1)
             payload = service.cash_flow.last_page_payload["properties"]
             self.assertEqual(payload["Vendor / Payee"]["rich_text"][0]["text"]["content"], "ICR")
@@ -270,6 +287,33 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertNotIn("Due to Agency", service.graph.drafts[0]["html_content"])
             self.assertIn("Attached files:", service.graph.drafts[0]["html_content"])
             self.assertEqual(service.graph.drafts[0]["attachments"], [csv_path, liquidation_path])
+
+    def test_icr_live_import_persists_current_week_plan_from_parsed_due_to_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr-current.csv"
+            csv_path.write_text("AgencyFee,ClientFee\n886.88,1330.22\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            service = build_icr_service(base)
+            service.planner = WeeklyCashPlannerService(base / "planner.sqlite3", service.db.path)
+            service.planner.record_already_sent_remit(
+                week_start=datetime.fromisoformat("2026-08-24T12:00:00").date(),
+                weekly_remit=Decimal("4738.00"),
+                jim_remit=Decimal("1381.71"),
+            )
+
+            result = service.import_file(csv_path, liquidation_path, dry_run=False)
+            plan = service.planner.db.open_plan_for_week(result.remit_week)
+            old_plan = service.planner.db.open_plan_for_week(datetime.fromisoformat("2026-08-24T12:00:00").date())
+
+            self.assertIsNotNone(plan)
+            self.assertEqual(plan.week_start.isoformat(), result.remit_week.isoformat())
+            self.assertEqual(plan.weekly_remit_amount, Decimal("2217.10"))
+            self.assertEqual(plan.jim_remit_amount, Decimal("1330.22"))
+            self.assertEqual(plan.jim_remit_amount, result.due_to_client)
+            self.assertEqual(plan.remit_source, "icr-current.csv")
+            self.assertEqual(old_plan.jim_remit_amount, Decimal("1381.71"))
 
 
 class WeeklyRemitTeamsStatusTests(unittest.TestCase):
@@ -389,6 +433,7 @@ class WeeklyRemitTeamsStatusTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "Duplicate ICR remit import"):
                 service.import_file(csv_path, liquidation_path, dry_run=False)
+            self.assertEqual(len(service.planner.created_plans), 1)
 
 
 def build_settings(base: Path) -> SimpleNamespace:
@@ -477,6 +522,7 @@ def build_icr_service(base: Path) -> ICRRemitImportService:
     service.db = ICRRemitDatabase(settings.database_path)
     service.cash_flow = FakeCashFlow()
     service.graph = FakeDraftGraph()
+    service.planner = FakeWeeklyPlanner()
     return service
 
 
@@ -518,6 +564,15 @@ class FakeDraftGraph:
         return {"id": "draft-id"}
 
 
+class FakeWeeklyPlanner:
+    def __init__(self) -> None:
+        self.created_plans = []
+
+    def create_plan_from_remit(self, result):
+        self.created_plans.append(result)
+        return SimpleNamespace(week_start=result.remit_week, jim_remit_amount=result.due_to_client)
+
+
 def write_sample_xlsx(path: Path) -> None:
     with ZipFile(path, "w") as archive:
         archive.writestr("[Content_Types].xml", "")
@@ -529,6 +584,23 @@ def write_sample_xlsx(path: Path) -> None:
     <row r="1"><c r="A1" t="inlineStr"><is><t>Account</t></is></c><c r="B1" t="inlineStr"><is><t>AgencyFee</t></is></c><c r="C1" t="inlineStr"><is><t>ClientFee</t></is></c></row>
     <row r="2"><c r="A2" t="inlineStr"><is><t>A</t></is></c><c r="B2"><v>50.25</v></c><c r="C2"><v>300.25</v></c></row>
     <row r="3"><c r="A3" t="inlineStr"><is><t>B</t></is></c><c r="B3"><v>25.25</v></c><c r="C3"><v>50.00</v></c></row>
+  </sheetData>
+</worksheet>
+""",
+        )
+
+
+def write_current_week_remit_xlsx(path: Path) -> None:
+    with ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "")
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Account</t></is></c><c r="B1" t="inlineStr"><is><t>AgencyFee</t></is></c><c r="C1" t="inlineStr"><is><t>ClientFee</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>A</t></is></c><c r="B2"><v>500.00</v></c><c r="C2"><v>800.00</v></c></row>
+    <row r="3"><c r="A3" t="inlineStr"><is><t>B</t></is></c><c r="B3"><v>386.88</v></c><c r="C3"><v>530.22</v></c></row>
   </sheetData>
 </worksheet>
 """,

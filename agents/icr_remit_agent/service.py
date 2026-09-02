@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agents.cash_flow_hq.config import CashFlowHQSettings
 from agents.cash_flow_hq.service import CashFlowHQService
+from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerService
 from agents.weekly_remit_agent.config import RemitSettings
 from shared.integrations.microsoft_graph import GraphClient
 
@@ -23,6 +24,7 @@ class ICRRemitImportService:
         cash_flow_settings: CashFlowHQSettings,
         cash_flow: CashFlowHQService | None = None,
         graph: GraphClient | None = None,
+        planner: WeeklyCashPlannerService | None = None,
     ) -> None:
         self.remit_settings = remit_settings
         self.cash_flow_settings = cash_flow_settings
@@ -32,6 +34,10 @@ class ICRRemitImportService:
             tenant_id=remit_settings.graph_tenant_id,
             client_id=remit_settings.graph_client_id,
             client_secret=remit_settings.graph_client_secret,
+        )
+        self.planner = planner or WeeklyCashPlannerService(
+            cash_flow_settings.cash_flow_planner_database_path,
+            remit_settings.database_path,
         )
 
     def import_file(self, file_path: Path, liquidation_file: Path, dry_run: bool = False) -> ICRRemitResult:
@@ -76,6 +82,7 @@ class ICRRemitImportService:
         }
         self.cash_flow.notion.request("POST", "/pages", json={"parent": {"data_source_id": data_source_id}, "properties": payload})
         self.db.save_import(result)
+        self.planner.create_plan_from_remit(result)
         self.create_email_draft(result, liquidation_file)
         LOGGER.info("ICR remit import complete for %s", result.file_path.name)
         return result

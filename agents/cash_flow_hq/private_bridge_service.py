@@ -323,7 +323,7 @@ class CashFlowHqPrivateBridgeService:
         # Calculate projected ending cash: operating_cash - current_week_obligations
         projected_ending = operating_cash - current_week_total
         
-        plan = snapshot.get("plan") or {}
+        plan = snapshot.get("plan")
         already_paid = sum(
             (bill.amount or Decimal("0"))
             for bill in bills
@@ -331,23 +331,25 @@ class CashFlowHqPrivateBridgeService:
             and _belongs_to_current_month(bill.effective_date, today)
         )
 
-        return {
+        result = {
             "operating_cash": _format_money(operating_cash),
             "current_week_obligations": _format_money(current_week_total),
             "overdue_items_requiring_review": _format_money(overdue_total),
             "projected_ending_cash": _format_money(projected_ending),
-            "current_weekly_remit": {
-                "week_start": str(plan.get("week_start") or ""),
-                "amount": str(plan.get("weekly_remit_amount") or "$0.00"),
-            },
-            "jim_remit": str(plan.get("jim_remit_amount") or "$0.00"),
-            "jim_remit_status": str(plan.get("jim_remit_status") or ""),
             "already_paid": _format_money(already_paid),
             "reserved_funds_total": str(snapshot.get("reserved_cash") or "$0.00"),
             "reserved_funds": [_public_planner_item(item) for item in snapshot.get("reservations", [])],
             "safe_to_spend_cash": str(snapshot.get("spendable_cash") or "$0.00"),
             "current_week_obligation_details": [_public_planner_item(item) for item in current_week_bills],
         }
+        if plan:
+            result["current_weekly_remit"] = {
+                "week_start": str(plan.get("week_start") or ""),
+                "amount": str(plan.get("weekly_remit_amount") or ""),
+            }
+            result["jim_remit"] = str(plan.get("jim_remit_amount") or "")
+            result["jim_remit_status"] = str(plan.get("jim_remit_status") or "")
+        return result
 
     def create_incoming_weekly_remit(
         self,
