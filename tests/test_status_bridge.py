@@ -900,3 +900,31 @@ class PaymentStatusBridgeTests(unittest.TestCase):
         self.assertEqual(summary["safe_to_spend_cash"], "$3,000.00")
         self.assertEqual(summary["reserved_funds"], [{"title": "Payroll", "amount": "$800.00", "status": "Reserved", "due_date": "2026-08-10"}])
         self.assertEqual(summary["current_week_obligation_details"], [{"title": "Office Rent", "amount": "$700.00", "status": "Planned", "due_date": "2026-08-10"}])
+
+    def test_planner_summary_does_not_emit_zero_jim_remit_without_current_plan(self) -> None:
+        from datetime import date
+
+        from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService
+        from shared.data_layer.repository import InMemorySharedRecordRepository
+
+        class FakePlanner:
+            def jason_snapshot(self, _bills=None):
+                return {
+                    "plan": None,
+                    "operating_cash": "$0.00",
+                    "reserved_cash": "$0.00",
+                    "spendable_cash": "$0.00",
+                    "reservations": [],
+                    "bills_due_before_next_remit": [],
+                }
+
+        service = CashFlowHqPrivateBridgeService(
+            database_path="unused",
+            repository=InMemorySharedRecordRepository(),
+            planner=FakePlanner(),
+        )
+        summary = service.planner_summary(today=date(2026, 9, 2))
+
+        self.assertNotIn("current_weekly_remit", summary)
+        self.assertNotIn("jim_remit", summary)
+        self.assertNotIn("jim_remit_status", summary)
