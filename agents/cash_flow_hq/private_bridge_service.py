@@ -8,12 +8,16 @@ from shared.data_layer.models import RecordType, Status
 from shared.data_layer.repository import RecordFilters, SharedRecordRepository
 from shared.data_layer.sqlite_repository import SQLiteSharedRecordRepository
 from agents.cash_flow_hq.config import load_cash_flow_settings
-from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerService
+from agents.cash_flow_hq.weekly_planner import WeeklyCashPlannerService, active_business_week
 from agents.weekly_remit_agent.config import load_remit_settings
 
 
 # Statuses that represent non-actionable bills
 EXCLUDED_STATUSES = {Status.PAID, Status.CANCELLED, Status.COMPLETED, Status.FAILED}
+
+
+class StaleCashFlowRecord(Exception):
+    """Raised when a record changed after Jason presented an approval prompt."""
 
 
 class CashFlowHqPrivateBridgeService:
@@ -50,6 +54,36 @@ class CashFlowHqPrivateBridgeService:
                 remit_settings.database_path,
             )
     
+
+    def current_week_jim_remit(self, today: date | None = None) -> dict:
+        week_start = active_business_week(today)
+        plan = self.planner.db.open_plan_for_week(week_start)
+        if plan is None:
+            return {"status": "not_found", "week_start": week_start.isoformat(), "record": None}
+        return {"status": "ok", "record": _public_jim_remit_record(plan)}
+
+    def mark_current_week_jim_remit_paid(
+        self,
+        *,
+        expected_week_id: str,
+        expected_week_start: str,
+        expected_amount: Decimal,
+        expected_status: str,
+        today: date | None = None,
+    ) -> dict:
+        week_start = active_business_week(today)
+        plan = self.planner.db.open_plan_for_week(week_start)
+        if plan is None:
+            raise KeyError("Jim Remit record not found.")
+        if (
+            plan.week_id != expected_week_id
+            or plan.week_start.isoformat() != expected_week_start
+            or plan.jim_remit_amount != expected_amount
+            or plan.jim_remit_status != expected_status
+        ):
+            raise StaleCashFlowRecord("Jim Remit changed after approval prompt.")
+        updated = self.planner.mark_current_week_jim_remit_paid(today=today)
+        return {"status": "ok", "record": _public_jim_remit_record(updated)}
     def search(self, query: str) -> dict:
         """Search for actionable unpaid bills matching query (case-insensitive, deterministic ordering)."""
         if not query or not query.strip():
@@ -81,12 +115,16 @@ class CashFlowHqPrivateBridgeService:
         
         return {"status": "ok", "matches": matches}
     
-    def mark_paid(self, record_ref: str) -> dict:
-        """Mark a bill as paid. Raises KeyError if not found, ValueError if already paid."""
+    def mark_paid(self, record_ref: str, expected_status: str | None = None) -> dict:
+        """Mark a bill as paid after confirming it still has the expected status."""
         # Get record - returns None if not found
         record = self.repository.get(record_ref)
         if record is None:
             raise KeyError("Bill not found.")
+
+        expected = _normalize_status_value(expected_status)
+        if expected and record.status.value != expected:
+            raise StaleCashFlowRecord("Bill changed after approval prompt.")
         
         # Check if already paid
         if record.status == Status.PAID:
@@ -212,3 +250,18 @@ def _public_planner_item(item: dict) -> dict:
         "status": str(item.get("status") or ""),
         "due_date": str(due_date or ""),
     }
+
+
+def _public_jim_remit_record(plan) -> dict:
+    return {
+        "week_id": plan.week_id,
+        "week_start": plan.week_start.isoformat(),
+        "week_end": plan.week_end.isoformat(),
+        "amount": _format_money(plan.jim_remit_amount),
+        "current_status": plan.jim_remit_status,
+        "paid_at": plan.jim_remit_paid_at or "",
+    }
+
+
+def _normalize_status_value(value: str | None) -> str:
+    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")

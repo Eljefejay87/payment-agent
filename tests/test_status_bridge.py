@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
+from decimal import Decimal
 from http.client import HTTPConnection
 from pathlib import Path
 
 from agents.payment_agent.status_bridge import PaymentStatusBridge, build_status_payload, _token_matches
+from agents.cash_flow_hq.private_bridge_service import StaleCashFlowRecord
 
 
 class PaymentStatusBridgeTests(unittest.TestCase):
@@ -74,6 +77,166 @@ class PaymentStatusBridgeTests(unittest.TestCase):
                 self.assertEqual(response.status, 404)
                 payload = response.read().decode()
                 self.assertIn('"status":"unavailable"', payload)
+            finally:
+                bridge.stop()
+
+
+    def test_cash_flow_hq_mark_paid_private_http_honors_expected_status(self) -> None:
+        class FakeCashFlowService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def mark_paid(self, record_ref: str, expected_status: str | None = None) -> dict:
+                self.calls.append((record_ref, expected_status))
+                if expected_status != "upcoming":
+                    raise StaleCashFlowRecord("changed")
+                return {
+                    "status": "ok",
+                    "updated": {
+                        "record_ref": record_ref,
+                        "bill_name": "Comcast",
+                        "amount": "218.00",
+                        "due_date": "2026-08-07",
+                        "current_status": "paid",
+                    },
+                    "planner_summary": {},
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            service = FakeCashFlowService()
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    cash_flow_hq_service=service,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                conn = HTTPConnection("127.0.0.1", port)
+                conn.request(
+                    "POST",
+                    "/internal/cash-flow/mark-paid",
+                    body='{"record_ref":"bill-comcast","expected_status":"upcoming"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(service.calls[-1], ("bill-comcast", "upcoming"))
+
+                stale = HTTPConnection("127.0.0.1", port)
+                stale.request(
+                    "POST",
+                    "/internal/cash-flow/mark-paid",
+                    body='{"record_ref":"bill-comcast","expected_status":"paid"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                stale_response = stale.getresponse()
+                payload = json.loads(stale_response.read().decode())
+                self.assertEqual(stale_response.status, 409)
+                self.assertEqual(payload, {"status": "stale_record"})
+            finally:
+                bridge.stop()
+
+    def test_jim_remit_mark_paid_private_http_contract_uses_dedicated_action(self) -> None:
+        class FakeCashFlowService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def current_week_jim_remit(self) -> dict:
+                self.calls.append(("current",))
+                return {
+                    "status": "ok",
+                    "record": {
+                        "week_id": "weekly-cash-plan-2026-08-31",
+                        "week_start": "2026-08-31",
+                        "week_end": "2026-09-06",
+                        "amount": "$1,330.22",
+                        "current_status": "Open",
+                        "paid_at": "",
+                    },
+                }
+
+            def mark_current_week_jim_remit_paid(self, **kwargs) -> dict:
+                self.calls.append(("mark", kwargs))
+                if kwargs["expected_status"] != "Open":
+                    raise StaleCashFlowRecord("changed")
+                return {
+                    "status": "ok",
+                    "record": {
+                        "week_id": kwargs["expected_week_id"],
+                        "week_start": kwargs["expected_week_start"],
+                        "week_end": "2026-09-06",
+                        "amount": "$1,330.22",
+                        "current_status": "Paid",
+                        "paid_at": "2026-09-03T12:00:00+00:00",
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            payment = Path(directory) / "payment.json"
+            voicemail = Path(directory) / "voicemail.json"
+            payment.write_text('{"service_status":"running","graph_status":"available"}')
+            voicemail.write_text('{"status":"running"}')
+            service = FakeCashFlowService()
+            try:
+                bridge = PaymentStatusBridge(
+                    token="approved",
+                    payment_health_path=payment,
+                    voicemail_health_path=voicemail,
+                    cash_flow_hq_service=service,
+                    host="127.0.0.1",
+                    port=0,
+                )
+            except PermissionError:
+                self.skipTest("Local sandbox does not permit loopback listeners.")
+            bridge.start()
+            port = bridge.server.server_address[1]
+            try:
+                current = HTTPConnection("127.0.0.1", port)
+                current.request(
+                    "POST",
+                    "/internal/cash-flow/jim-remit/current",
+                    body="{}",
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                current_response = current.getresponse()
+                self.assertEqual(current_response.status, 200)
+                self.assertEqual(json.loads(current_response.read().decode())["record"]["current_status"], "Open")
+
+                mark = HTTPConnection("127.0.0.1", port)
+                mark.request(
+                    "POST",
+                    "/internal/cash-flow/jim-remit/mark-paid",
+                    body='{"expected_week_id":"weekly-cash-plan-2026-08-31","expected_week_start":"2026-08-31","expected_amount":"1330.22","expected_status":"Open"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                mark_response = mark.getresponse()
+                self.assertEqual(mark_response.status, 200)
+                self.assertEqual(json.loads(mark_response.read().decode())["record"]["current_status"], "Paid")
+                self.assertEqual(service.calls[0], ("current",))
+                self.assertEqual(service.calls[1][0], "mark")
+                self.assertEqual(service.calls[1][1]["expected_amount"], Decimal("1330.22"))
+
+                stale = HTTPConnection("127.0.0.1", port)
+                stale.request(
+                    "POST",
+                    "/internal/cash-flow/jim-remit/mark-paid",
+                    body='{"expected_week_id":"weekly-cash-plan-2026-08-31","expected_week_start":"2026-08-31","expected_amount":"1330.22","expected_status":"Paid"}',
+                    headers={"Authorization": "Bearer approved", "Content-Type": "application/json"},
+                )
+                stale_response = stale.getresponse()
+                self.assertEqual(stale_response.status, 409)
+                self.assertEqual(json.loads(stale_response.read().decode()), {"status": "stale_record"})
             finally:
                 bridge.stop()
 

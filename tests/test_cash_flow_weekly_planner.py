@@ -10,6 +10,7 @@ from agents.cash_flow_hq.weekly_planner import (
     WeeklyCashPlannerDatabase,
     WeeklyCashPlannerService,
 )
+from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService, StaleCashFlowRecord
 from agents.icr_remit_agent.database import ICRRemitDatabase
 from agents.icr_remit_agent.models import ICRRemitResult
 
@@ -235,6 +236,82 @@ class WeeklyCashPlannerTests(unittest.TestCase):
             self.assertEqual(len(service.remit_db.list_imports()), 1)
 
 
+
+    def test_private_bridge_marks_current_week_jim_remit_paid_only_after_binding_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            planner = WeeklyCashPlannerService(Path(temp_dir) / "planner.sqlite3", Path(temp_dir) / "remit.sqlite3")
+            plan = planner.record_already_sent_remit(
+                week_start=date(2026, 8, 31),
+                weekly_remit=Decimal("5000.00"),
+                jim_remit=Decimal("1330.22"),
+                operating_deficit=Decimal("100.00"),
+            )
+            before = planner.db.get_plan_for_week(date(2026, 8, 31))
+            bridge = CashFlowHqPrivateBridgeService(
+                str(Path(temp_dir) / "shared.sqlite3"),
+                repository=NoopRepository(),
+                planner=planner,
+            )
+
+            preview = bridge.current_week_jim_remit(today=date(2026, 9, 3))
+            self.assertEqual(preview["status"], "ok")
+            self.assertEqual(preview["record"]["amount"], "$1,330.22")
+            self.assertEqual(preview["record"]["current_status"], "Open")
+
+            updated = bridge.mark_current_week_jim_remit_paid(
+                expected_week_id=plan.week_id,
+                expected_week_start="2026-08-31",
+                expected_amount=Decimal("1330.22"),
+                expected_status="Open",
+                today=date(2026, 9, 3),
+            )
+            after = planner.db.get_plan_for_week(date(2026, 8, 31))
+
+            self.assertEqual(updated["status"], "ok")
+            self.assertEqual(updated["record"]["current_status"], "Paid")
+            self.assertIsNotNone(after.jim_remit_paid_at)
+            self.assertEqual(after.week_id, before.week_id)
+            self.assertEqual(after.week_start, before.week_start)
+            self.assertEqual(after.week_end, before.week_end)
+            self.assertEqual(after.weekly_remit_amount, before.weekly_remit_amount)
+            self.assertEqual(after.jim_remit_amount, before.jim_remit_amount)
+            self.assertEqual(after.operating_deficit, before.operating_deficit)
+            self.assertEqual(after.remit_status, before.remit_status)
+            self.assertEqual(after.remit_source, before.remit_source)
+            self.assertEqual(after.status, before.status)
+            self.assertEqual(after.created_at, before.created_at)
+            self.assertEqual(planner.db.reservations_for_week(plan.week_id), [])
+            self.assertEqual(bridge.repository.list_calls, 0)
+
+    def test_private_bridge_rejects_stale_jim_remit_approval_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            planner = WeeklyCashPlannerService(Path(temp_dir) / "planner.sqlite3", Path(temp_dir) / "remit.sqlite3")
+            plan = planner.record_already_sent_remit(
+                week_start=date(2026, 8, 31),
+                weekly_remit=Decimal("5000.00"),
+                jim_remit=Decimal("1330.22"),
+            )
+            bridge = CashFlowHqPrivateBridgeService(
+                str(Path(temp_dir) / "shared.sqlite3"),
+                repository=NoopRepository(),
+                planner=planner,
+            )
+
+            with self.assertRaises(StaleCashFlowRecord):
+                bridge.mark_current_week_jim_remit_paid(
+                    expected_week_id=plan.week_id,
+                    expected_week_start="2026-08-31",
+                    expected_amount=Decimal("999.00"),
+                    expected_status="Open",
+                    today=date(2026, 9, 3),
+                )
+
+            unchanged = planner.db.get_plan_for_week(date(2026, 8, 31))
+            self.assertEqual(unchanged.jim_remit_status, "Open")
+            self.assertIsNone(unchanged.jim_remit_paid_at)
+            self.assertEqual(unchanged.jim_remit_amount, Decimal("1330.22"))
+
+
 def example_remit(
     total: Decimal = Decimal("4738.00"),
     jim: Decimal = Decimal("1381.71"),
@@ -252,6 +329,15 @@ def example_remit(
         status="Finalized",
         notes="Validated remit import.",
     )
+
+
+class NoopRepository:
+    def __init__(self) -> None:
+        self.list_calls = 0
+
+    def list(self, *_args, **_kwargs):
+        self.list_calls += 1
+        return []
 
 
 if __name__ == "__main__":
