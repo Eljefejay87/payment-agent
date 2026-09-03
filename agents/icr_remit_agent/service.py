@@ -40,15 +40,31 @@ class ICRRemitImportService:
             remit_settings.database_path,
         )
 
-    def import_file(self, file_path: Path, liquidation_file: Path, dry_run: bool = False) -> ICRRemitResult:
+    def import_file(
+        self,
+        file_path: Path,
+        liquidation_file: Path,
+        dry_run: bool = False,
+        planner_only: bool = False,
+    ) -> ICRRemitResult:
         result = parse_icr_remit_file(file_path, self.remit_settings.broker_name, "Jim")
         if not liquidation_file.is_file():
             raise ValueError(f"ICR liquidation report was not found: {liquidation_file}")
-        self.db.initialize()
-        if self.db.import_exists(result.broker, result.remit_week.isoformat(), result.file_path.name):
-            raise RuntimeError(f"Duplicate ICR remit import for {result.file_path.name} week {result.remit_week}.")
         if dry_run:
             LOGGER.info("Dry run ICR remit import: Due to Client=%s", result.due_to_client)
+            return result
+        self.db.initialize()
+        import_exists = self.db.import_exists(result.broker, result.remit_week.isoformat(), result.file_path.name)
+        if import_exists:
+            if planner_only:
+                LOGGER.info("Planner-only ICR remit import already exists: %s", result.file_path.name)
+                self.planner.create_plan_from_remit(result)
+                return result
+            raise RuntimeError(f"Duplicate ICR remit import for {result.file_path.name} week {result.remit_week}.")
+        if planner_only:
+            self.db.save_import(result)
+            self.planner.create_plan_from_remit(result)
+            LOGGER.info("Planner-only ICR remit import complete for %s", result.file_path.name)
             return result
         data_source_id = self.cash_flow_settings.cash_flow_data_source_id
         if not data_source_id:

@@ -18,6 +18,11 @@ def main() -> int:
     parser.add_argument("--file", required=True, help="Path to the exported ICR remit .xlsx or .csv file.")
     parser.add_argument("--liquidation-file", required=True, help="Path to the ICR liquidation-rate report.")
     parser.add_argument("--dry-run", action="store_true", help="Parse only; do not create Notion rows or email drafts.")
+    parser.add_argument(
+        "--planner-only",
+        action="store_true",
+        help="Save local ICR import history and update the Weekly Cash Planner without Notion or Outlook draft changes.",
+    )
     parser.add_argument("--env-file", default=None, help="Optional path to .env file.")
     args = parser.parse_args()
 
@@ -25,7 +30,7 @@ def main() -> int:
     cash_flow_settings = load_cash_flow_settings(args.env_file)
     configure_logging(cash_flow_settings.log_level)
     errors = []
-    if not args.dry_run:
+    if not args.dry_run and not args.planner_only:
         errors.extend(validate_cash_flow_settings(cash_flow_settings))
         errors.extend(validate_remit_settings(remit_settings))
     if errors:
@@ -36,6 +41,7 @@ def main() -> int:
         Path(args.file),
         Path(args.liquidation_file),
         dry_run=args.dry_run,
+        planner_only=args.planner_only,
     )
     logging.info(
         "ICR remit result: Due to Agency=%s Due to Client=%s Total Collected=%s",

@@ -285,10 +285,93 @@ class ICRRemitImportTests(unittest.TestCase):
             result = service.import_file(csv_path, liquidation_path, dry_run=True)
 
             self.assertEqual(result.due_to_client, Decimal("20.00"))
-            self.assertFalse(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr.csv"))
+            self.assertFalse(service.db.path.exists())
             self.assertEqual(service.cash_flow.created_pages, 0)
             self.assertEqual(service.graph.drafts, [])
             self.assertEqual(service.planner.created_plans, [])
+
+    def test_icr_planner_only_saves_import_and_plan_without_external_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr-current.csv"
+            csv_path.write_text("AgencyFee,ClientFee\n886.88,1330.22\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            service = build_icr_service(base)
+            service.planner = WeeklyCashPlannerService(base / "planner.sqlite3", service.db.path)
+
+            result = service.import_file(csv_path, liquidation_path, planner_only=True)
+            plan = service.planner.db.open_plan_for_week(result.remit_week)
+
+            self.assertTrue(service.db.import_exists("ICR", result.remit_week.isoformat(), "icr-current.csv"))
+            self.assertIsNotNone(plan)
+            self.assertEqual(plan.jim_remit_amount, Decimal("1330.22"))
+            self.assertEqual(plan.weekly_remit_amount, Decimal("2217.10"))
+            self.assertEqual(service.cash_flow.created_pages, 0)
+            self.assertEqual(service.graph.drafts, [])
+
+    def test_icr_planner_only_is_idempotent_for_existing_import(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr-current.csv"
+            csv_path.write_text("AgencyFee,ClientFee\n886.88,1330.22\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            service = build_icr_service(base)
+            service.planner = WeeklyCashPlannerService(base / "planner.sqlite3", service.db.path)
+
+            first = service.import_file(csv_path, liquidation_path, planner_only=True)
+            second = service.import_file(csv_path, liquidation_path, planner_only=True)
+
+            self.assertEqual(second.due_to_client, first.due_to_client)
+            self.assertEqual(len(service.db.list_imports()), 1)
+            self.assertIsNotNone(service.planner.db.open_plan_for_week(first.remit_week))
+            self.assertEqual(service.cash_flow.created_pages, 0)
+            self.assertEqual(service.graph.drafts, [])
+
+    def test_icr_cli_planner_only_does_not_require_external_config(self) -> None:
+        from unittest.mock import patch
+
+        from agents.icr_remit_agent.main import main as icr_main
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            remit_path = base / "icr.csv"
+            remit_path.write_text("AgencyFee,ClientFee\n886.88,1330.22\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            empty_env = base / "empty.env"
+            empty_env.write_text("")
+
+            argv = [
+                "main.py",
+                "icr-remit-import",
+                "--file",
+                str(remit_path),
+                "--liquidation-file",
+                str(liquidation_path),
+                "--planner-only",
+                "--env-file",
+                str(empty_env),
+            ]
+            clear_env = {
+                "REMIT_BROKER_NAME": "ICR",
+                "DATABASE_PATH": str(base / "payment_agent.sqlite3"),
+                "CASH_FLOW_PLANNER_DATABASE_PATH": str(base / "cash_flow_planner.sqlite3"),
+            }
+
+            with patch("sys.argv", argv), patch.dict("os.environ", clear_env, clear=True):
+                self.assertEqual(icr_main(), 0)
+
+            imports = ICRRemitDatabase(base / "payment_agent.sqlite3").list_imports()
+            plan = WeeklyCashPlannerService(
+                base / "cash_flow_planner.sqlite3",
+                base / "payment_agent.sqlite3",
+            ).db.open_plan_for_week(imports[0].remit_week)
+            self.assertEqual(len(imports), 1)
+            self.assertEqual(imports[0].due_to_client, Decimal("1330.22"))
+            self.assertIsNotNone(plan)
+            self.assertEqual(plan.jim_remit_amount, Decimal("1330.22"))
 
     def test_icr_live_import_tracks_creates_weekly_plan_cash_flow_obligation_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
