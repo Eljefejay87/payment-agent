@@ -24,8 +24,9 @@ def main() -> int:
     remit_settings = load_remit_settings(args.env_file)
     cash_flow_settings = load_cash_flow_settings(args.env_file)
     configure_logging(cash_flow_settings.log_level)
-    errors = validate_cash_flow_settings(cash_flow_settings)
+    errors = []
     if not args.dry_run:
+        errors.extend(validate_cash_flow_settings(cash_flow_settings))
         errors.extend(validate_remit_settings(remit_settings))
     if errors:
         for error in errors:

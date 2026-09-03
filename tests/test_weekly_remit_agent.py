@@ -241,6 +241,38 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertEqual(result.due_to_client, Decimal("1330.22"))
             self.assertEqual(result.total_collected, Decimal("2217.10"))
 
+    def test_icr_cli_dry_run_does_not_require_cash_flow_notion_config(self) -> None:
+        from unittest.mock import patch
+
+        from agents.icr_remit_agent.main import main as icr_main
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            remit_path = base / "icr.csv"
+            remit_path.write_text("AgencyFee,ClientFee\n886.88,1330.22\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+
+            argv = [
+                "main.py",
+                "icr-remit-import",
+                "--file",
+                str(remit_path),
+                "--liquidation-file",
+                str(liquidation_path),
+                "--dry-run",
+            ]
+            clear_env = {
+                "NOTION_API_KEY": "",
+                "CASH_FLOW_HQ_PARENT_PAGE_ID": "",
+                "REMIT_BROKER_NAME": "ICR",
+                "DATABASE_PATH": str(base / "payment_agent.sqlite3"),
+                "CASH_FLOW_PLANNER_DATABASE_PATH": str(base / "cash_flow_planner.sqlite3"),
+            }
+
+            with patch("sys.argv", argv), patch.dict("os.environ", clear_env, clear=False):
+                self.assertEqual(icr_main(), 0)
+
     def test_icr_dry_run_creates_no_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
