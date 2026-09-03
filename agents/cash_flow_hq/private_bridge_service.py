@@ -66,6 +66,36 @@ class CashFlowHqPrivateBridgeService:
                 remit_settings.database_path,
             )
         self.now = now or (lambda: datetime.now(timezone.utc))
+
+    def current_week_jim_remit(self, today: date | None = None) -> dict:
+        week_start = active_business_week(today)
+        plan = self.planner.db.open_plan_for_week(week_start)
+        if plan is None:
+            return {"status": "not_found", "week_start": week_start.isoformat(), "record": None}
+        return {"status": "ok", "record": _public_jim_remit_record(plan)}
+
+    def mark_current_week_jim_remit_paid(
+        self,
+        *,
+        expected_week_id: str,
+        expected_week_start: str,
+        expected_amount: Decimal,
+        expected_status: str,
+        today: date | None = None,
+    ) -> dict:
+        week_start = active_business_week(today)
+        plan = self.planner.db.open_plan_for_week(week_start)
+        if plan is None:
+            raise KeyError("Jim Remit record not found.")
+        if (
+            plan.week_id != expected_week_id
+            or plan.week_start.isoformat() != expected_week_start
+            or plan.jim_remit_amount != expected_amount
+            or plan.jim_remit_status != expected_status
+        ):
+            raise StaleCashFlowRecordError("Jim Remit changed after approval prompt.")
+        updated = self.planner.mark_current_week_jim_remit_paid(today=today)
+        return {"status": "ok", "record": _public_jim_remit_record(updated)}
     
     def search(self, query: str) -> dict:
         """Read-only bill lookup that ranks invoice, vendor, and amount matches without invoking mutation logic."""
@@ -560,6 +590,17 @@ def _incoming_weekly_remit_record(bill) -> dict:
         "amount": str(bill.amount) if bill.amount is not None else "",
         "due_date": bill.due_date.isoformat() if bill.due_date else "",
         "status": bill.status or "",
+    }
+
+
+def _public_jim_remit_record(plan) -> dict:
+    return {
+        "week_id": plan.week_id,
+        "week_start": plan.week_start.isoformat(),
+        "week_end": plan.week_end.isoformat(),
+        "amount": _format_money(plan.jim_remit_amount),
+        "current_status": plan.jim_remit_status,
+        "paid_at": plan.jim_remit_paid_at or "",
     }
 
 

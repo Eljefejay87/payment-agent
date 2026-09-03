@@ -311,6 +311,56 @@ class PaymentStatusBridge:
                         bridge._respond(self, 400, {"status": "error"})
                     return
 
+                if self.path == "/internal/cash-flow/jim-remit/current":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    try:
+                        result = bridge.cash_flow_hq_service.current_week_jim_remit()
+                        bridge._respond(self, 200, result)
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
+                if self.path == "/internal/cash-flow/jim-remit/mark-paid":
+                    if bridge.cash_flow_hq_service is None:
+                        bridge._respond(self, 404, {"status": "unavailable"})
+                        return
+                    expected_week_id = payload.get("expected_week_id")
+                    expected_week_start = payload.get("expected_week_start")
+                    expected_status = payload.get("expected_status")
+                    expected_amount = _decimal_payload_value(payload.get("expected_amount"))
+                    if (
+                        not isinstance(expected_week_id, str)
+                        or not expected_week_id.strip()
+                        or not isinstance(expected_week_start, str)
+                        or not expected_week_start.strip()
+                        or expected_amount is None
+                        or not isinstance(expected_status, str)
+                        or not expected_status.strip()
+                    ):
+                        bridge._respond(self, 400, {"status": "invalid"})
+                        return
+                    try:
+                        result = bridge.cash_flow_hq_service.mark_current_week_jim_remit_paid(
+                            expected_week_id=expected_week_id,
+                            expected_week_start=expected_week_start,
+                            expected_amount=expected_amount,
+                            expected_status=expected_status,
+                        )
+                        bridge._respond(self, 200, result)
+                    except KeyError:
+                        logging.warning("cash_flow_hq_bridge result=unknown_jim_remit")
+                        bridge._respond(self, 404, {"status": "unknown_record"})
+                    except StaleCashFlowRecordError:
+                        logging.warning("cash_flow_hq_bridge result=stale_jim_remit")
+                        bridge._respond(self, 409, {"status": "stale_record"})
+                    except Exception:
+                        logging.warning("cash_flow_hq_bridge result=error")
+                        bridge._respond(self, 400, {"status": "error"})
+                    return
+
                 if self.path == "/internal/cash-flow/incoming-weekly-remit":
                     if bridge.cash_flow_hq_service is None:
                         bridge._respond(self, 404, {"status": "unavailable"})
