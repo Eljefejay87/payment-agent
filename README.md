@@ -567,11 +567,18 @@ Preview and validate an export without creating a Notion row, import-history rec
 python main.py icr-remit-import --file "path/to/icr-remit.xlsx" --liquidation-file "path/to/icr-liq-rate.csv" --dry-run
 ```
 
+Create or reuse the local Weekly Cash Planner plan without touching Notion, Outlook drafts, sends, archives, or file moves:
+
+```bash
+python main.py icr-remit-import --file "path/to/icr-remit.xlsx" --liquidation-file "path/to/icr-liq-rate.csv" --planner-only
+```
+
 Important flags:
 
 - `--file` is required and accepts an `.xlsx` or `.csv` export.
 - `--liquidation-file` is required and identifies the liquidation-rate report attached to the broker draft.
 - `--dry-run` parses and totals the file without creating Notion or Outlook records.
+- `--planner-only` saves local ICR import history and creates/reuses the Weekly Cash Planner plan without creating Notion records or Outlook drafts.
 - `--env-file` loads an alternate environment file.
 
 The command uses the existing Cash Flow HQ Notion settings: `NOTION_API_KEY`, `CASH_FLOW_HQ_PARENT_PAGE_ID`, `CASH_FLOW_HQ_DATABASE_NAME`, and `NOTION_VERSION`. The API key and parent page ID must be configured; the database name and Notion version have the defaults shown in the Cash Flow HQ configuration section. A live import also requires the Weekly Remit Microsoft Graph and broker settings validated by the application, including `MAILBOX_USER_ID`, `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET`, `REMIT_BROKER_NAME`, and `REMIT_BROKER_EMAIL`. If owner Teams updates remain enabled, the existing `REMIT_OWNER_TEAMS_CHAT_ID` and `TEAMS_GRAPH_*` settings are also required. The Graph application needs permission to create the mailbox draft and attach the export.
