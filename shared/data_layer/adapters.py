@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -141,9 +142,10 @@ def normalize_cash_flow_notion_page(page: dict) -> SharedRecord:
     )
     status = CASH_FLOW_STATUS_MAP.get(existing_status.casefold(), Status.NEW)
     if status not in {Status.PAID, Status.CANCELLED}:
-        if due_status.casefold().startswith("past due"):
+        due_state = _notion_due_status_state(due_status)
+        if due_state == "past_due":
             status = Status.PAST_DUE
-        elif due_status.casefold().startswith("due today"):
+        elif due_state == "due":
             status = Status.DUE
     review_status = (
         ReviewStatus.PENDING
@@ -229,6 +231,15 @@ def _normalize_action_required(value: str) -> str | None:
     if normalized in {"yes", "true", "1"}:
         return "Action required"
     return cleaned
+
+
+def _notion_due_status_state(value: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+    if re.search(r"\bpast\s+due\b", normalized):
+        return "past_due"
+    if re.search(r"\bdue\s+today\b", normalized):
+        return "due"
+    return None
 
 
 def _notion_date(prop: dict | None) -> date | None:

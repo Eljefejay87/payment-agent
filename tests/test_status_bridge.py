@@ -695,6 +695,84 @@ class PaymentStatusBridgeTests(unittest.TestCase):
         self.assertEqual(result["record"]["collection"], "Cash Flow HQ")
         self.assertEqual(result["record"]["table"], "Incoming Weekly Remits")
 
+    def test_cash_flow_hq_upcoming_bills_are_outgoing_and_date_aware(self) -> None:
+        from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService, StaleCashFlowRecordError
+        from shared.data_layer.models import SharedRecord, RecordType, SourceSystem, Status
+        from shared.data_layer.repository import InMemorySharedRecordRepository
+        from decimal import Decimal
+        from datetime import date, datetime, timezone
+
+        repository = InMemorySharedRecordRepository()
+        for record in [
+            SharedRecord(
+                id="bill-past",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-past",
+                title="Past Payroll",
+                amount=Decimal("100.00"),
+                effective_date=date(2026, 9, 1),
+                status=Status.UPCOMING,
+            ),
+            SharedRecord(
+                id="bill-today",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-today",
+                title="Due Today Rent",
+                amount=Decimal("200.00"),
+                effective_date=date(2026, 9, 4),
+                status=Status.UPCOMING,
+            ),
+            SharedRecord(
+                id="bill-future",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.NOTION,
+                source_record_id="notion-future",
+                title="Future Utilities",
+                amount=Decimal("300.00"),
+                effective_date=date(2026, 9, 10),
+                status=Status.UPCOMING,
+            ),
+            SharedRecord(
+                id="incoming-weekly-remit-2026-09-04",
+                record_type=RecordType.BILL,
+                source_system=SourceSystem.SQLITE,
+                source_record_id="incoming-weekly-remit:2026-09-04",
+                title="Incoming Weekly Remit - 2026-09-04",
+                amount=Decimal("9999.00"),
+                effective_date=date(2026, 9, 4),
+                status=Status.UPCOMING,
+                metadata={"bridge": "cash_flow_hq_private", "week_start": "2026-09-04"},
+                idempotency_key="incoming-weekly-remit:2026-09-04",
+            ),
+        ]:
+            repository.upsert(record)
+
+        service = CashFlowHqPrivateBridgeService(
+            database_path="unused",
+            repository=repository,
+            planner=None,
+            now=lambda: datetime(2026, 9, 4, tzinfo=timezone.utc),
+        )
+
+        result = service.list_bills("upcoming")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["total_count"], 3)
+        self.assertEqual([bill["bill_name"] for bill in result["bills"]], ["Past Payroll", "Due Today Rent", "Future Utilities"])
+        self.assertEqual([bill["status"] for bill in result["bills"]], ["past_due", "due", "upcoming"])
+        self.assertEqual(sum(Decimal(bill["amount"]) for bill in result["bills"]), Decimal("600.00"))
+        self.assertNotIn("Incoming Weekly Remit", str(result))
+
+        generic_search = service.search("Do we still owe 9999?")
+        self.assertEqual(generic_search["status"], "ok")
+        self.assertEqual(generic_search["matches"], [])
+
+        with self.assertRaises(StaleCashFlowRecordError):
+            service.mark_paid("incoming-weekly-remit-2026-09-04", "upcoming")
+        self.assertEqual(repository.get("incoming-weekly-remit-2026-09-04").status, Status.UPCOMING)
+
     def test_cash_flow_hq_private_bridge_service_contract(self) -> None:
         """Test CashFlowHqPrivateBridgeService exact response contracts."""
         from agents.cash_flow_hq.private_bridge_service import CashFlowHqPrivateBridgeService

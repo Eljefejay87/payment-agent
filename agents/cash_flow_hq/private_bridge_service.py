@@ -122,37 +122,42 @@ class CashFlowHqPrivateBridgeService:
         if status_hint == "paid":
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
-                if bill.status == Status.PAID
+                if bill.status == Status.PAID and not _is_incoming_weekly_remit_record(bill)
             ]
         elif status_hint == "unpaid":
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
-                if bill.status not in EXCLUDED_STATUSES and bill.status != Status.PAID
+                if bill.status not in EXCLUDED_STATUSES
+                and bill.status != Status.PAID
+                and not _is_incoming_weekly_remit_record(bill)
             ]
         elif status_hint == "due":
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
                 if bill.status in {Status.DUE, Status.PAST_DUE, Status.UPCOMING}
+                and not _is_incoming_weekly_remit_record(bill)
             ]
         elif status_hint == "upcoming":
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
-                if bill.status == Status.UPCOMING
+                if bill.status == Status.UPCOMING and not _is_incoming_weekly_remit_record(bill)
             ]
         elif status_hint == "needs_review":
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
-                if bill.status == Status.NEEDS_REVIEW
+                if bill.status == Status.NEEDS_REVIEW and not _is_incoming_weekly_remit_record(bill)
             ]
         elif status_hint or explicit_lookup or short_broad_term:
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
                 if bill.status not in {Status.CANCELLED, Status.COMPLETED, Status.FAILED}
+                and not _is_incoming_weekly_remit_record(bill)
             ]
         else:
             bills = [
                 bill for bill in self.repository.list(RecordFilters(record_type=RecordType.BILL))
                 if bill.status not in EXCLUDED_STATUSES
+                and not _is_incoming_weekly_remit_record(bill)
             ]
         if not bills:
             return {"status": "ok", "matches": [], "answer": "No matching bill was found."}
@@ -243,9 +248,23 @@ class CashFlowHqPrivateBridgeService:
             ]
         elif normalized_scope == "upcoming":
             rows = [
-                _public_bill_from_record(bill) for bill in bills
-                if bill.status in {Status.UPCOMING, Status.DUE}
+                _public_bill_from_record(
+                    bill,
+                    display_status=_date_aware_open_bill_status(bill, self.now().date()),
+                )
+                for bill in bills
+                if bill.status in {Status.UPCOMING, Status.DUE, Status.PAST_DUE}
+                and not _is_incoming_weekly_remit_record(bill)
             ]
+            rows.sort(key=_upcoming_bill_sort_key)
+            total_count = len(rows)
+            return {
+                "status": "ok",
+                "scope": normalized_scope,
+                "bills": rows[:MAX_BILL_LIST_ITEMS],
+                "total_count": total_count,
+                "truncated": total_count > MAX_BILL_LIST_ITEMS,
+            }
         else:
             rows = [
                 _public_bill_from_record(bill) for bill in bills
@@ -287,7 +306,12 @@ class CashFlowHqPrivateBridgeService:
         except ValueError as error:
             raise StaleCashFlowRecordError("Bill status confirmation is invalid.") from error
 
-        if record.record_type != RecordType.BILL or record.status in EXCLUDED_STATUSES or record.status != confirmed_status:
+        if (
+            record.record_type != RecordType.BILL
+            or _is_incoming_weekly_remit_record(record)
+            or record.status in EXCLUDED_STATUSES
+            or record.status != confirmed_status
+        ):
             raise StaleCashFlowRecordError("Bill status changed after confirmation.")
         
         # Update status - this will raise KeyError if record disappears
@@ -788,12 +812,63 @@ def _answer_for_multiple_bills(query: str, matches: list[dict]) -> str:
     return f"I found multiple matching bills: {readable}. Which one do you mean?"
 
 
-def _public_bill_from_record(bill) -> dict:
+def _is_incoming_weekly_remit_record(bill) -> bool:
+    """Identify remit rows by their dedicated structured source keys, not by title alone."""
+    metadata = getattr(bill, "metadata", {}) or {}
+    source_record_id = str(getattr(bill, "source_record_id", "") or "")
+    idempotency_key = str(getattr(bill, "idempotency_key", "") or "")
+    record_id = str(getattr(bill, "id", "") or "")
+    structured_keys = (source_record_id, idempotency_key, record_id)
+    has_incoming_key = any(
+        value.startswith("incoming-weekly-remit:") or value.startswith("incoming-weekly-remit-")
+        for value in structured_keys
+    )
+    return (
+        getattr(bill, "record_type", None) == RecordType.BILL
+        and (
+            (
+                getattr(bill, "source_system", None) == SourceSystem.SQLITE
+                and has_incoming_key
+            )
+            or (
+                metadata.get("bridge") == "cash_flow_hq_private"
+                and has_incoming_key
+            )
+        )
+    )
+
+
+def _date_aware_open_bill_status(bill, today: date) -> Status:
+    if bill.status in EXCLUDED_STATUSES:
+        return bill.status
+    if not bill.effective_date:
+        return bill.status
+    if bill.effective_date < today:
+        return Status.PAST_DUE
+    if bill.effective_date == today:
+        return Status.DUE
+    return Status.UPCOMING
+
+
+def _upcoming_bill_sort_key(row: dict) -> tuple[int, str, str]:
+    status_order = {
+        Status.PAST_DUE.value: 0,
+        Status.DUE.value: 1,
+        Status.UPCOMING.value: 2,
+    }
+    return (
+        status_order.get(str(row.get("status") or ""), 3),
+        str(row.get("due_date") or "9999-12-31"),
+        str(row.get("bill_name") or "").lower(),
+    )
+
+
+def _public_bill_from_record(bill, *, display_status: Status | None = None) -> dict:
     return {
         "bill_name": bill.title,
         "amount": str(bill.amount) if bill.amount else "0.00",
         "due_date": bill.effective_date.isoformat() if bill.effective_date else "",
-        "status": bill.status.value,
+        "status": (display_status or bill.status).value,
     }
 
 

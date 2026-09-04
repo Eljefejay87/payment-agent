@@ -69,6 +69,20 @@ class SharedDataSyncTests(unittest.TestCase):
 
         self.assertEqual(record.action_required, "Confirm invoice amount")
 
+    def test_cash_flow_notion_adapter_normalizes_emoji_prefixed_past_due(self) -> None:
+        record = normalize_cash_flow_notion_page(
+            notion_page(status="Upcoming", due_status="🔴 Past Due by 14 Days", action_required="No")
+        )
+
+        self.assertEqual(record.status.value, "past_due")
+
+    def test_cash_flow_notion_adapter_normalizes_emoji_prefixed_due_today(self) -> None:
+        record = normalize_cash_flow_notion_page(
+            notion_page(status="Upcoming", due_status="🟡 Due Today", action_required="No")
+        )
+
+        self.assertEqual(record.status.value, "due")
+
     def test_dry_run_plans_create_without_writing(self) -> None:
         plan = self.service.plan([self.record])
 
@@ -204,6 +218,7 @@ def notion_page(
     *,
     page_id: str = "page-1",
     status: str = "Needs Review",
+    due_status: str = "Due Soon",
     action_required: str = "Confirm amount",
 ) -> dict:
     return {
@@ -217,7 +232,7 @@ def notion_page(
             "Amount": {"number": 125.5},
             "Due Date": {"date": {"start": "2026-07-15"}},
             "Status": {"select": {"name": status}},
-            "Due Status": {"formula": {"type": "string", "string": "Due Soon"}},
+            "Due Status": {"formula": {"type": "string", "string": due_status}},
             "Action Required": {"formula": {"type": "string", "string": action_required}},
             "Payment Type": {"select": {"name": "Auto Pay"}},
             "Category": {"select": {"name": "Phone"}},
