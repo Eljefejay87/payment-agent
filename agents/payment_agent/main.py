@@ -144,7 +144,9 @@ def main() -> int:
 
         scheduler.every_minutes(settings.scan_interval_minutes, scan_job)
         if settings.daily_enabled:
-            scheduler.every_day_at(settings.daily_report_time, daily_report_job)
+            scheduler.every_day_at_in_timezone(
+                settings.daily_report_time, daily_report_job, settings.timezone
+            )
         if settings.run_startup_scan:
             scan_job()
         else:
