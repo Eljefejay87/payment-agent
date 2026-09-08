@@ -86,6 +86,30 @@ class PaymentSubjectTests(unittest.TestCase):
             )
         )
 
+    def test_future_processing_debit_card_subject_matches(self) -> None:
+        self.assertTrue(
+            is_payment_subject(
+                "Online Debit Card payments scheduled for future processing. Reference number: B140000",
+                "Online Payment -",
+            )
+        )
+
+    def test_future_processing_credit_card_subject_matches(self) -> None:
+        self.assertTrue(
+            is_payment_subject(
+                "Online Credit Card payments scheduled for future processing. Reference number: B141255",
+                "Online Payment -",
+            )
+        )
+
+    def test_unrelated_future_processing_subject_does_not_match(self) -> None:
+        self.assertFalse(
+            is_payment_subject(
+                "Online payment scheduled for future processing reminder",
+                "Online Payment -",
+            )
+        )
+
     def test_non_payment_subject_does_not_match(self) -> None:
         self.assertFalse(is_payment_subject("Email batch is ready for review", "Online Payment -"))
 
