@@ -1,5 +1,18 @@
 # UCM AI Operations Session
 
+## Latest Session Update — 2026-07-28
+
+- Fixed the Payment Agent's strict subject matching so known Debit Card, Credit Card,
+  and Credit or Debit Card future-processing notifications are recognized without
+  widening the filter to unrelated scheduled-payment email.
+- Recovered the missed live Debit Card payment: the approved scan recorded the
+  exact source values, sent the normal Teams notification, marked the source email
+  read, and moved it to `Processed Payments`.
+- Verified 8 focused subject tests, all 23 Payment Agent tests, and the full offline
+  suite of 317 tests with 1 skipped on the clean remote-main publication base.
+- Current task is complete. Next recommended step: monitor the next scheduled
+  future-processing payment and confirm it appears without manual intervention.
+
 ## Current Milestone
 
 - Dedicated Voicemail Health ingress is staged locally only. It adds a stateless `voicemail-health-ingress` Railway service role that exposes only authenticated `POST /internal/voicemail/health`, validates a six-field sanitized health payload, and forwards to the Payment Agent private status bridge over Railway private networking with the existing internal bridge token. No Railway variables, schedules, scans, voicemail parsing, Sheet writes, Teams posts, or production services were changed.
