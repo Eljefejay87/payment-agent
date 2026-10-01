@@ -15,6 +15,11 @@ APPROVED_CARD_PAYMENT_SUBJECT = re.compile(
     r"^Online (Debit|Credit|Credit or Debit) Card payment was approved .* Reference number:",
     re.IGNORECASE,
 )
+USAEPAY_APPROVED_SUBJECT = re.compile(
+    r"^Merchant Receipt\s*-\s*Transaction Approved\s*-\s*Authcode\s*#\S+",
+    re.IGNORECASE,
+)
+USAEPAY_SENDER = "noreply@usaepay.com"
 
 
 def is_payment_subject(subject: str, configured_subject_contains: str) -> bool:
@@ -22,7 +27,16 @@ def is_payment_subject(subject: str, configured_subject_contains: str) -> bool:
     configured = configured_subject_contains.strip().lower()
     if configured and configured in normalized_subject.lower():
         return True
-    return bool(APPROVED_CARD_PAYMENT_SUBJECT.search(normalized_subject))
+    return bool(
+        APPROVED_CARD_PAYMENT_SUBJECT.search(normalized_subject)
+        or USAEPAY_APPROVED_SUBJECT.search(normalized_subject)
+    )
+
+
+def is_payment_sender(sender_email: str, configured_sender_email: str) -> bool:
+    sender = (sender_email or "").strip().lower()
+    configured = (configured_sender_email or "").strip().lower()
+    return sender == USAEPAY_SENDER or bool(configured and sender == configured)
 
 
 class PaymentGraphClient(MicrosoftGraphClient):
@@ -42,7 +56,7 @@ class PaymentGraphClient(MicrosoftGraphClient):
             message
             for message in messages
             if is_payment_subject(message.get("subject") or "", subject_filter)
-            and self._sender_email(message).lower() == sender_filter
+            and is_payment_sender(self._sender_email(message), sender_filter)
         ]
 
     def find_recent_message_headers(self, include_body: bool = False) -> list[dict[str, Any]]:
