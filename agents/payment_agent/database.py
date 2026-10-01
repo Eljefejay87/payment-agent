@@ -87,6 +87,15 @@ class PaymentDatabase(SQLiteDatabase):
                 if row is not None:
                     return True
 
+            if payment.note and payment.note.startswith("USAePay Ref "):
+                reference_prefix = payment.note.split(" |", 1)[0]
+                row = conn.execute(
+                    "SELECT 1 FROM payments WHERE note = ? OR note LIKE ?",
+                    (reference_prefix, f"{reference_prefix} |%"),
+                ).fetchone()
+                if row is not None:
+                    return True
+
             row = conn.execute(
                 """
                 SELECT 1 FROM payments
