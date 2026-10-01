@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from agents.payment_agent.config import load_settings, validate_settings
 from agents.payment_agent.database import PaymentDatabase
-from agents.payment_agent.graph_client import is_payment_subject
+from agents.payment_agent.graph_client import is_payment_sender, is_payment_subject
 from agents.payment_agent.health import PaymentAgentHealth
 from agents.payment_agent.models import PaymentRecord
 from agents.payment_agent.parser import cents_to_currency, parse_payment_email
@@ -57,6 +57,41 @@ class PaymentParserTests(unittest.TestCase):
         self.assertEqual(parsed.payment_date, "6/29/2026")
         self.assertEqual(cents_to_currency(parsed.payment_amount_cents), "$141.12")
 
+    def test_parse_usaepay_receipt(self) -> None:
+        parsed = parse_payment_email(
+            "\n".join(
+                [
+                    "Receipt of Payment",
+                    "Total 177.90",
+                    "Card Holder",
+                    "Sample Customer",
+                    "Date",
+                    "10/01/26 12:13 pm",
+                    "Reference #",
+                    "4416553098",
+                    "Authorization #",
+                    "528295",
+                    "Invoice",
+                    "B135186",
+                    "PO #",
+                    "B135186",
+                    "Merchant",
+                    "Midland 113",
+                    "Type",
+                    "Credit Card Sale",
+                    "Source",
+                    "United",
+                ]
+            )
+        )
+
+        self.assertEqual(parsed.account_number, "B135186")
+        self.assertEqual(parsed.payment_type, "Credit Card Sale")
+        self.assertEqual(parsed.payment_date, "10/01/2026")
+        self.assertEqual(parsed.payment_amount_cents, 17790)
+        self.assertIn("USAePay Ref 4416553098", parsed.note or "")
+        self.assertIn("Card Holder Sample Customer", parsed.note or "")
+
 
 class PaymentSubjectTests(unittest.TestCase):
     def test_original_payment_subject_matches(self) -> None:
@@ -85,6 +120,27 @@ class PaymentSubjectTests(unittest.TestCase):
                 "Online Payment -",
             )
         )
+
+    def test_usaepay_approved_subject_matches(self) -> None:
+        self.assertTrue(
+            is_payment_subject(
+                "Merchant Receipt - Transaction Approved - Authcode #528295",
+                "Online Payment -",
+            )
+        )
+
+    def test_usaepay_declined_subject_does_not_match(self) -> None:
+        self.assertFalse(
+            is_payment_subject(
+                "Merchant Receipt - Transaction Declined - Authcode #000000",
+                "Online Payment -",
+            )
+        )
+
+    def test_usaepay_sender_is_allowed_alongside_configured_sender(self) -> None:
+        self.assertTrue(is_payment_sender("noreply@usaepay.com", "support@example.com"))
+        self.assertTrue(is_payment_sender("support@example.com", "support@example.com"))
+        self.assertFalse(is_payment_sender("other@example.com", "support@example.com"))
 
     def test_non_payment_subject_does_not_match(self) -> None:
         self.assertFalse(is_payment_subject("Email batch is ready for review", "Online Payment -"))
@@ -147,6 +203,37 @@ class PaymentDatabaseTests(unittest.TestCase):
 
             self.assertTrue(db.is_duplicate_payment(moved_payment, "<stable-email-id>"))
             self.assertTrue(db.is_duplicate_payment(moved_payment, None))
+
+    def test_usaepay_duplicate_reference_blocks_second_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = PaymentDatabase(Path(temp_dir) / "payments.sqlite3")
+            db.initialize()
+            first = PaymentRecord(
+                message_id="usaepay-message-1",
+                account_number="B135186",
+                payment_type="Credit Card Sale",
+                note="USAePay Ref 4416553098 | Card Holder Sample Customer | Auth 528295",
+                payment_date="10/01/2026",
+                payment_amount_cents=17790,
+                email_received_at="2026-10-01T16:13:00Z",
+                email_subject="Merchant Receipt - Transaction Approved - Authcode #528295",
+                sender_email="noreply@usaepay.com",
+            )
+            duplicate = PaymentRecord(
+                message_id="usaepay-message-2",
+                account_number="B135186",
+                payment_type="Credit Card Sale",
+                note="USAePay Ref 4416553098 | Card Holder Sample Customer | Auth 528295 | Merchant Midland 113",
+                payment_date="10/01/2026",
+                payment_amount_cents=17790,
+                email_received_at="2026-10-01T16:14:00Z",
+                email_subject="Merchant Receipt - Transaction Approved - Authcode #528295",
+                sender_email="noreply@usaepay.com",
+            )
+
+            db.save_payment(first, internet_message_id="<usaepay-1>", processed_at=datetime.now(timezone.utc))
+
+            self.assertTrue(db.is_duplicate_payment(duplicate, "<usaepay-2>"))
 
 
 class PaymentConfigTests(unittest.TestCase):
