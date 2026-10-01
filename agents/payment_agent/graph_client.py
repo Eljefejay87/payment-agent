@@ -16,7 +16,7 @@ APPROVED_CARD_PAYMENT_SUBJECT = re.compile(
     re.IGNORECASE,
 )
 USAEPAY_APPROVED_SUBJECT = re.compile(
-    r"^Merchant Receipt\\s*-\\s*Transaction Approved\\s*-\\s*Authcode\\s*#\\S+",
+    r"^Merchant Receipt\s*-\s*Transaction Approved\s*-\s*Authcode\s*#\S+",
     re.IGNORECASE,
 )
 USAEPAY_SENDER = "noreply@usaepay.com"
