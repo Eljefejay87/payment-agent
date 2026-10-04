@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date, timedelta
 from pathlib import Path
@@ -11,9 +12,18 @@ from shared.integrations.microsoft_graph import GraphClient
 
 from .database import ICRRemitDatabase
 from .models import ICRRemitResult
-from .parser import parse_icr_remit_file
+from .parser import parse_icr_remit_file, next_wednesday_from_date
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _compute_file_hash(file_path: Path) -> str:
+    """Compute SHA-256 hash of file content for duplicate detection."""
+    digest = hashlib.sha256()
+    with file_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class ICRRemitImportService:
@@ -39,7 +49,8 @@ class ICRRemitImportService:
         if not liquidation_file.is_file():
             raise ValueError(f"ICR liquidation report was not found: {liquidation_file}")
         self.db.initialize()
-        if self.db.import_exists(result.broker, result.remit_week.isoformat(), result.file_path.name):
+        content_hash = _compute_file_hash(file_path)
+        if self.db.import_exists(result.broker, result.remit_week.isoformat(), result.file_path.name, content_hash):
             raise RuntimeError(f"Duplicate ICR remit import for {result.file_path.name} week {result.remit_week}.")
         if dry_run:
             LOGGER.info("Dry run ICR remit import: Due to Client=%s", result.due_to_client)
@@ -75,7 +86,7 @@ class ICRRemitImportService:
             ]
         }
         self.cash_flow.notion.request("POST", "/pages", json={"parent": {"data_source_id": data_source_id}, "properties": payload})
-        self.db.save_import(result)
+        self.db.save_import(result, content_hash)
         self.create_email_draft(result, liquidation_file)
         LOGGER.info("ICR remit import complete for %s", result.file_path.name)
         return result
@@ -103,4 +114,8 @@ class ICRRemitImportService:
 
 
 def jim_remit_due_date(result: ICRRemitResult) -> date:
-    return result.remit_week + timedelta(days=3)
+    """
+    Calculate Jim's payment due date (Wednesday of the remit cycle).
+    Uses the remit_week (Monday) to determine the appropriate Wednesday.
+    """
+    return next_wednesday_from_date(result.remit_week)

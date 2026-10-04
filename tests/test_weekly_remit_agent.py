@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from zipfile import ZipFile
 
 from agents.icr_remit_agent.database import ICRRemitDatabase
 from agents.icr_remit_agent.parser import parse_icr_remit_file
-from agents.icr_remit_agent.service import ICRRemitImportService
+from agents.icr_remit_agent.service import ICRRemitImportService, jim_remit_due_date
 from agents.weekly_remit_agent.database import RemitDatabase
 from agents.weekly_remit_agent.file_detector import RemitFileValidationError, find_required_remit_files
 from agents.weekly_remit_agent.models import RemitBatch, RemitFiles
@@ -89,6 +90,36 @@ class WeeklyRemitDatabaseTests(unittest.TestCase):
 
 
 class WeeklyRemitServiceTests(unittest.TestCase):
+    def test_send_window_allows_configured_monday_and_tuesday(self) -> None:
+        settings = build_settings(Path("/tmp/remit-window-test"))
+        settings.run_day = "monday,tuesday"
+        agent = build_agent(settings)
+
+        monday = datetime.fromisoformat("2026-06-29T14:59:00-04:00")
+        monday_evening = datetime.fromisoformat("2026-06-29T18:17:00-04:00")
+        tuesday = datetime.fromisoformat("2026-06-30T14:59:00-04:00")
+        wednesday = datetime.fromisoformat("2026-07-01T14:59:00-04:00")
+        after_deadline = datetime.fromisoformat("2026-06-30T15:01:00-04:00")
+
+        self.assertTrue(agent._is_send_window(monday))
+        self.assertTrue(agent._is_send_window(monday_evening))
+        self.assertTrue(agent._is_send_window(tuesday))
+        self.assertFalse(agent._is_send_window(wednesday))
+        self.assertFalse(agent._is_send_window(after_deadline))
+        self.assertTrue(agent._is_deadline_missed(after_deadline))
+
+    def test_single_day_send_window_still_closes_at_deadline(self) -> None:
+        settings = build_settings(Path("/tmp/remit-window-test"))
+        settings.run_day = "monday"
+        agent = build_agent(settings)
+
+        before_deadline = datetime.fromisoformat("2026-06-29T14:59:00-04:00")
+        after_deadline = datetime.fromisoformat("2026-06-29T15:01:00-04:00")
+
+        self.assertTrue(agent._is_send_window(before_deadline))
+        self.assertFalse(agent._is_send_window(after_deadline))
+        self.assertTrue(agent._is_deadline_missed(after_deadline))
+
     def test_successful_send_records_and_moves_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -230,7 +261,7 @@ class ICRRemitImportTests(unittest.TestCase):
             self.assertEqual(payload["Vendor / Payee"]["rich_text"][0]["text"]["content"], "ICR")
             self.assertEqual(payload["Category"]["select"]["name"], "Broker Remit")
             self.assertEqual(payload["Amount"]["number"], 20.0)
-            self.assertEqual(payload["Due Date"]["date"]["start"], (result.remit_week + timedelta(days=3)).isoformat())
+            self.assertEqual(payload["Due Date"]["date"]["start"], jim_remit_due_date(result).isoformat())
             self.assertEqual(
                 payload["Notes"]["rich_text"][0]["text"]["content"],
                 "Due to Agency: $10.00 | Due to Client (owed to Jim): $20.00 | Total Collected: $30.00 | ACH should be sent by Wednesday for Thursday arrival.",
@@ -359,6 +390,135 @@ class WeeklyRemitTeamsStatusTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "Duplicate ICR remit import"):
                 service.import_file(csv_path, liquidation_path, dry_run=False)
+
+    def test_icr_renamed_file_same_content_detected_as_duplicate(self) -> None:
+        """Test that a renamed file with identical content is detected as duplicate."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr.csv"
+            csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            service = build_icr_service(base)
+
+            # First import succeeds
+            service.import_file(csv_path, liquidation_path, dry_run=False)
+
+            # Rename the file (same content)
+            renamed_path = base / "icr-renamed.csv"
+            renamed_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
+
+            # Should be detected as duplicate
+            with self.assertRaisesRegex(RuntimeError, "Duplicate ICR remit import"):
+                service.import_file(renamed_path, liquidation_path, dry_run=False)
+
+    def test_icr_different_content_same_week_allowed(self) -> None:
+        """Test that different content with similar filenames is still allowed."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            csv_path = base / "icr.csv"
+            csv_path.write_text("AgencyFee,ClientFee\n10.00,20.00\n")
+            liquidation_path = base / "liq.csv"
+            liquidation_path.write_text("liquidation")
+            service = build_icr_service(base)
+
+            # First import succeeds
+            service.import_file(csv_path, liquidation_path, dry_run=False)
+
+            # Different content, similar filename
+            different_path = base / "icr-v2.csv"
+            different_path.write_text("AgencyFee,ClientFee\n50.00,100.00\n")
+
+            # Should be allowed (different content)
+            result = service.import_file(different_path, liquidation_path, dry_run=False)
+            self.assertEqual(result.due_to_client, Decimal("100.00"))
+
+    def test_icr_migration_adds_content_hash_to_existing_table(self) -> None:
+        """Test that migration safely adds content_hash to existing icr_remit_imports table."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "test.sqlite3"
+
+            # Create OLD schema (without content_hash)
+            old_schema = """
+            CREATE TABLE IF NOT EXISTS icr_remit_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                broker TEXT NOT NULL,
+                contact TEXT NOT NULL,
+                remit_week TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                due_to_agency_total REAL NOT NULL,
+                due_to_client_total REAL NOT NULL,
+                total_collected REAL NOT NULL,
+                status TEXT NOT NULL,
+                created_date TEXT NOT NULL,
+                notes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(broker, remit_week, file_name)
+            );
+            """
+
+            # Insert existing rows (simulating production data)
+            now = datetime.now(timezone.utc).isoformat()
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(old_schema)
+                for i in range(3):
+                    conn.execute(
+                        """
+                        INSERT INTO icr_remit_imports
+                        (broker, contact, remit_week, file_name, due_to_agency_total,
+                         due_to_client_total, total_collected, status, created_date,
+                         notes, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "ICR", "Jim", f"2026-09-{28-i*7}", f"icr-remit-{i}.xlsx",
+                            100.0+i, 200.0+i, 300.0+i, "Finalized", now[:10],
+                            f"Test import {i}", now, now,
+                        ),
+                    )
+
+            # Verify old schema
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(icr_remit_imports)").fetchall()}
+                self.assertNotIn("content_hash", columns)
+                row_count = conn.execute("SELECT COUNT(*) FROM icr_remit_imports").fetchone()[0]
+                self.assertEqual(row_count, 3)
+
+            # Run migration via ICRRemitDatabase.initialize()
+            db = ICRRemitDatabase(db_path)
+            db.initialize()
+
+            # Verify migration succeeded
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(icr_remit_imports)").fetchall()}
+                self.assertIn("content_hash", columns)
+
+                # Verify all rows have content_hash
+                rows = conn.execute("SELECT id, file_name, content_hash FROM icr_remit_imports").fetchall()
+                self.assertEqual(len(rows), 3)
+                for row in rows:
+                    self.assertIsNotNone(row[2])
+                    self.assertTrue(len(row[2]) > 0)
+
+                # Verify unique index exists
+                indexes = {row[1] for row in conn.execute("PRAGMA index_list(icr_remit_imports)").fetchall()}
+                self.assertIn("idx_icr_remit_imports_content_hash", indexes)
+
+            # Verify idempotency - running again should be safe
+            db.initialize()
+
+            # Verify row count unchanged
+            with sqlite3.connect(db_path) as conn:
+                row_count = conn.execute("SELECT COUNT(*) FROM icr_remit_imports").fetchone()[0]
+                self.assertEqual(row_count, 3)
+
+            # Verify new duplicate detection works
+            # Same filename should be detected as duplicate (regardless of content hash)
+            self.assertTrue(db.import_exists("ICR", "2026-09-28", "icr-remit-0.xlsx", "test_hash"))
+
+            # Different filename with different content should be allowed
+            self.assertFalse(db.import_exists("ICR", "2026-09-28", "icr-remit-different.xlsx", "different_hash"))
 
 
 def build_settings(base: Path) -> SimpleNamespace:

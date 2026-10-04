@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS icr_remit_imports (
     contact TEXT NOT NULL,
     remit_week TEXT NOT NULL,
     file_name TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
     due_to_agency_total REAL NOT NULL,
     due_to_client_total REAL NOT NULL,
     total_collected REAL NOT NULL,
@@ -26,15 +28,63 @@ CREATE TABLE IF NOT EXISTS icr_remit_imports (
     updated_at TEXT NOT NULL,
     UNIQUE(broker, remit_week, file_name)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_icr_remit_imports_content_hash
+ON icr_remit_imports(broker, remit_week, content_hash);
 """
 
 
 class ICRRemitDatabase(SQLiteDatabase):
     def initialize(self) -> None:
+        # Run migration BEFORE schema initialization to ensure content_hash exists
+        self._migrate_content_hash()
         self.initialize_schema(SCHEMA)
 
-    def import_exists(self, broker: str, remit_week: str, file_name: str) -> bool:
+    def _migrate_content_hash(self) -> None:
+        """Safely add content_hash column to existing icr_remit_imports table.
+        
+        This migration is idempotent and safe to run multiple times.
+        Existing rows receive a deterministic synthetic hash based on their
+        broker, remit_week, and file_name to ensure uniqueness without
+        falsely marking unrelated imports as duplicates.
+        """
         with self.connect() as conn:
+            # Check if table exists
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='icr_remit_imports'"
+            ).fetchone()
+            
+            if table_exists is None:
+                # Table doesn't exist yet - schema initialization will create it
+                return
+            
+            # Check if content_hash column exists
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(icr_remit_imports)").fetchall()}
+            
+            if "content_hash" not in columns:
+                # Add content_hash column with NULL default (will be populated below)
+                conn.execute("ALTER TABLE icr_remit_imports ADD COLUMN content_hash TEXT")
+            
+            # Generate deterministic synthetic hashes for any rows missing content_hash
+            # This ensures each row has a unique hash based on its content
+            rows = conn.execute(
+                "SELECT id, broker, remit_week, file_name FROM icr_remit_imports WHERE content_hash IS NULL"
+            ).fetchall()
+            
+            for row_id, broker, remit_week, file_name in rows:
+                # Create deterministic hash from existing data
+                # This is stable across restarts and unique per import
+                synthetic_hash = hashlib.sha256(
+                    f"{broker}|{remit_week}|{file_name}".encode()
+                ).hexdigest()
+                conn.execute(
+                    "UPDATE icr_remit_imports SET content_hash = ? WHERE id = ?",
+                    (synthetic_hash, row_id),
+                )
+
+    def import_exists(self, broker: str, remit_week: str, file_name: str, content_hash: str | None = None) -> bool:
+        with self.connect() as conn:
+            # Check for exact filename match
             row = conn.execute(
                 """
                 SELECT 1 FROM icr_remit_imports
@@ -42,24 +92,43 @@ class ICRRemitDatabase(SQLiteDatabase):
                 """,
                 (broker, remit_week, file_name),
             ).fetchone()
-            return row is not None
+            if row is not None:
+                return True
+            # Check for content-based duplicate (same broker/week, different filename)
+            if content_hash is not None:
+                row = conn.execute(
+                    """
+                    SELECT 1 FROM icr_remit_imports
+                    WHERE lower(broker) = lower(?) AND remit_week = ? AND content_hash = ?
+                    """,
+                    (broker, remit_week, content_hash),
+                ).fetchone()
+                if row is not None:
+                    return True
+            return False
 
-    def save_import(self, result: ICRRemitResult) -> None:
+    def save_import(self, result: ICRRemitResult, content_hash: str | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        # Generate a synthetic hash if none provided (for manual/test records)
+        if content_hash is None:
+            content_hash = hashlib.sha256(
+                f"{result.broker}-{result.remit_week.isoformat()}-{result.file_path.name}".encode()
+            ).hexdigest()
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO icr_remit_imports
-                (broker, contact, remit_week, file_name, due_to_agency_total,
+                (broker, contact, remit_week, file_name, content_hash, due_to_agency_total,
                  due_to_client_total, total_collected, status, created_date,
                  notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.broker,
                     result.contact,
                     result.remit_week.isoformat(),
                     result.file_path.name,
+                    content_hash,
                     float(result.due_to_agency),
                     float(result.due_to_client),
                     float(result.total_collected),

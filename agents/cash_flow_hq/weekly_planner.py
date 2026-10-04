@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -406,7 +407,11 @@ class WeeklyCashPlannerService:
         )
         self.remit_db.initialize()
         if not self.remit_db.import_exists(remit.broker, remit.remit_week.isoformat(), remit.file_path.name):
-            self.remit_db.save_import(remit)
+            # Generate a synthetic content hash for manual records (no actual file)
+            synthetic_hash = hashlib.sha256(
+                f"manual-already-sent-{week_start.isoformat()}".encode()
+            ).hexdigest()
+            self.remit_db.save_import(remit, synthetic_hash)
         return self.db.save_plan_from_remit(remit, operating_deficit)
 
     def latest_validated_remit(self, week_start: date) -> ICRRemitResult | None:
