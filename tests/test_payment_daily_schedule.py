@@ -172,6 +172,87 @@ class RecordingScheduler:
         self.registrations.append((minutes, job))
 
 
+class InitDbICRInitializationTests(unittest.TestCase):
+    """Test that init-db command initializes and migrates the ICR database."""
+
+    def test_init_db_initializes_icr_database(self) -> None:
+        """Test that init-db command initializes ICR database with content_hash migration."""
+        import tempfile
+        import sqlite3
+        from pathlib import Path
+        from unittest.mock import patch
+        from agents.payment_agent.main import main as payment_main
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "test.sqlite3"
+
+            # Create OLD schema (without content_hash) to simulate pre-migration state
+            old_schema = """
+            CREATE TABLE IF NOT EXISTS icr_remit_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                broker TEXT NOT NULL,
+                contact TEXT NOT NULL,
+                remit_week TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                due_to_agency_total REAL NOT NULL,
+                due_to_client_total REAL NOT NULL,
+                total_collected REAL NOT NULL,
+                status TEXT NOT NULL,
+                created_date TEXT NOT NULL,
+                notes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(broker, remit_week, file_name)
+            );
+            """
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(old_schema)
+                conn.execute(
+                    """
+                    INSERT INTO icr_remit_imports
+                    (broker, contact, remit_week, file_name, due_to_agency_total,
+                     due_to_client_total, total_collected, status, created_date,
+                     notes, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("ICR", "Jim", "2026-09-28", "icr-remit.xlsx", 100.0, 200.0, 300.0, "Finalized", now[:10], "Test", now, now),
+                )
+
+            # Verify old schema
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(icr_remit_imports)").fetchall()}
+                self.assertNotIn("content_hash", columns)
+
+            # Run init-db command
+            with patch("sys.argv", ["main.py", "init-db", "--env-file", str(Path(temp_dir) / "dummy.env")]):
+                with patch("agents.payment_agent.main.load_settings") as mock_settings:
+                    from pathlib import Path
+                    from types import SimpleNamespace
+                    mock_settings.return_value = SimpleNamespace(
+                        database_path=db_path,
+                        log_level="INFO",
+                        health_path=Path(temp_dir) / "health.json",
+                    )
+                    payment_main()
+
+            # Verify migration ran
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(icr_remit_imports)").fetchall()}
+                self.assertIn("content_hash", columns)
+
+                # Verify row has content_hash
+                rows = conn.execute("SELECT content_hash FROM icr_remit_imports").fetchall()
+                self.assertEqual(len(rows), 1)
+                self.assertIsNotNone(rows[0][0])
+                self.assertTrue(len(rows[0][0]) > 0)
+
+                # Verify unique index exists
+                indexes = {row[1] for row in conn.execute("PRAGMA index_list(icr_remit_imports)").fetchall()}
+                self.assertIn("idx_icr_remit_imports_content_hash", indexes)
+
+
 class StaleReservationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

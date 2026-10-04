@@ -48,6 +48,10 @@ def main() -> int:
     if args.command == "init-db":
         PaymentDatabase(settings.database_path).initialize()
         logging.info("Database initialized at %s", settings.database_path)
+        # Also initialize ICR remit database to ensure content_hash migration runs
+        from agents.icr_remit_agent.database import ICRRemitDatabase
+        ICRRemitDatabase(settings.database_path).initialize()
+        logging.info("ICR remit database initialized at %s", settings.database_path)
         return 0
 
     errors = validate_settings(settings)
@@ -143,8 +147,7 @@ def main() -> int:
         )
 
         scheduler.every_minutes(settings.scan_interval_minutes, scan_job)
-        if settings.daily_enabled:
-            scheduler.every_day_at(settings.daily_report_time, daily_report_job)
+        register_daily_report_schedule(scheduler, settings, daily_report_job)
         if settings.run_startup_scan:
             scan_job()
         else:
@@ -191,6 +194,16 @@ def run_with_retry(
                 delay,
             )
             time.sleep(delay)
+
+
+def register_daily_report_schedule(
+    scheduler: AgentScheduler,
+    settings: Settings,
+    daily_report_job: Callable[[], object],
+) -> None:
+    """Register the single poller; the job applies the timezone-aware cutoff."""
+    if settings.daily_enabled:
+        scheduler.every_minutes(1, daily_report_job)
 
 
 def _record_job_failure(
