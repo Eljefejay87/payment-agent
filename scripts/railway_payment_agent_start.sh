@@ -11,12 +11,16 @@ case "$SERVICE_ROLE" in
 	cash-flow-hq-bridge|cash_flow_hq_bridge|bridge)
 		exec python main.py cash-flow-bridge
 		;;
+	operations-intelligence|operations_intelligence|ops)
+		python main.py ops-check-setup
+		exec python main.py ops-run
+		;;
 	voicemail-health-ingress|voicemail_health_ingress|health-ingress)
 		exec python -m agents.voicemail_health_ingress.main
 		;;
 	*)
 		echo "Unsupported RAILWAY_SERVICE_ROLE: $SERVICE_ROLE" >&2
-		echo "Supported values: payment-agent, cash-flow-hq-bridge, voicemail-health-ingress" >&2
+		echo "Supported values: payment-agent, cash-flow-hq-bridge, operations-intelligence, voicemail-health-ingress" >&2
 		exit 2
 		;;
 esac
