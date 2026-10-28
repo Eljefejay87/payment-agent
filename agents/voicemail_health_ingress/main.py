@@ -31,6 +31,15 @@ ALLOWED_FIELDS = {
     "scan_timestamp",
     "last_error_category",
 }
+LEGACY_HEALTH_FIELDS = {
+    "service",
+    "last_successful_job",
+    "last_records_processed",
+    "updated_at",
+    "last_error",
+    "last_error_at",
+    "last_failed_job",
+}
 SERVICE_STATUSES = {"not_started", "starting", "running", "stopped", "error", "unreadable", "unknown"}
 SCAN_RESULTS = {"success", "error", "not_started", "unknown"}
 ERROR_CATEGORIES = {
@@ -207,12 +216,23 @@ class VoicemailHealthIngress:
 
 
 def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
-    if set(payload) - ALLOWED_FIELDS:
+    if set(payload) - ALLOWED_FIELDS - LEGACY_HEALTH_FIELDS:
         return None
     status = _safe_status(payload.get("status"))
+    if status is None:
+        return None
     scan_result = _safe_scan_result(payload.get("last_scan_result"))
+    last_successful_scan = _safe_timestamp(payload.get("last_successful_scan"))
     scan_timestamp = _safe_timestamp(payload.get("scan_timestamp"))
+    if scan_timestamp is None:
+        scan_timestamp = _safe_timestamp(payload.get("updated_at")) or last_successful_scan
+    if scan_result is None:
+        scan_result = "success" if last_successful_scan else ("error" if status == "error" else "not_started")
     records_processed = _safe_count(payload.get("records_processed_count"))
+    if records_processed is None:
+        records_processed = _safe_count(payload.get("last_records_processed"))
+    if records_processed is None:
+        records_processed = 0
     if status is None or scan_result is None or scan_timestamp is None or records_processed is None:
         return None
     sanitized: dict[str, Any] = {
@@ -221,7 +241,6 @@ def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         "records_processed_count": records_processed,
         "scan_timestamp": scan_timestamp,
     }
-    last_successful_scan = _safe_timestamp(payload.get("last_successful_scan"))
     if last_successful_scan is not None:
         sanitized["last_successful_scan"] = last_successful_scan
     error_category = _safe_error_category(payload.get("last_error_category"))
@@ -259,72 +278,3 @@ def validate_settings(settings: Settings) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="UCM Voicemail Health public ingress")
-    parser.add_argument("--env-file", default=None, help="Optional path to .env file.")
-    args = parser.parse_args()
-
-    settings = load_settings(args.env_file)
-    configure_logging(os.getenv("LOG_LEVEL", "INFO").upper())
-    errors = validate_settings(settings)
-    if errors:
-        for error in errors:
-            logging.error(error)
-        return 2
-
-    forwarder = PaymentAgentVoicemailHealthClient(
-        bridge_url=settings.payment_status_bridge_url,
-        bridge_token=settings.payment_status_bridge_token,
-        timeout_seconds=settings.forward_timeout_seconds,
-    )
-    ingress = VoicemailHealthIngress(
-        public_token=settings.public_token,
-        forwarder=forwarder,
-        host=settings.host,
-        port=settings.port,
-    )
-    ingress.start()
-    stop_event = threading.Event()
-
-    def request_stop(signum: int, _frame: Any) -> None:
-        logging.info("voicemail_health_ingress result=shutdown signal=%s", signum)
-        stop_event.set()
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
-    try:
-        stop_event.wait()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        ingress.stop()
-    return 0
-
-
-def _token_matches(value: str, expected: str) -> bool:
-    return bool(value) and bool(expected) and hmac.compare_digest(value.encode(), expected.encode())
-
-
-def _safe_status(value: object) -> str | None:
-    text = str(value or "").strip().lower()
-    return text if text in SERVICE_STATUSES and text != "unknown" else None
-
-
-def _safe_scan_result(value: object) -> str | None:
-    text = str(value or "").strip().lower()
-    return text if text in SCAN_RESULTS else None
-
-
-def _safe_timestamp(value: object) -> str | None:
-    return value if isinstance(value, str) and len(value) <= 64 and "T" in value else None
-
-
-def _safe_count(value: object) -> int | None:
-    return value if isinstance(value, int) and 0 <= value <= 1_000_000 else None
-
-
-def _safe_error_category(value: object) -> str | None:
-    text = str(value or "").strip().lower()
-    return text if text in ERROR_CATEGORIES else None
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
