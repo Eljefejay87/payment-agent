@@ -31,6 +31,15 @@ ALLOWED_FIELDS = {
     "scan_timestamp",
     "last_error_category",
 }
+LEGACY_HEALTH_FIELDS = {
+    "service",
+    "last_successful_job",
+    "last_records_processed",
+    "updated_at",
+    "last_error",
+    "last_error_at",
+    "last_failed_job",
+}
 SERVICE_STATUSES = {"not_started", "starting", "running", "stopped", "error", "unreadable", "unknown"}
 SCAN_RESULTS = {"success", "error", "not_started", "unknown"}
 ERROR_CATEGORIES = {
@@ -207,12 +216,23 @@ class VoicemailHealthIngress:
 
 
 def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
-    if set(payload) - ALLOWED_FIELDS:
+    if set(payload) - ALLOWED_FIELDS - LEGACY_HEALTH_FIELDS:
         return None
     status = _safe_status(payload.get("status"))
+    if status is None:
+        return None
     scan_result = _safe_scan_result(payload.get("last_scan_result"))
+    last_successful_scan = _safe_timestamp(payload.get("last_successful_scan"))
     scan_timestamp = _safe_timestamp(payload.get("scan_timestamp"))
+    if scan_timestamp is None:
+        scan_timestamp = _safe_timestamp(payload.get("updated_at")) or last_successful_scan
+    if scan_result is None:
+        scan_result = "success" if last_successful_scan else ("error" if status == "error" else "not_started")
     records_processed = _safe_count(payload.get("records_processed_count"))
+    if records_processed is None:
+        records_processed = _safe_count(payload.get("last_records_processed"))
+    if records_processed is None:
+        records_processed = 0
     if status is None or scan_result is None or scan_timestamp is None or records_processed is None:
         return None
     sanitized: dict[str, Any] = {
@@ -221,7 +241,6 @@ def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         "records_processed_count": records_processed,
         "scan_timestamp": scan_timestamp,
     }
-    last_successful_scan = _safe_timestamp(payload.get("last_successful_scan"))
     if last_successful_scan is not None:
         sanitized["last_successful_scan"] = last_successful_scan
     error_category = _safe_error_category(payload.get("last_error_category"))
