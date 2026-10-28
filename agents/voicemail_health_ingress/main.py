@@ -278,3 +278,72 @@ def validate_settings(settings: Settings) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="UCM Voicemail Health public ingress")
+    parser.add_argument("--env-file", default=None, help="Optional path to .env file.")
+    args = parser.parse_args()
+
+    settings = load_settings(args.env_file)
+    configure_logging(os.getenv("LOG_LEVEL", "INFO").upper())
+    errors = validate_settings(settings)
+    if errors:
+        for error in errors:
+            logging.error(error)
+        return 2
+
+    forwarder = PaymentAgentVoicemailHealthClient(
+        bridge_url=settings.payment_status_bridge_url,
+        bridge_token=settings.payment_status_bridge_token,
+        timeout_seconds=settings.forward_timeout_seconds,
+    )
+    ingress = VoicemailHealthIngress(
+        public_token=settings.public_token,
+        forwarder=forwarder,
+        host=settings.host,
+        port=settings.port,
+    )
+    ingress.start()
+    stop_event = threading.Event()
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        logging.info("voicemail_health_ingress result=shutdown signal=%s", signum)
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    try:
+        stop_event.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ingress.stop()
+    return 0
+
+
+def _token_matches(value: str, expected: str) -> bool:
+    return bool(value) and bool(expected) and hmac.compare_digest(value.encode(), expected.encode())
+
+
+def _safe_status(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in SERVICE_STATUSES and text != "unknown" else None
+
+
+def _safe_scan_result(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in SCAN_RESULTS else None
+
+
+def _safe_timestamp(value: object) -> str | None:
+    return value if isinstance(value, str) and len(value) <= 64 and "T" in value else None
+
+
+def _safe_count(value: object) -> int | None:
+    return value if isinstance(value, int) and 0 <= value <= 1_000_000 else None
+
+
+def _safe_error_category(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in ERROR_CATEGORIES else None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
