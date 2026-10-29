@@ -36,9 +36,11 @@ LEGACY_HEALTH_FIELDS = {
     "last_successful_job",
     "last_records_processed",
     "updated_at",
+    "pid",
     "last_error",
     "last_error_at",
     "last_failed_job",
+    "stopped_at",
 }
 SERVICE_STATUSES = {"not_started", "starting", "running", "stopped", "error", "unreadable", "unknown"}
 SCAN_RESULTS = {"success", "error", "not_started", "unknown"}
