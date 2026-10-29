@@ -170,6 +170,7 @@ class VoicemailHealthIngressTests(unittest.TestCase):
             "last_error_at": None,
             "last_failed_job": None,
             "updated_at": "2026-10-28T12:45:00+00:00",
+            "pid": 1234,
         }
         self.assertEqual(
             sanitize_payload(legacy),
