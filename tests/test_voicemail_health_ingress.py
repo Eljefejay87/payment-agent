@@ -159,6 +159,30 @@ class VoicemailHealthIngressTests(unittest.TestCase):
         sensitive.update({"caller_phone": "555-1212", "message_id": "secret"})
         self.assertIsNone(sanitize_payload(sensitive))
 
+    def test_sanitize_payload_accepts_legacy_voicemail_health_record(self) -> None:
+        legacy = {
+            "service": "voicemail_tracker_agent",
+            "status": "running",
+            "last_successful_scan": "2026-10-28T12:45:00+00:00",
+            "last_successful_job": "scan_once",
+            "last_records_processed": 3,
+            "last_error": None,
+            "last_error_at": None,
+            "last_failed_job": None,
+            "updated_at": "2026-10-28T12:45:00+00:00",
+            "pid": 1234,
+        }
+        self.assertEqual(
+            sanitize_payload(legacy),
+            {
+                "status": "running",
+                "last_scan_result": "success",
+                "records_processed_count": 3,
+                "scan_timestamp": "2026-10-28T12:45:00+00:00",
+                "last_successful_scan": "2026-10-28T12:45:00+00:00",
+            },
+        )
+
     def test_private_forwarding_contract_uses_payment_status_bridge_token(self) -> None:
         sent = {}
 
